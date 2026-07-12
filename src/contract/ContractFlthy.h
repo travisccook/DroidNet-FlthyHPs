@@ -24,7 +24,7 @@
 // bypassing the palette table entirely (basicColors/dimColorVal). Each contract
 // effect writes 0xRRGGBB pre-scaled by a per-write brightness multiplier (never
 // setBrightness, which only re-scales at show() — fork spec §9). The per-unit look
-// renders through LED_command[hp].LEDFunction = 100 + effectId (cases 101..108,
+// renders through LED_command[hp].LEDFunction = 100 + effectId (cases 101..115,
 // added to the render switch); verb P layers a full-field pulse OVER the base and
 // auto-restores on ms-expiry (never ledOFF / never flushCommandArray — the native
 // flush-to-black). A Studio-seeded beat-clock (verb C) drives an accent envelope,
@@ -35,11 +35,15 @@
 // -------------------------------------------------------------- constants ----
 static const uint8_t  FLTHY_SAFE_MAX_BRIGHT = 200;   // conservative jewel clamp (fork spec §11)
 static const uint32_t FLTHY_STROBE_MIN_MS   = 170;   // >=170 ms/state => <= ~3 Hz (fork spec §11)
-static const uint8_t  FLTHY_FX_BASE         = 100;   // LEDFunction = 100 + effectId (101..108)
+static const uint8_t  FLTHY_FX_BASE         = 100;   // LEDFunction = 100 + effectId (101..115)
 static const int      FLTHY_SCORE_CAP       = 8;     // per-unit Phase-2 sections
 
-// contract effectId -> LEDFunction render code (CE_OFF..CE_METER map to 101..108)
+// contract effectId -> LEDFunction render code (CE_OFF..CE_TWINKLE map to 101..115)
 static inline byte _fxCode(ContractEffect e) { return (byte)(FLTHY_FX_BASE + (uint8_t)e); }
+// upper bound of the contract render-slot range (main.cpp's render switch + the
+// CV_PULSE guard below both gate on this; bump it here, not with a fresh
+// literal, when a later task adds another effect after CE_TWINKLE).
+static const uint8_t  FLTHY_FX_MAX          = _fxCode(CE_TWINKLE);   // 115
 
 // ----------------------------------------------------------- per-unit state ---
 struct FlthyUnit {
@@ -115,7 +119,7 @@ static inline uint8_t _envBright(const FlthyUnit& u) {
 }
 
 // --------------------------------------------------- the single render fn -----
-// Called from the LED render switch (cases 101..108) once per loop for unit hp.
+// Called from the LED render switch (cases 101..115) once per loop for unit hp.
 inline void contractRenderHP(uint8_t hp) {
   FlthyUnit& u = gUnit[hp];
   uint32_t now = millis();
@@ -206,6 +210,19 @@ inline void contractRenderHP(uint8_t hp) {
     case CE_METER: {                                   // no VU on HP: solid @ level (fork spec §6/§8)
       uint8_t br = (uint8_t)((uint16_t)envB * (uint16_t)u.level / 255);
       if (u.lastEnvBright != (int)br) { _fillShow(hp, _scale(u.color, br)); u.lastEnvBright = (int)br; }
+      break;
+    }
+
+    case CE_COMET: {                                   // comet trail around the 6-jewel ring, center off
+      int N = NEO_JEWEL_LEDS - 1;                       // ring positions (center excluded)
+      int head = fxHead(now - u.startMs, u.speed, N);
+      neoStrips[hp].setPixelColor(0, 0x000000);         // center off
+      for (int p = 0; p < N; p++) {
+        uint8_t cb = fxCometBright(p, head, N);
+        uint8_t v = (uint8_t)(((uint16_t)envB * cb) / 255);
+        neoStrips[hp].setPixelColor((uint16_t)(p + 1), _scale(u.color, v));
+      }
+      neoStrips[hp].show();
       break;
     }
 
@@ -306,7 +323,7 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
       u.pulseStartMs = now;                            // ALWAYS retrigger (defeats re-send no-op)
       u.pulseLastMs  = now;
       u.pulseActive  = true;
-      if (LED_command[hp].LEDFunction < 101 || LED_command[hp].LEDFunction > 108)
+      if (LED_command[hp].LEDFunction < 101 || LED_command[hp].LEDFunction > FLTHY_FX_MAX)
         LED_command[hp].LEDFunction = _fxCode(u.effect);   // ensure a contract render slot runs
       break;
     }

@@ -25,6 +25,7 @@ int main() {
   { ParsedContract q; if (contractParse("HFA:i=sparkle,c=FF00FF", q))   applyContract(q); }
   { ParsedContract q; if (contractParse("HFA:i=meter,c=00FF00", q))     applyContract(q); }
   { ParsedContract q; if (contractParse("HFA:i=native:6", q))           applyContract(q); }
+  { ParsedContract q; if (contractParse("H*A:i=comet,c=3B82F6,s=200", q)) applyContract(q); }
   { ParsedContract q; if (contractParse("HTA:i=solid,c=112233,at=44,am=1", q)) applyContract(q); }  // Phase-2 schedule
   { ParsedContract q; if (contractParse("HFP:c=FFFFFF,d=120,b=200", q)) applyContract(q); }
   { ParsedContract q; if (contractParse("**C:bpm=128,ph=40,bpb=4,beat=44", q)) applyContract(q); }
