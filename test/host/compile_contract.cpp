@@ -1,8 +1,10 @@
-// Host TYPE-CHECK of the firmware layer ContractFlthy.h against mock_flthy.h.
-// Not a behavioral test — it only proves the firmware C++ compiles with the
-// verified board API signatures (catches typos / wrong arity / type errors before
-// the bench). Every fork entry point is exercised so the compiler instantiates
-// and type-checks it, and the main.cpp '!' dispatch body is replicated verbatim.
+// Host check of the firmware layer ContractFlthy.h against mock_flthy.h.
+// Mostly a TYPE-CHECK — it proves the firmware C++ compiles with the verified board
+// API signatures (catches typos / wrong arity / type errors before the bench). Every
+// fork entry point is exercised so the compiler instantiates and type-checks it, and
+// the main.cpp '!' dispatch body is replicated verbatim. Plus a focused behavioral
+// guard that _entryFrom threads a scored NATIVE section's native code into the
+// ScoreEntry (the drift the 2026-07-12 fork audit fixed — nativeCode stayed -1).
 #include "mock_flthy.h"
 #include "../../src/contract/ContractFlthy.h"
 #include <cstdio>
@@ -43,6 +45,18 @@ int main() {
     if (inputBuffer[0] == '!') contractHandle(&inputBuffer[1]);
   }
 
-  printf("ContractFlthy.h type-check OK\n");
+  // behavioral guard: _entryFrom must thread the parsed native code into the
+  // ScoreEntry (regression guard for the nativeCode-stayed-(-1) drift the audit fixed;
+  // without it a scored native section fell through to an unhandled LEDFunction=109).
+  { ParsedContract q;
+    if (!contractParse("HFA:i=native:3,at=44", q)) { printf("FAIL: Flthy parse\n"); return 1; }
+    ScoreEntry e = _entryFrom(q.params);
+    if (e.nativeCode != 3 || e.effect != CE_NATIVE) {
+      printf("FAIL: Flthy _entryFrom did not thread nativeCode (got %d)\n", e.nativeCode);
+      return 1;
+    }
+  }
+
+  printf("ContractFlthy.h type-check + score-native guard OK\n");
   return 0;
 }

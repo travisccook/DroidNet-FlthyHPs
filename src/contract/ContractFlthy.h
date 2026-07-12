@@ -259,13 +259,14 @@ static inline ScoreEntry _entryFrom(const ContractParams& pr) {
   e.speed      = pr.hasSpeed ? pr.speed : 128;
   e.beatMod    = pr.beatMod;
   e.accentMode = pr.accentMode;
+  e.nativeCode = pr.hasEffect ? pr.nativeCode : -1;      // thread native code into the score (parity w/ RSeries)
   return e;
 }
 
 // switch a unit to a scored section (Phase-2 onBeat), clean-starting the look.
 static inline void _applyScore(uint8_t hp, const ScoreEntry& e) {
   gUnit[hp].pulseActive = false;
-  _applyLook(hp, e.effect, -1, e.color, e.speed, gUnit[hp].brightBase,
+  _applyLook(hp, e.effect, e.nativeCode, e.color, e.speed, gUnit[hp].brightBase,
              e.beatMod, e.accentMode, 0, /*freshEffect=*/true);
 }
 
