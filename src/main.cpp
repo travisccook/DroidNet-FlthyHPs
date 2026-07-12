@@ -583,7 +583,7 @@ boolean       OEFlag = false;
 ///*****        Command Varaiables, Containers & Flags        *****///
 //////////////////////////////////////////////////////////////////////
 
-#define INPUTBUFFERLEN 10
+#define INPUTBUFFERLEN 80   // DroidNet contract: grown 10->80 (>=64 B floor + headroom, fork spec §5.1)
 #define MAXCOMMANDLENGTH 12
 char inputBuffer[INPUTBUFFERLEN];  
 String inputString = "";                       // a string to hold incoming data
@@ -666,6 +666,13 @@ const uint32_t basicColors[10][10] = {{     C_RED,  C_YELLOW,   C_GREEN,   C_CYA
 
 Adafruit_NeoPixel neoStrips[HPCOUNT];
 
+//////////////////////////////////////////////////////////////////////
+///*****   DroidNet Driveable-Animation Contract (LED-ONLY)    *****///
+///*****   Additive '!' parser branch. Never writes HP_command *****///
+///*****   / never moves a servo. See src/contract/*.          *****///
+//////////////////////////////////////////////////////////////////////
+#include "contract/ContractFlthy.h"
+
 
 //////////////////////////////////////////////////////////////////////
 ///*****                 Initialize Servo Board               *****///
@@ -682,7 +689,7 @@ Servos servos(SERVOI2CADDRESS);
 
 void setup() { 
   Serial.begin(9600);                      // Starts Serial with a baudrate of 9600
-  inputString.reserve(10);                 // reserve 10 bytes for the inputString
+  inputString.reserve(INPUTBUFFERLEN);     // DroidNet contract: reserve full buffer (fork spec §5.1)
 
   Wire.begin(I2CADDRESS);                  // Connects to I2C Bus and establishes address.
   Wire.onReceive(i2cEvent);                // Register event so when we receive something we jump to i2cEvent();
@@ -787,7 +794,11 @@ void loop(){
     commandLength = inputString.length();
     inputString.toCharArray(inputBuffer, INPUTBUFFERLEN);
     inputString="";       // If a complete Command string has been flagged, write the string to array to process.
-    if( inputBuffer[0]=='F' ||      // Front HP
+    if( inputBuffer[0]=='!' )       // DroidNet Driveable-Animation Contract (LED-only). Handled
+    {                               // BEFORE the fixed-offset F/R/T parser so '!' never misparses
+      contractHandle(&inputBuffer[1]);   // bytes after '!' => <class><unit><verb>[:params]
+    }
+    else if( inputBuffer[0]=='F' ||      // Front HP
         inputBuffer[0]=='R' ||      // Rear HP
         inputBuffer[0]=='T' ||      // Top HP
         inputBuffer[0]=='X' ||      // Front & Rear HPs
@@ -913,8 +924,10 @@ void loop(){
     int halt = -1;      
   }
 
+  contractBeatTick();   // DroidNet contract: tick beat-clock + switch Phase-2 sections on-beat (LED-only)
+
   for(int i=0; i<HPCOUNT; i++) {
-    
+
     if(LED_command[i].LEDHalt) {
        if(millis()-LEDHaltTime[i]>=(LED_command[i].LEDHalt*1000L)) {
           flushCommandArray(i, 0);
@@ -940,6 +953,11 @@ void loop(){
                else { enableTwitchLED[i]=startEnableTwitchLED[i]; }
                resetLEDtwitch(i); offcoloroverride[i] = false; flushCommandArray(i,0); break;   // Clear Function, Enable Random LED Twitch, using random LED sequences, disable off color override,
       case 100: ledColor(i,LED_command[i].LEDOption1); break;
+      // DroidNet contract render slots: 100 + effectId (CE_OFF..CE_METER => 101..108).
+      // A single dispatch renders the per-unit look + verb-P overlay + beat envelope.
+      case 101: case 102: case 103: case 104:
+      case 105: case 106: case 107: case 108:
+                contractRenderHP(i); break;
       default: break;
      }
 
@@ -965,7 +983,7 @@ void loop(){
   }     
   
   for (int i=0; i<HPCOUNT; i++)
-    if (millis() > twitchLEDTime[i] && enableTwitchLED[i]>=1 && LED_command[i].LEDFunction>99) {
+    if (millis() > twitchLEDTime[i] && enableTwitchLED[i]>=1 && LED_command[i].LEDFunction>99 && !gUnit[i].active) {   // DroidNet: never twitch over a live contract look
       twitchLEDTime[i] = (1000L*random(LEDTwitchInterval[i][0],LEDTwitchInterval[i][1]))+millis();
       twitchLEDRunTime[i] = random(LEDTwitchRunInterval[i][0],LEDTwitchRunInterval[i][1]);
       flushCommandArray(i, 0);
@@ -998,7 +1016,7 @@ void loop(){
 
 
   for (int i=0; i<HPCOUNT; i++) {
-    if (millis() > twitchHPTime[i] && enableTwitchHP[i] && HP_command[i].HPFunction>99) {
+    if (millis() > twitchHPTime[i] && enableTwitchHP[i] && HP_command[i].HPFunction>99 && !gUnit[i].active) {   // DroidNet: LED-only interlock, no servo twitch during a contract show
       twitchHP(i,1);
       resetHPtwitch(i);
     } 
@@ -1508,8 +1526,8 @@ void serialEvent() {
     if (inChar == '\r' || inChar == '\n') {            // if the incoming character is a carriage return (\r) or newline (\n), it denotes end of command
       stringComplete = true;                           // Once done, set a flag so the main loop can do something about it. 
     } 
-    else { 
-      inputString += inChar;                           // Add each Character to inputString     
+    else if ((int)inputString.length() < INPUTBUFFERLEN) {   // DroidNet: flood guard — trailing bytes drop, never wrap (fork spec §5.1)
+      inputString += inChar;                           // Add each Character to inputString
     }
     statusLEDOn();
   }

@@ -1,0 +1,59 @@
+// Minimal host mock of the Flthy board API surface that ContractFlthy.h uses, to
+// TYPE-CHECK the firmware layer on the host (NOT a behavioral sim). Signatures
+// mirror src/main.cpp / Adafruit_NeoPixel as verified 2026-07-12:
+//   Adafruit_NeoPixel::{setPixelColor(uint16_t,uint32_t),show(),setBrightness(uint8_t)}
+//   neoStrips[HPCOUNT] (main.cpp:667); LED_command[HPCOUNT].LEDFunction (main.cpp:608)
+//   enableTwitchLED/enableTwitchHP/startEnableTwitchLED/offcoloroverride (315/335/574/619)
+//   ledOFF(byte) (1205), varResets(byte) (1460); millis/random/map/Serial (Arduino core)
+#pragma once
+#include <stdint.h>
+#include <stdlib.h>
+
+typedef uint8_t byte;
+typedef bool    boolean;
+
+#define HPCOUNT 3
+#define NEO_JEWEL_LEDS 7
+
+// ---- Arduino core stubs ----
+static unsigned long _mock_millis = 0;
+inline unsigned long millis() { return _mock_millis; }
+inline long random(long a, long b) { (void)b; return a; }   // deterministic for type-check
+inline long random(long b) { (void)b; return 0; }
+inline long map(long x, long in_min, long in_max, long out_min, long out_max) {
+  if (in_max == in_min) return out_min;
+  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
+#define F(str) (str)                                   // flash-string macro no-op on host
+
+struct _MockSerial {
+  void print(const char*) {}
+  void print(int) {}
+  void println(const char*) {}
+  void println(int) {}
+} Serial;
+
+// ---- Adafruit_NeoPixel surface (only what the fork calls) ----
+struct Adafruit_NeoPixel {
+  void setPixelColor(uint16_t, uint32_t) {}
+  void show() {}
+  void setBrightness(uint8_t) {}
+};
+static Adafruit_NeoPixel neoStrips[HPCOUNT];
+
+// ---- board globals the fork references (main.cpp) ----
+struct LEDCmd {
+  byte LEDFunction = 0;
+  byte LEDOption1 = 0;
+  byte LEDOption2 = 0;
+  int  LEDHalt = -1;
+};
+static LEDCmd  LED_command[HPCOUNT];
+static byte    enableTwitchLED[HPCOUNT]      = {1, 2, 2};
+static boolean enableTwitchHP[HPCOUNT]       = {true, true, true};
+static const byte startEnableTwitchLED[HPCOUNT] = {1, 2, 2};
+static boolean offcoloroverride[HPCOUNT]     = {false, false, false};
+
+// ---- board effect primitives the fork calls ----
+inline void ledOFF(byte) {}
+inline void varResets(byte) {}
