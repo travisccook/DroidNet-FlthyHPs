@@ -26,6 +26,11 @@ int main() {
   { ParsedContract q; if (contractParse("HFA:i=meter,c=00FF00", q))     applyContract(q); }
   { ParsedContract q; if (contractParse("HFA:i=native:6", q))           applyContract(q); }
   { ParsedContract q; if (contractParse("H*A:i=comet,c=3B82F6,s=200", q)) applyContract(q); }
+  { ParsedContract q; if (contractParse("H*A:i=chase,c=3B82F6,s=200", q)) applyContract(q); }
+  { ParsedContract q; if (contractParse("H*A:i=wipe,c=3B82F6,s=200", q)) applyContract(q); }
+  { ParsedContract q; if (contractParse("H*A:i=gradient,s=200", q)) applyContract(q); }
+  { ParsedContract q; if (contractParse("H*A:i=colorcycle,s=200", q)) applyContract(q); }
+  { ParsedContract q; if (contractParse("H*A:i=twinkle,c=3B82F6,s=200", q)) applyContract(q); }
   { ParsedContract q; if (contractParse("HTA:i=solid,c=112233,at=44,am=1", q)) applyContract(q); }  // Phase-2 schedule
   { ParsedContract q; if (contractParse("HFP:c=FFFFFF,d=120,b=200", q)) applyContract(q); }
   { ParsedContract q; if (contractParse("**C:bpm=128,ph=40,bpb=4,beat=44", q)) applyContract(q); }
@@ -36,7 +41,7 @@ int main() {
   { ParsedContract q; if (contractParse("HFM:v=idle", q))               applyContract(q); }
   { ParsedContract q; if (contractParse("**X", q))                      applyContract(q); }
 
-  // beat tick + per-hp render (cases 101..108 route here)
+  // beat tick + per-hp render (cases 101..115 route here)
   contractBeatTick();
   for (uint8_t hp = 0; hp < HPCOUNT; hp++) contractRenderHP(hp);
 

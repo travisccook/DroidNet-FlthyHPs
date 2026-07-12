@@ -226,6 +226,61 @@ inline void contractRenderHP(uint8_t hp) {
       break;
     }
 
+    case CE_CHASE: {                                    // marquee chase around the ring, center off
+      int N = NEO_JEWEL_LEDS - 1;                         // ring positions (center excluded)
+      uint32_t el = now - u.startMs;
+      neoStrips[hp].setPixelColor(0, 0x000000);           // center off
+      for (int p = 0; p < N; p++) {
+        uint32_t c = fxChaseLit(p, el, u.speed) ? _scale(u.color, envB) : 0x000000;
+        neoStrips[hp].setPixelColor((uint16_t)(p + 1), c);
+      }
+      neoStrips[hp].show();
+      break;
+    }
+
+    case CE_WIPE: {                                     // ping-pong fill wipe around the ring, center off
+      int N = NEO_JEWEL_LEDS - 1;                         // ring positions (center excluded)
+      uint32_t el = now - u.startMs;
+      neoStrips[hp].setPixelColor(0, 0x000000);           // center off
+      for (int p = 0; p < N; p++) {
+        uint32_t c = fxWipeLit(p, el, u.speed, N) ? _scale(u.color, envB) : 0x000000;
+        neoStrips[hp].setPixelColor((uint16_t)(p + 1), c);
+      }
+      neoStrips[hp].show();
+      break;
+    }
+
+    case CE_GRADIENT: {                                 // hue gradient across the ring, center off
+      int N = NEO_JEWEL_LEDS - 1;                         // ring positions (center excluded)
+      uint32_t el = now - u.startMs;
+      neoStrips[hp].setPixelColor(0, 0x000000);           // center off
+      for (int p = 0; p < N; p++) {
+        uint8_t hue = fxGradientHue(p, N, 0, el, u.speed); // base hue 0, color-independent (like rainbow)
+        RGB c = fxHsv2rgb(hue, 255, envB);
+        uint32_t packed = ((uint32_t)c.r << 16) | ((uint32_t)c.g << 8) | (uint32_t)c.b;
+        neoStrips[hp].setPixelColor((uint16_t)(p + 1), packed);
+      }
+      neoStrips[hp].show();
+      break;
+    }
+
+    case CE_COLORCYCLE: {                               // whole-jewel hue rotation (color-independent)
+      RGB c = fxHsv2rgb(fxCycleHue(0, now - u.startMs, u.speed), 255, envB);
+      uint32_t packed = ((uint32_t)c.r << 16) | ((uint32_t)c.g << 8) | (uint32_t)c.b;
+      _fillShow(hp, packed);
+      break;
+    }
+
+    case CE_TWINKLE: {                                  // per-px hashed triangle twinkle, whole jewel
+      for (uint16_t i = 0; i < NEO_JEWEL_LEDS; i++) {
+        uint8_t tb = fxTwinkleBright((int)i, now, u.speed);
+        uint8_t v = (uint8_t)(((uint16_t)envB * tb) / 255);
+        neoStrips[hp].setPixelColor(i, _scale(u.color, v));
+      }
+      neoStrips[hp].show();
+      break;
+    }
+
     case CE_SOLID:
     default:
       if (u.lastEnvBright != (int)envB) { _fillShow(hp, _scale(u.color, envB)); u.lastEnvBright = (int)envB; }
