@@ -1,0 +1,5 @@
+.pio/
+build/
+*.hex
+*.o
+.DS_Store
