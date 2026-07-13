@@ -205,9 +205,15 @@ bash test/host/run.sh
 # [2/2] ContractFlthy.h firmware type-check
 ```
 
-The firmware itself builds with PlatformIO for the Arduino Mega ADK, exactly as the original does.
-See [README_C2B5.md](README_C2B5.md) for the build commands and the native command reference, and
-Ryan's repo for the real documentation.
+Heads up: there is no `platformio.ini` in this tree. The PlatformIO layout (`src/` + `include/`) came
+from the droid-side working collection this was seeded from, not from Ryan — upstream FlthyHPs is a
+flat Arduino sketch, not a PlatformIO project. To build the firmware you will need to supply your own
+project file (board `megaADK`, framework `arduino`, deps Adafruit NeoPixel + Adafruit PWM Servo
+Driver, with the bundled `lib/Servos`) or copy the sources back into an Arduino sketch folder. The
+build commands in [README_C2B5.md](README_C2B5.md) assume a `platformio.ini` that is not here, so
+they will not work as written.
+
+For the original firmware and the real documentation, go to Ryan's repo.
 
 Remember: a green host suite proves nothing about hardware. See the warning above.
 
