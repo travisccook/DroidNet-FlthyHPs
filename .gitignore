@@ -3,3 +3,8 @@ build/
 *.hex
 *.o
 .DS_Store
+
+# Ryan Sondgeroth's FlthyHPs manual. We do not redistribute it — get it from
+# https://github.com/ryan-sondgeroth/FlthyHPs. Ignored so a local copy is never
+# committed back into this fork.
+FlthyHPsManual*.pdf
