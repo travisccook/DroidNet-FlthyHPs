@@ -188,7 +188,7 @@ purpose:
 - one boot-time snapshot (`startEnableTwitchHP[]`) mirroring the existing `startEnableTwitchLED[]`,
   so show mode can restore what it found.
 
-`git diff <baseline>..HEAD --stat` says 2,800 insertions across 15 files. Only 1,645 of those
+`git diff 5385a7c..HEAD --stat` says 2,806 insertions across 14 files. Only 1,645 of those
 lines are code we wrote — the seven files listed above; the rest is the GPL-3.0 license text we
 added for Graham's library, the READMEs, and this notice. Ryan's firmware is the rest of the
 repository.
