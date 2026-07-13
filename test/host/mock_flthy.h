@@ -46,9 +46,14 @@ struct _MockSerial {
 } Serial;
 
 // ---- Adafruit_NeoPixel surface (only what the fork calls) ----
+// Records the staged pixels and the last LATCHED frame (show()) so a host guard can
+// assert on what the jewel would actually display, not just on internal fork state.
 struct Adafruit_NeoPixel {
-  void setPixelColor(uint16_t, uint32_t) {}
-  void show() {}
+  uint32_t staged[NEO_JEWEL_LEDS] = {0};     // written by setPixelColor()
+  uint32_t shown[NEO_JEWEL_LEDS]  = {0};     // snapshot at the last show()
+  int      showCount = 0;
+  void setPixelColor(uint16_t i, uint32_t c) { if (i < NEO_JEWEL_LEDS) staged[i] = c; }
+  void show() { memcpy(shown, staged, sizeof(staged)); showCount++; }
   void setBrightness(uint8_t) {}
 };
 static Adafruit_NeoPixel neoStrips[HPCOUNT];

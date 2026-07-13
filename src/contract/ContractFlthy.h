@@ -60,6 +60,9 @@ struct FlthyUnit {
   uint8_t        accentMode = 0;          // am
   uint32_t       durMs    = 0;            // d (0 = hold until changed)
   uint32_t       startMs  = 0;            // millis() at apply
+  // Phase-2 section span (beats), for the am=3 "build" ramp. Equal => no span known
+  // (a live, unscored cue), which reads as progress 0 — same as the Logics/PSIs.
+  int32_t        sectionStart = 0, sectionEnd = 0;
   uint8_t        level    = 0;            // last verb-L value (meter substitute)
   int            lastEnvBright = -1;      // force-repaint on envelope change (fork spec §9)
   // scan/sparkle self-throttle
@@ -134,10 +137,16 @@ static inline uint32_t _wheel(uint8_t pos, uint8_t bri) {
 // Level math lives in contract_core's envBright() — the SHARED envelope all three
 // boards render through (b= is the ceiling, m= is the dip depth). Do not reintroduce
 // a board-local floor here: it desyncs the HPs from the Logics/PSIs on every cue.
-static inline uint8_t _envBright(const FlthyUnit& u) {
+static inline uint8_t _envBright(uint8_t hp) {
+  const FlthyUnit& u = gUnit[hp];
   if (!gBeat.running || u.beatMod == 0 || u.accentMode == 0) return u.brightBase;
   BeatPos bp = beatPosAt(gBeat, millis());
-  uint8_t accent = beatAccentAmount(u.accentMode, bp, u.beatMod, 1.0f);   // am=3 build -> full (deferred, §9)
+  // am=3 (build) ramps across the section; the span is only known while a scored
+  // section is active, so a stale span from a finished show can't leak in here.
+  float prog = 0.0f;
+  if (gScoreActive[hp] >= 0 && u.sectionEnd > u.sectionStart)
+    prog = (float)(bp.beatIndex - u.sectionStart) / (float)(u.sectionEnd - u.sectionStart);
+  uint8_t accent = beatAccentAmount(u.accentMode, bp, u.beatMod, prog);
   return envBright(u.brightBase, u.beatMod, accent);
 }
 
@@ -165,7 +174,7 @@ inline void contractRenderHP(uint8_t hp) {
     u.lastEnvBright = -1;           // force a base repaint
   }
 
-  uint8_t envB = _envBright(u);
+  uint8_t envB = _envBright(hp);
 
   switch (u.effect) {
     case CE_OFF:
@@ -490,6 +499,11 @@ inline void contractBeatTick() {
     int idx = scoreActiveIndex(gScore[hp], gScoreCount[hp], bp.beatIndex);
     if (idx >= 0 && idx != gScoreActive[hp]) {
       gScoreActive[hp] = idx;
+      // span of this section, for the am=3 build ramp (mirrors ContractLogics.h:308-309);
+      // the last section gets a long tail so its span is never zero-width.
+      gUnit[hp].sectionStart = gScore[hp][idx].atBeat;
+      gUnit[hp].sectionEnd   = (idx + 1 < gScoreCount[hp]) ? gScore[hp][idx + 1].atBeat
+                                                           : (gScore[hp][idx].atBeat + 9999);
       _applyScore(hp, gScore[hp][idx]);
     }
   }

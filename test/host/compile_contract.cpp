@@ -155,6 +155,53 @@ int main() {
     if (contractParse("**X", q)) applyContract(q);                            // leave a clean slate
   }
 
+  // I5 guard (BEHAVIORAL): an am=3 ("build") section must actually RAMP across its span.
+  // _envBright() passed a hardcoded sectionProgress = 1.0f to beatAccentAmount(), so every
+  // build frame returned FULL accent: the jewel sat pinned at the b= ceiling for the whole
+  // section instead of swelling into the next one. The span now comes from the active score
+  // entry (gUnit[hp].sectionStart/.sectionEnd, set in contractBeatTick()).
+  // Score two 16-beat sections at 120 BPM (500 ms/beat) and read the LATCHED pixel a hair
+  // after a downbeat 1/4 and 3/4 of the way through the first one: same barPos, same phase,
+  // so section progress is the ONLY thing that differs. With c=0000FF the blue channel of
+  // the shown pixel IS the envelope brightness (_scale: 255*envB/255).
+  {
+    ParsedContract q;
+    if (contractParse("**X", q)) applyContract(q);                       // clean slate
+    uint32_t t0 = _mock_millis;                                          // clock anchors here
+    if (contractParse("**C:bpm=120,ph=0,bpb=4,beat=0", q)) applyContract(q);
+    if (contractParse("HFA:i=solid,c=0000FF,at=0,am=3,m=255", q))  applyContract(q);
+    if (contractParse("HFA:i=solid,c=00FF00,at=16,am=3,m=255", q)) applyContract(q);
+
+    auto renderedBright = [&](int beat) -> uint8_t {
+      _mock_millis = t0 + (uint32_t)beat * 500u + 10u;                   // just past the downbeat
+      contractBeatTick();                                                // section switch + span
+      contractRenderHP(0);
+      return (uint8_t)(neoStrips[0].shown[0] & 0xFFu);                   // blue == envelope level
+    };
+    uint8_t early = renderedBright(4);    // beat  4 of [0,16) -> section progress 0.25
+    uint8_t late  = renderedBright(12);   // beat 12 of [0,16) -> section progress 0.75
+    uint8_t ceil_ = gUnit[0].brightBase;  // b= ceiling: full accent renders exactly here
+
+    if (early >= ceil_ && late >= ceil_) {
+      printf("FAIL: am=3 BUILD section is pinned at FULL accent for its whole span "
+             "(early=%u late=%u, b=%u) — sectionProgress is not being derived, so the "
+             "build never ramps\n", (unsigned)early, (unsigned)late, (unsigned)ceil_);
+      return 1;
+    }
+    if (early == 0 && late == 0) {
+      printf("FAIL: am=3 BUILD section is parked at the envelope floor (early=%u late=%u) "
+             "— sectionProgress is stuck at 0\n", (unsigned)early, (unsigned)late);
+      return 1;
+    }
+    if (late < early + 24) {
+      printf("FAIL: am=3 BUILD does not ramp across the section (early=%u late=%u) — late "
+             "must be meaningfully brighter than early\n", (unsigned)early, (unsigned)late);
+      return 1;
+    }
+    _mock_millis = t0;
+    if (contractParse("**X", q)) applyContract(q);                       // leave a clean slate
+  }
+
   // Minor guard: the verb-Q ack must echo the unit that answered. It hardcoded 'f', so
   // !HRQ and !HTQ both replied "!Hfq:..." and a host could not tell which HP responded.
   {
@@ -175,6 +222,7 @@ int main() {
     if (Serial.last[0] != 0) { printf("FAIL: Flthy answered a broadcast Q (\"%s\")\n", Serial.last); return 1; }
   }
 
-  printf("ContractFlthy.h type-check + score-native / servo-twitch / score-clear / Q-unit guards OK\n");
+  printf("ContractFlthy.h type-check + score-native / servo-twitch / score-clear / "
+         "build-ramp / Q-unit guards OK\n");
   return 0;
 }
