@@ -572,6 +572,12 @@ unsigned long LEDHaltTime[HPCOUNT];
 unsigned long HPHaltTime[HPCOUNT];   
 
 const byte startEnableTwitchLED[HPCOUNT] = {enableTwitchLED[0],enableTwitchLED[1],enableTwitchLED[2]};
+// DroidNet: boot snapshot of the SERVO auto-twitch config, mirroring startEnableTwitchLED
+// above. The contract fork's show-mode interlock disables enableTwitchHP[] (LED-only, it
+// must never drive a holoprojector servo); idle restores from the fork's saved state, which
+// is seeded from this snapshot (ContractFlthy.h) so idle can never force a servo back on
+// that the operator had off. Native behavior does not read this.
+const boolean startEnableTwitchHP[HPCOUNT] = {enableTwitchHP[0],enableTwitchHP[1],enableTwitchHP[2]};
 
 unsigned long ledtimer = 0;      
 

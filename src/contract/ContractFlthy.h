@@ -13,6 +13,7 @@
 //   byte    enableTwitchLED[HPCOUNT];                  // main.cpp:315
 //   boolean enableTwitchHP[HPCOUNT];                   // main.cpp:335
 //   const byte startEnableTwitchLED[HPCOUNT];          // main.cpp:574
+//   const boolean startEnableTwitchHP[HPCOUNT];        // main.cpp:575 (DroidNet, added w/ the fork)
 //   boolean offcoloroverride[HPCOUNT];                 // main.cpp:619
 //   void ledOFF(byte);                                 // main.cpp:1205
 //   void varResets(byte);                              // main.cpp:1460
@@ -73,6 +74,21 @@ struct FlthyUnit {
 static FlthyUnit  gUnit[HPCOUNT];
 static BeatClock  gBeat;
 static bool       gShowMode = false;
+
+// ------------------------------------------- show-mode interlock save-state ---
+// Show mode takes native autonomy away from a unit (it disables the native auto-twitch
+// so the jewel is ours and, critically, so the HOLOPROJECTOR SERVO never moves — this
+// fork is LED-ONLY, §11). Idle must put back EXACTLY what show took and NOTHING ELSE:
+//   * gInterlocked[hp] gates the restore, so an idle that never followed a show cannot
+//     touch the operator's settings at all (a bare !H*M:v=idle is a no-op on them).
+//   * gSavedTwitchHP[hp] holds the servo-twitch flag observed at show entry, seeded from
+//     the boot config startEnableTwitchHP[] (main.cpp:575). NEVER write `true` here from
+//     a literal: enableTwitchHP drives a PHYSICAL actuator and the operator may have
+//     turned it off in the sketch config or at runtime (native servo cmd 98, main.cpp:984).
+static bool    gInterlocked[HPCOUNT]  = {false, false, false};
+static boolean gSavedTwitchHP[HPCOUNT] = {startEnableTwitchHP[0],
+                                          startEnableTwitchHP[1],
+                                          startEnableTwitchHP[2]};
 
 // Phase-2 score (per unit, sorted asc by atBeat via contract_core scoreInsert)
 static ScoreEntry gScore[HPCOUNT][FLTHY_SCORE_CAP];
@@ -407,6 +423,10 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
 
     case CV_MODE:
       if (pr.mode == 's') {                            // show: LED-only interlock
+        if (!gInterlocked[hp]) {                       // snapshot what we are about to take (once)
+          gSavedTwitchHP[hp] = enableTwitchHP[hp];
+          gInterlocked[hp]   = true;
+        }
         gShowMode = true;
         enableTwitchLED[hp] = 0;                       // no auto LED twitch (main.cpp:968)
         enableTwitchHP[hp]  = false;                   // no auto SERVO twitch (main.cpp:1001) -> LED-only
@@ -416,7 +436,10 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
       } else if (pr.mode == 'i') {                     // idle: restore native autonomy
         gShowMode = false;
         enableTwitchLED[hp] = startEnableTwitchLED[hp];// (main.cpp:574)
-        enableTwitchHP[hp]  = true;
+        if (gInterlocked[hp]) {                        // ONLY undo what show actually took
+          enableTwitchHP[hp] = gSavedTwitchHP[hp];     // NEVER a literal true: this moves a servo
+          gInterlocked[hp]   = false;
+        }
         u.active = false; u.pulseActive = false;
         LED_command[hp].LEDFunction = 0;
       }

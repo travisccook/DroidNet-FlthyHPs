@@ -3,7 +3,8 @@
 // mirror src/main.cpp / Adafruit_NeoPixel as verified 2026-07-12:
 //   Adafruit_NeoPixel::{setPixelColor(uint16_t,uint32_t),show(),setBrightness(uint8_t)}
 //   neoStrips[HPCOUNT] (main.cpp:667); LED_command[HPCOUNT].LEDFunction (main.cpp:608)
-//   enableTwitchLED/enableTwitchHP/startEnableTwitchLED/offcoloroverride (315/335/574/619)
+//   enableTwitchLED/enableTwitchHP/startEnableTwitchLED/startEnableTwitchHP/offcoloroverride
+//     (315/335/574/575/619)
 //   ledOFF(byte) (1205), varResets(byte) (1460); millis/random/map/Serial (Arduino core)
 #pragma once
 #include <stdint.h>
@@ -52,6 +53,7 @@ static LEDCmd  LED_command[HPCOUNT];
 static byte    enableTwitchLED[HPCOUNT]      = {1, 2, 2};
 static boolean enableTwitchHP[HPCOUNT]       = {true, true, true};
 static const byte startEnableTwitchLED[HPCOUNT] = {1, 2, 2};
+static const boolean startEnableTwitchHP[HPCOUNT] = {true, true, true};   // main.cpp:575
 static boolean offcoloroverride[HPCOUNT]     = {false, false, false};
 
 // ---- board effect primitives the fork calls ----

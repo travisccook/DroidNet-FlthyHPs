@@ -63,6 +63,30 @@ int main() {
     }
   }
 
-  printf("ContractFlthy.h type-check + score-native guard OK\n");
+  // I4 guard (PHYSICAL): the contract must NEVER force-enable the native HP SERVO twitch.
+  // enableTwitchHP[] moves a holoprojector servo; this fork is LED-ONLY (§11) and the idle
+  // branch used to write a literal `true`, silently re-enabling servo motion the operator
+  // had turned off (in the sketch config or via native servo cmd 98) until the next reboot.
+  // Contract: show may take the flag away, idle may only put back EXACTLY what show took,
+  // and an idle that never followed a show must not touch it at all.
+  {
+    ParsedContract q;
+    enableTwitchHP[0] = false;                    // operator has the FRONT servo twitch OFF
+    if (contractParse("HFM:v=idle", q)) applyContract(q);
+    if (enableTwitchHP[0]) { printf("FAIL: Flthy idle force-enabled the HP servo twitch (no prior show)\n"); return 1; }
+
+    if (contractParse("HFM:v=show", q)) applyContract(q);
+    if (enableTwitchHP[0]) { printf("FAIL: Flthy show must disable the HP servo twitch (LED-only)\n"); return 1; }
+    if (contractParse("HFM:v=idle", q)) applyContract(q);
+    if (enableTwitchHP[0]) { printf("FAIL: Flthy idle re-enabled a servo twitch the operator disabled\n"); return 1; }
+
+    enableTwitchHP[1] = true;                     // operator has the REAR servo twitch ON
+    if (contractParse("HRM:v=show", q)) applyContract(q);
+    if (enableTwitchHP[1]) { printf("FAIL: Flthy show must disable the HP servo twitch (LED-only)\n"); return 1; }
+    if (contractParse("HRM:v=idle", q)) applyContract(q);
+    if (!enableTwitchHP[1]) { printf("FAIL: Flthy idle did not restore the operator's HP servo twitch\n"); return 1; }
+  }
+
+  printf("ContractFlthy.h type-check + score-native guard + servo-twitch guard OK\n");
   return 0;
 }
