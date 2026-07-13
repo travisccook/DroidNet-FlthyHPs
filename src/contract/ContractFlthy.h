@@ -33,10 +33,18 @@
 // effect writes 0xRRGGBB pre-scaled by a per-write brightness multiplier (never
 // setBrightness, which only re-scales at show() — fork spec §9). The per-unit look
 // renders through LED_command[hp].LEDFunction = 100 + effectId (cases 101..115,
-// added to the render switch); verb P layers a full-field pulse OVER the base and
+// added to the render switch); an ACCENT layers a second look OVER the base and
 // auto-restores on ms-expiry (never ledOFF / never flushCommandArray — the native
 // flush-to-black). A Studio-seeded beat-clock (verb C) drives an accent envelope,
 // and the Phase-2 score (verb A + at=) switches sections on-beat, board-side.
+//
+// CONTRACT v1.2 — the accent is ONE primitive (_fireAccent) with TWO triggers:
+//   * verb P                — live, the Pi mirrors the show beat by beat (Phase 1);
+//   * the board's beat edge — the active scored section's ae=/ac=/ad=, fired by
+//                             contractBeatTick() with the Pi SILENT (Phase 2).
+// Both render through _renderLook(), so a delivered blueprint and a live-mirrored show
+// fire the same effect-swap accent on top of the same brightness pump. A score entry
+// with no ae= can never arm the overlay: it behaves exactly as it did in v1.1.
 #pragma once
 #include "contract_core.h"
 #include <stdio.h>          // snprintf (verb Q ack line)
@@ -75,13 +83,24 @@ struct FlthyUnit {
   // scan/sparkle self-throttle
   uint32_t       frameMs  = 0;
   uint8_t        frame    = 0;
-  // verb P overlay (layers over the base look; never flushes to black)
+  // Accent overlay — ONE primitive, TWO triggers (contract v1.2):
+  //   * live  (Phase 1): verb P, carrying the overlay in i=/c=/d=;
+  //   * score (Phase 2): the board's own beat edge, carrying it in the active section's
+  //     ae=/ac=/ad=, so a DELIVERED blueprint fires the same effect-swap accent a
+  //     MIRRORED show gets from the Pi. Both go through _fireAccent().
+  // It LAYERS over the base look and auto-restores on ms-expiry (never flushes to black).
   bool           pulseActive = false;
+  ContractEffect pulseFx     = CE_NONE;   // v1.2: which effect the overlay renders.
+                                          // CE_NONE == the v1.1 wire shape (a verb P with no
+                                          // i=) and still means a solid full-field fill.
   RGB            pulseColor{255, 255, 255};
   uint8_t        pulseBright  = FLTHY_SAFE_MAX_BRIGHT;
   uint32_t       pulseStartMs = 0;
   uint32_t       pulseDurMs   = 0;
   uint32_t       pulseLastMs  = 0;        // strobe cool-down anchor
+  // Once-per-beat guard for the board-side (Phase-2) accent. BEAT_NONE = "no beat accented
+  // yet"; every show boundary resets it, so a new show can never inherit a stale edge.
+  int32_t        lastAccentBeat = BEAT_NONE;
 };
 
 static FlthyUnit  gUnit[HPCOUNT];
@@ -158,32 +177,23 @@ static inline uint8_t _envBright(uint8_t hp) {
 }
 
 // --------------------------------------------------- the single render fn -----
-// Called from the LED render switch (cases 101..115) once per loop for unit hp.
-inline void contractRenderHP(uint8_t hp) {
+// Render ONE look for unit hp. The BASE look and the ACCENT OVERLAY (verb P, or the
+// board-side beat edge) both render through this one switch — so the accent's effect
+// vocabulary costs ZERO extra flash and can never drift from the base look's.
+// Only the four inputs differ between the two callers:
+//   base    : (u.effect,  u.color,      _envBright(hp)  — beat-pumped, u.startMs)
+//   overlay : (u.pulseFx, u.pulseColor, u.pulseBright   — the un-pumped CEILING,
+//              u.pulseStartMs — the overlay owns its own time origin)
+// speed/level/frame counters always come from the unit (an overlay never owns them, which
+// is exactly why the STATEFUL effects — scan/sparkle/meter — are barred from ae= in
+// contract_core's accentEffectAllowed(): a 180 ms swap-and-restore would corrupt the base
+// look's state machine mid-song).
+static inline void _renderLook(uint8_t hp, ContractEffect eff, const RGB& color,
+                               uint8_t envB, uint32_t startMs) {
   FlthyUnit& u = gUnit[hp];
   uint32_t now = millis();
 
-  // ms-duration revert (true sub-second holds; parallels the native seconds pipe)
-  if (u.active && u.durMs > 0 && (uint32_t)(now - u.startMs) >= u.durMs) {
-    u.active = false;
-    u.effect = CE_OFF;
-    LED_command[hp].LEDFunction = _fxCode(CE_OFF);
-    u.lastEnvBright = -1;
-  }
-
-  // verb-P overlay: layer a solid pulse over the base, auto-restore on expiry.
-  if (u.pulseActive) {
-    if ((uint32_t)(now - u.pulseStartMs) < u.pulseDurMs) {
-      _fillShow(hp, _scale(u.pulseColor, u.pulseBright));
-      return;
-    }
-    u.pulseActive  = false;         // pulse done -> restore base look next
-    u.lastEnvBright = -1;           // force a base repaint
-  }
-
-  uint8_t envB = _envBright(hp);
-
-  switch (u.effect) {
+  switch (eff) {
     case CE_OFF:
       if (u.lastEnvBright != 0) { _fillShow(hp, 0x000000); u.lastEnvBright = 0; }
       break;
@@ -191,26 +201,28 @@ inline void contractRenderHP(uint8_t hp) {
     case CE_FLASH: {                                   // strobe-capped toggle
       uint32_t half = (uint32_t)map((long)u.speed, 0, 255, 700, (long)FLTHY_STROBE_MIN_MS);
       if (half < FLTHY_STROBE_MIN_MS) half = FLTHY_STROBE_MIN_MS;
-      bool on = ((now - u.startMs) % (2 * half)) < half;
-      _fillShow(hp, on ? _scale(u.color, envB) : 0x000000);
+      bool on = ((now - startMs) % (2 * half)) < half;
+      // envB (NOT the raw ceiling): CE_FLASH beat-pumps like every other sustained look.
+      // The Logics' CE_FLASH was aligned TO this line.
+      _fillShow(hp, on ? _scale(color, envB) : 0x000000);
       break;
     }
 
     case CE_PULSE: {                                   // triangle breathe, peak = brightest
       uint32_t period = (uint32_t)map((long)u.speed, 0, 255, 2000, 240);
       if (period < 2) period = 2;
-      uint32_t ph = (now - u.startMs) % period;
+      uint32_t ph = (now - startMs) % period;
       uint32_t tri = (ph < period / 2) ? (ph * 2 * 255 / period)
                                        : ((period - ph) * 2 * 255 / period);
       uint8_t br = (uint8_t)((uint16_t)envB * (uint16_t)tri / 255);
-      _fillShow(hp, _scale(u.color, br));
+      _fillShow(hp, _scale(color, br));
       break;
     }
 
     case CE_RAINBOW: {                                 // color ignored (contract §6)
       uint32_t step = (uint32_t)map((long)u.speed, 0, 255, 40, 8);
       if (step < 1) step = 1;
-      uint8_t base = (uint8_t)(((now - u.startMs) / step) & 255);
+      uint8_t base = (uint8_t)(((now - startMs) / step) & 255);
       for (uint16_t i = 0; i < NEO_JEWEL_LEDS; i++)
         neoStrips[hp].setPixelColor(i, _wheel((uint8_t)((i * 256 / NEO_JEWEL_LEDS) + base), envB));
       neoStrips[hp].show();
@@ -225,7 +237,7 @@ inline void contractRenderHP(uint8_t hp) {
         if (u.frame >= NEO_JEWEL_LEDS) u.frame = 1;
         if (u.frame < 1) u.frame = 1;
         for (uint16_t i = 1; i < NEO_JEWEL_LEDS; i++)
-          neoStrips[hp].setPixelColor(i, (i == u.frame) ? _scale(u.color, envB) : 0x000000);
+          neoStrips[hp].setPixelColor(i, (i == u.frame) ? _scale(color, envB) : 0x000000);
         neoStrips[hp].show();
         u.frame++;
       }
@@ -239,7 +251,7 @@ inline void contractRenderHP(uint8_t hp) {
         for (uint16_t i = 0; i < NEO_JEWEL_LEDS; i++) {
           long roll = random(0, 4);                    // 1/4 dark, else varied brightness
           uint8_t b = (roll == 0) ? 0 : (uint8_t)((uint16_t)envB * (uint16_t)random(96, 256) / 255);
-          neoStrips[hp].setPixelColor(i, _scale(u.color, b));
+          neoStrips[hp].setPixelColor(i, _scale(color, b));
         }
         neoStrips[hp].show();
       }
@@ -248,18 +260,18 @@ inline void contractRenderHP(uint8_t hp) {
 
     case CE_METER: {                                   // no VU on HP: solid @ level (fork spec §6/§8)
       uint8_t br = (uint8_t)((uint16_t)envB * (uint16_t)u.level / 255);
-      if (u.lastEnvBright != (int)br) { _fillShow(hp, _scale(u.color, br)); u.lastEnvBright = (int)br; }
+      if (u.lastEnvBright != (int)br) { _fillShow(hp, _scale(color, br)); u.lastEnvBright = (int)br; }
       break;
     }
 
     case CE_COMET: {                                   // comet trail around the 6-jewel ring, center off
       int N = NEO_JEWEL_LEDS - 1;                       // ring positions (center excluded)
-      int head = fxHead(now - u.startMs, u.speed, N);
+      int head = fxHead(now - startMs, u.speed, N);
       neoStrips[hp].setPixelColor(0, 0x000000);         // center off
       for (int p = 0; p < N; p++) {
         uint8_t cb = fxCometBright(p, head, N);
         uint8_t v = (uint8_t)(((uint16_t)envB * cb) / 255);
-        neoStrips[hp].setPixelColor((uint16_t)(p + 1), _scale(u.color, v));
+        neoStrips[hp].setPixelColor((uint16_t)(p + 1), _scale(color, v));
       }
       neoStrips[hp].show();
       break;
@@ -267,10 +279,10 @@ inline void contractRenderHP(uint8_t hp) {
 
     case CE_CHASE: {                                    // marquee chase around the ring, center off
       int N = NEO_JEWEL_LEDS - 1;                         // ring positions (center excluded)
-      uint32_t el = now - u.startMs;
+      uint32_t el = now - startMs;
       neoStrips[hp].setPixelColor(0, 0x000000);           // center off
       for (int p = 0; p < N; p++) {
-        uint32_t c = fxChaseLit(p, el, u.speed) ? _scale(u.color, envB) : 0x000000;
+        uint32_t c = fxChaseLit(p, el, u.speed) ? _scale(color, envB) : 0x000000;
         neoStrips[hp].setPixelColor((uint16_t)(p + 1), c);
       }
       neoStrips[hp].show();
@@ -279,10 +291,10 @@ inline void contractRenderHP(uint8_t hp) {
 
     case CE_WIPE: {                                     // ping-pong fill wipe around the ring, center off
       int N = NEO_JEWEL_LEDS - 1;                         // ring positions (center excluded)
-      uint32_t el = now - u.startMs;
+      uint32_t el = now - startMs;
       neoStrips[hp].setPixelColor(0, 0x000000);           // center off
       for (int p = 0; p < N; p++) {
-        uint32_t c = fxWipeLit(p, el, u.speed, N) ? _scale(u.color, envB) : 0x000000;
+        uint32_t c = fxWipeLit(p, el, u.speed, N) ? _scale(color, envB) : 0x000000;
         neoStrips[hp].setPixelColor((uint16_t)(p + 1), c);
       }
       neoStrips[hp].show();
@@ -291,7 +303,7 @@ inline void contractRenderHP(uint8_t hp) {
 
     case CE_GRADIENT: {                                 // hue gradient across the ring, center off
       int N = NEO_JEWEL_LEDS - 1;                         // ring positions (center excluded)
-      uint32_t el = now - u.startMs;
+      uint32_t el = now - startMs;
       neoStrips[hp].setPixelColor(0, 0x000000);           // center off
       for (int p = 0; p < N; p++) {
         uint8_t hue = fxGradientHue(p, N, 0, el, u.speed); // base hue 0, color-independent (like rainbow)
@@ -304,7 +316,7 @@ inline void contractRenderHP(uint8_t hp) {
     }
 
     case CE_COLORCYCLE: {                               // whole-jewel hue rotation (color-independent)
-      RGB c = fxHsv2rgb(fxCycleHue(0, now - u.startMs, u.speed), 255, envB);
+      RGB c = fxHsv2rgb(fxCycleHue(0, now - startMs, u.speed), 255, envB);
       uint32_t packed = ((uint32_t)c.r << 16) | ((uint32_t)c.g << 8) | (uint32_t)c.b;
       _fillShow(hp, packed);
       break;
@@ -314,7 +326,7 @@ inline void contractRenderHP(uint8_t hp) {
       for (uint16_t i = 0; i < NEO_JEWEL_LEDS; i++) {
         uint8_t tb = fxTwinkleBright((int)i, now, u.speed);
         uint8_t v = (uint8_t)(((uint16_t)envB * tb) / 255);
-        neoStrips[hp].setPixelColor(i, _scale(u.color, v));
+        neoStrips[hp].setPixelColor(i, _scale(color, v));
       }
       neoStrips[hp].show();
       break;
@@ -322,9 +334,86 @@ inline void contractRenderHP(uint8_t hp) {
 
     case CE_SOLID:
     default:
-      if (u.lastEnvBright != (int)envB) { _fillShow(hp, _scale(u.color, envB)); u.lastEnvBright = (int)envB; }
+      if (u.lastEnvBright != (int)envB) { _fillShow(hp, _scale(color, envB)); u.lastEnvBright = (int)envB; }
       break;
   }
+}
+
+// Called from the LED render switch (cases 101..115) once per loop for unit hp.
+inline void contractRenderHP(uint8_t hp) {
+  FlthyUnit& u = gUnit[hp];
+  uint32_t now = millis();
+
+  // ms-duration revert (true sub-second holds; parallels the native seconds pipe)
+  if (u.active && u.durMs > 0 && (uint32_t)(now - u.startMs) >= u.durMs) {
+    u.active = false;
+    u.effect = CE_OFF;
+    LED_command[hp].LEDFunction = _fxCode(CE_OFF);
+    u.lastEnvBright = -1;
+  }
+
+  // Accent overlay: LAYER it over the base look, auto-restore on ms-expiry.
+  // v1.2: it now renders a full EFFECT (pulseFx), not only a solid fill. pulseFx == CE_NONE
+  // is the v1.1 wire shape (a verb P with no i=) and takes the CE_SOLID branch, which with
+  // the forced repaint below is byte-for-byte the old
+  //   _fillShow(hp, _scale(u.pulseColor, u.pulseBright));
+  // The overlay rides the unit's brightness CEILING un-pumped (an accent must not dip with
+  // the envelope it exists to punctuate) and starts its own timeline at pulseStartMs.
+  if (u.pulseActive) {
+    if ((uint32_t)(now - u.pulseStartMs) < u.pulseDurMs) {
+      u.lastEnvBright = -1;              // the MEMOISING branches (off/meter/solid) skip a
+                                         // repaint when the level is unchanged — without this
+                                         // the accent would never actually be drawn over a
+                                         // same-level base look
+      _renderLook(hp, (u.pulseFx == CE_NONE) ? CE_SOLID : u.pulseFx,
+                  u.pulseColor, u.pulseBright, u.pulseStartMs);
+      return;
+    }
+    u.pulseActive   = false;             // accent done -> restore the base look next
+    u.lastEnvBright = -1;                // force a base repaint
+  }
+
+  _renderLook(hp, u.effect, u.color, _envBright(hp), u.startMs);
+}
+
+// ------------------------------------------------ the ONE accent-overlay path ---
+// BOTH triggers land here: verb P (Phase-1 — the Pi mirrors the show live) and the board's
+// own beat edge (Phase-2 — the board plays a delivered blueprint with the Pi silent). One
+// primitive, two triggers => a mirrored show and a delivered one fire the SAME accent.
+//
+// LED-ONLY INVARIANT (fork README §11): this NEVER writes HP_command[*] and NEVER calls
+// positionHP / twitchHP / wagHP / RCHP / flushCommandArray, so no holoprojector SERVO can
+// move because of an accent. The ONLY board global it touches is LED_command[hp].LEDFunction,
+// and only to keep a contract render slot selected (the same guard verb P already used).
+// It also deliberately does NOT go through _applyLook() — that is the only place varResets()
+// runs — so the base look's frame/frameMs counters survive the accent untouched.
+static inline bool _fireAccent(uint8_t hp, ContractEffect fx, const RGB& color,
+                               uint8_t bright, uint32_t durMs) {
+  FlthyUnit& u = gUnit[hp];
+  uint32_t now = millis();
+  // Strobe cool-down: >= 2x the min state between accent STARTS => <= ~2.9 accents/sec,
+  // inside the <= 3 flashes/sec photosensitivity guidance, and matched to the Logics/PSIs.
+  // v1.1 gated on 1x the min state here — with a Phase-2 every-beat accent above ~176 BPM
+  // that would have let the jewels strobe at up to 5.9 Hz, the one board of the three that
+  // could exceed the guidance.
+  if (u.pulseLastMs != 0 && (uint32_t)(now - u.pulseLastMs) < 2 * FLTHY_STROBE_MIN_MS) return false;
+  if (durMs < FLTHY_STROBE_MIN_MS) durMs = FLTHY_STROBE_MIN_MS;   // a state shorter than the
+  if (durMs > 2550u) durMs = 2550u;                               // min state IS a strobe
+  // A stateful/native effect can never become an overlay: it would corrupt the base look's
+  // state machine on restore (scan/sparkle/meter), or hand the frame to a renderer we do not
+  // own so the expiry check never runs and the board LATCHES (native). Same gate the ae=
+  // parser applies — re-asserted here because verb P reaches this straight from the wire's i=.
+  u.pulseFx      = accentEffectAllowed(fx) ? fx : CE_SOLID;
+  u.pulseColor   = color;
+  u.pulseBright  = _clampBright(bright);
+  u.pulseDurMs   = durMs;
+  u.pulseStartMs = now;                              // ALWAYS retrigger (defeats a re-send no-op)
+  u.pulseLastMs  = now;
+  u.pulseActive  = true;
+  u.lastEnvBright = -1;
+  if (LED_command[hp].LEDFunction < 101 || LED_command[hp].LEDFunction > FLTHY_FX_MAX)
+    LED_command[hp].LEDFunction = _fxCode(u.effect);  // ensure a contract render slot runs
+  return true;
 }
 
 // ---------------------------------------------------- apply a look to a unit ---
@@ -371,6 +460,19 @@ static inline ScoreEntry _entryFrom(const ContractParams& pr) {
   e.beatMod    = pr.beatMod;
   e.accentMode = pr.accentMode;
   e.nativeCode = pr.hasEffect ? pr.nativeCode : -1;      // thread native code into the score (parity w/ RSeries)
+  // v1.2 accent overlay. NO ae= on the line => accentFx stays CE_NONE => the beat-edge
+  // trigger bails => a v1.1 entry behaves EXACTLY as it does today (it can never arm the
+  // overlay). accentFx was already allow-gated by the parser (never native, never stateful).
+  if (pr.hasAccentFx) {
+    e.accentFx    = pr.accentFx;
+    // Resolved HERE, not at fire time: the entry deliberately carries no has-flag, so an
+    // absent ac= means the accent inherits the SECTION's colour.
+    e.accentColor = pr.hasAccentColor ? pr.accentColor : e.color;
+    // Stored /10 ms so the entry grows by 1 byte, not 4 (AVR SRAM). ad= is clamped to <=2550
+    // at parse; ad=0..9 would truncate to a zero-length accent, so it reads as the default.
+    e.accentDur10 = (uint8_t)((pr.hasAccentDur ? pr.accentDurMs : 180u) / 10u);
+    if (e.accentDur10 == 0) e.accentDur10 = 18;          // 180 ms
+  }
   return e;
 }
 
@@ -393,6 +495,9 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
         ScoreEntry e = _entryFrom(pr);
         gScoreCount[hp] = scoreInsert(gScore[hp], gScoreCount[hp], FLTHY_SCORE_CAP, e);
         gScoreActive[hp] = -1;                         // re-evaluate on next tick
+        u.lastAccentBeat = BEAT_NONE;                  // a NEW show is loading: never inherit
+                                                       // the last one's beat edge, or its first
+                                                       // accent beat gets swallowed
         return;
       }
       // Phase-1: apply now. Omitting i= patches params of the current look.
@@ -409,21 +514,26 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
     }
 
     case CV_PULSE: {
-      // strobe cool-down: drop pulses arriving faster than ~3 Hz (fork spec §11)
-      if (u.pulseLastMs != 0 && (uint32_t)(now - u.pulseLastMs) < FLTHY_STROBE_MIN_MS) return;
-      u.pulseColor  = pr.hasColor  ? pr.color  : RGB{255, 255, 255};
-      u.pulseBright = _clampBright(pr.hasBright ? pr.bright : FLTHY_SAFE_MAX_BRIGHT);
-      u.pulseDurMs  = pr.hasDur    ? pr.durMs  : 120;
-      u.pulseStartMs = now;                            // ALWAYS retrigger (defeats re-send no-op)
-      u.pulseLastMs  = now;
-      u.pulseActive  = true;
-      if (LED_command[hp].LEDFunction < 101 || LED_command[hp].LEDFunction > FLTHY_FX_MAX)
-        LED_command[hp].LEDFunction = _fxCode(u.effect);   // ensure a contract render slot runs
+      // Phase-1 live accent, from the Pi. v1.2: i= now selects the overlay EFFECT (an i-less
+      // P is still exactly today's solid fill — no v1.1 client ever sent one). Same
+      // _fireAccent() the board-side score edge uses: ONE overlay primitive, two triggers,
+      // so a mirrored show and a delivered blueprint cannot look different.
+      _fireAccent(hp,
+                  pr.hasEffect ? pr.effect : CE_SOLID,
+                  pr.hasColor  ? pr.color  : RGB{255, 255, 255},
+                  pr.hasBright ? pr.bright : u.brightBase,   // the unit's own CEILING, not a
+                                                             // literal 200: an accent must land
+                                                             // at the same level on all 3 boards
+                  pr.hasDur    ? pr.durMs  : 120);           // clamped up to the min state inside
       break;
     }
 
     case CV_CLOCK:                                     // seed/re-anchor the beat-clock
       beatClockSeed(gBeat, pr, now);
+      u.lastAccentBeat = BEAT_NONE;                    // the beat ORIGIN just moved (Studio
+                                                       // re-anchors on every Play/seek), so a
+                                                       // beat index from the OLD timeline must
+                                                       // not gate the new one
       break;
 
     case CV_BRIGHT: {                                  // master volatile ride (never EEPROM)
@@ -440,6 +550,7 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
     case CV_STOP:
       u.active = false; u.pulseActive = false;
       scoreClear(gScoreCount[hp], gScoreActive[hp]);   // forget the show (contract_core)
+      u.lastAccentBeat = BEAT_NONE;                    // show boundary: drop the beat edge too
       ledOFF(hp);                                      // blackout (main.cpp:1205)
       LED_command[hp].LEDFunction = 0;                 // do-nothing
       u.lastEnvBright = -1;
@@ -457,6 +568,8 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
         enableTwitchHP[hp]  = false;                   // no auto SERVO twitch (main.cpp:1001) -> LED-only
         offcoloroverride[hp] = true;                   // off state truly black
         u.active = false; u.pulseActive = false;
+        u.lastAccentBeat = BEAT_NONE;                  // v=show is the FIRST line of Studio's
+                                                       // load burst: a new show starts here
         ledOFF(hp);
       } else if (pr.mode == 'i') {                     // idle: restore native autonomy
         gShowMode = false;
@@ -468,6 +581,7 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
         }
         u.active = false; u.pulseActive = false;
         scoreClear(gScoreCount[hp], gScoreActive[hp]); // the show is over: forget its sections
+        u.lastAccentBeat = BEAT_NONE;                  // ...and its beat edge
         LED_command[hp].LEDFunction = 0;
       }
       break;
@@ -497,7 +611,7 @@ inline void applyContract(const ParsedContract& p) {
   if (p.verb == CV_STOP && all) gBeat.running = false; // !**X also stops the clock
 }
 
-// -------------------------------------------------- beat tick + score switch ---
+// ------------------------------ beat tick + score switch + board-side accent ---
 // Call once per loop(), before the per-hp render block (main.cpp ~916).
 inline void contractBeatTick() {
   if (!gBeat.running) return;
@@ -513,6 +627,31 @@ inline void contractBeatTick() {
                                                            : (gScore[hp][idx].atBeat + 9999);
       _applyScore(hp, gScore[hp][idx]);
     }
+
+    // ---- v1.2: BOARD-SIDE ACCENT SELF-FIRE (Phase 2, the Pi is silent) ----------------
+    // The gap this closes: before v1.2 a DELIVERED blueprint's only beat expression was the
+    // brightness pump (envBright), so it could not fire the effect-swap accent that a LIVE,
+    // Pi-mirrored show got from verb P. Now the board fires the SAME overlay itself, from
+    // the active section's ae=/ac=/ad=. The section switch above runs FIRST on purpose: a
+    // section that starts on a downbeat gets its accent on that very beat.
+    //
+    // ORDER MATTERS. beatEdge() advances the guard UNCONDITIONALLY, so it must be consumed
+    // before any bail-out below — a beat that does NOT accent still has to consume its edge,
+    // or the next tick (still inside the same beat) re-tests and re-fires on every frame,
+    // turning a 180 ms accent into a permanent latch.
+    if (!beatEdge(gUnit[hp].lastAccentBeat, bp.beatIndex)) continue;   // same beat: done
+    int a = gScoreActive[hp];
+    if (a < 0) continue;                                     // no scored section is playing:
+                                                             // a LIVE look never self-accents
+                                                             // (the Pi's verb P owns Phase 1)
+    const ScoreEntry& e = gScore[hp][a];
+    if (e.accentFx == CE_NONE) continue;                     // v1.1 entry: NEVER accents
+    // The SAME predicate the brightness pump gates on (contract_core's beatAccentFires, which
+    // beatAccentAmount() also calls) — so the pump and the effect accent can NEVER disagree
+    // about which beats carry an accent.
+    if (!beatAccentFires(e.accentMode, bp.barPos)) continue;
+    _fireAccent(hp, e.accentFx, e.accentColor, gUnit[hp].brightBase,
+                (uint32_t)e.accentDur10 * 10u);
   }
 }
 

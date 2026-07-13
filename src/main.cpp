@@ -589,7 +589,16 @@ boolean       OEFlag = false;
 ///*****        Command Varaiables, Containers & Flags        *****///
 //////////////////////////////////////////////////////////////////////
 
-#define INPUTBUFFERLEN 80   // DroidNet contract: grown 10->80 (>=64 B floor + headroom, fork spec §5.1)
+// DroidNet contract: grown 10 -> 80 (>=64 B floor + headroom, fork spec §5.1), then
+// 80 -> 96 for contract v1.2. A scored line now also carries the accent overlay
+// (ae=/ac=/ad=), and the worst case is 76 chars + NUL:
+//   !H*A:i=colorcycle,c=3b82f6,at=1234,am=2,m=200,ae=colorcycle,ac=ffffff,ad=250
+// The absolute v1.2 worst case is pinned <= 95 by the shared core's host tests. This
+// buffer TRUNCATES SILENTLY (inputString.toCharArray below) -- a line one byte too long
+// is not an error, it just loses its tail and the board plays a mangled cue. 96 B of the
+// ATmega2560's 8 KB, and at 9600 baud (~1.04 ms/byte) a 96-char line is nowhere near the
+// 64-byte hardware RX ring, which loop() drains every pass.
+#define INPUTBUFFERLEN 96
 #define MAXCOMMANDLENGTH 12
 char inputBuffer[INPUTBUFFERLEN];  
 String inputString = "";                       // a string to hold incoming data

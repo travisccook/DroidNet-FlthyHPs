@@ -24,6 +24,11 @@ typedef bool    boolean;
 
 #define HPCOUNT 3
 #define NEO_JEWEL_LEDS 7
+// Mirrors src/main.cpp's serial line buffer. The fork's '!' lines are parsed out of it and it
+// TRUNCATES SILENTLY, so a v1.2 scored line (base look + at=/am=/m= + the ae=/ac=/ad= accent)
+// that overruns it is a real, invisible bug. run.sh asserts this has not drifted from the
+// firmware's value — the wire-budget guard only means something if the two agree.
+#define INPUTBUFFERLEN 96
 
 // ---- Arduino core stubs ----
 static unsigned long _mock_millis = 0;
@@ -82,3 +87,41 @@ static boolean offcoloroverride[HPCOUNT]     = {false, false, false};
 // ---- board effect primitives the fork calls ----
 inline void ledOFF(byte) {}
 inline void varResets(byte) {}
+
+// ================== SERVO TRIPWIRES — the LED-ONLY invariant ==================
+// This fork promises, in its README and in ContractFlthy.h's header, that the '!' path is
+// LED-EFFECTS-ONLY: it must NEVER move a holoprojector servo. main.cpp reaches the servos
+// exactly two ways — by writing HP_command[] (dispatched in the HP switch at main.cpp:982)
+// and by calling positionHP/twitchHP/wagHP/RCHP directly (main.cpp:1082/1138/1164/1203).
+// flushCommandArray(hp, 1) also clears an HP (servo) command array.
+//
+// So every one of them is mocked here as a TRIPWIRE that bumps _mock_servoTouches. That
+// turns the invariant into something a host guard can ASSERT on and watch go RED, instead of
+// relying on these symbols merely not existing in the mock — which says nothing about a path
+// that compiles fine but fires a servo at RUN time (e.g. the new beat-driven accent).
+static int _mock_servoTouches = 0;
+
+struct _ServoByte {                                  // a byte field of HP_command
+  byte v = 0;
+  _ServoByte& operator=(byte x) { v = x; _mock_servoTouches++; return *this; }
+  operator byte() const { return v; }
+};
+struct _ServoInt {                                   // HP_command's int field (HPHalt)
+  int v = -1;
+  _ServoInt& operator=(int x) { v = x; _mock_servoTouches++; return *this; }
+  operator int() const { return v; }
+};
+struct HPCmd {                                       // mirrors main.cpp:616-621
+  _ServoByte HPFunction;
+  _ServoByte HPOption1;
+  _ServoInt  HPHalt;
+};
+static HPCmd HP_command[HPCOUNT];
+
+inline void positionHP(byte, byte, int)  { _mock_servoTouches++; }   // main.cpp:1082
+inline void twitchHP(byte, byte)         { _mock_servoTouches++; }   // main.cpp:1138
+inline void RCHP(byte, byte)             { _mock_servoTouches++; }   // main.cpp:1164
+inline void wagHP(byte, byte)            { _mock_servoTouches++; }   // main.cpp:1203
+inline void flushCommandArray(byte, byte type) {                     // main.cpp:1463
+  if (type == 1) _mock_servoTouches++;               // type 1 == the HP (servo) command array
+}

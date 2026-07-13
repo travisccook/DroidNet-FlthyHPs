@@ -55,8 +55,28 @@ int main() {
 
   // replicate the main.cpp '!' branch body verbatim to type-check it
   {
-    char inputBuffer[80] = "!HFA:i=flash,c=FF0000,s=200";
+    char inputBuffer[INPUTBUFFERLEN] = "!HFA:i=flash,c=FF0000,s=200";
     if (inputBuffer[0] == '!') contractHandle(&inputBuffer[1]);
+  }
+
+  // WIRE BUDGET: main.cpp's line buffer TRUNCATES SILENTLY (inputString.toCharArray into
+  // inputBuffer[INPUTBUFFERLEN], main.cpp:801) — a line one byte too long is not an error, it
+  // just loses its tail and the board plays a mangled cue. contract v1.2 adds the accent
+  // overlay keys (ae=/ac=/ad=) to an already-long scored line, so pin the worst case Studio
+  // can emit against the buffer that has to survive it.
+  {
+    const char* worst = "!H*A:i=colorcycle,c=3b82f6,at=1234,am=2,m=200,ae=colorcycle,ac=ffffff,ad=250";
+    if ((int)strlen(worst) + 1 > INPUTBUFFERLEN) {
+      printf("FAIL: the longest v1.2 scored line (%d chars) does not fit INPUTBUFFERLEN=%d — "
+             "main.cpp would truncate it SILENTLY\n", (int)strlen(worst), INPUTBUFFERLEN);
+      return 1;
+    }
+    ParsedContract q;                                  // ...and it must still parse in full
+    if (!contractParse(worst + 1, q) || !q.params.hasAccentFx ||
+        q.params.accentFx != CE_COLORCYCLE || !q.params.hasAt || q.params.atBeat != 1234) {
+      printf("FAIL: the longest v1.2 scored line did not parse intact\n");
+      return 1;
+    }
   }
 
   // behavioral guard: _entryFrom must thread the parsed native code into the
@@ -209,6 +229,301 @@ int main() {
     if (contractParse("**X", q)) applyContract(q);                       // leave a clean slate
   }
 
+  // ======================================================================================
+  // A1 guard (BEHAVIORAL, contract v1.2): the BOARD-SIDE ACCENT SELF-FIRE.
+  // Before v1.2 a DELIVERED blueprint's only beat expression was the brightness envelope —
+  // it could not fire the effect-swap accent that a LIVE, Pi-mirrored show got from verb P,
+  // so the two paths did not look the same. Now contractBeatTick() fires the same overlay
+  // itself, off the active score entry's ae=/ac=/ad=, with the Pi silent.
+  //
+  // Three units, one beat clock (120 BPM => 500 ms/beat, 4/4), driven beat by beat:
+  //   HP0  am=1 + ae=flash + ac=FF0000  -> accents DOWNBEATS ONLY, in red over a blue base
+  //   HP1  am=2 + ae=pulse (no ac=)     -> accents EVERY beat, inheriting the section colour
+  //   HP2  am=2, NO ae= (a v1.1 entry)  -> must NEVER arm the overlay, on any beat
+  // The mid-beat re-tick is the load-bearing one: it lands 390 ms after the accent, i.e. PAST
+  // the 340 ms strobe cool-down, so only the once-per-beat EDGE can stop a re-fire there.
+  {
+    ParsedContract q;
+    if (contractParse("**X", q)) applyContract(q);
+    _mock_servoTouches = 0;                       // A2 (below) audits this whole run
+    boolean twitchBefore[HPCOUNT] = {enableTwitchHP[0], enableTwitchHP[1], enableTwitchHP[2]};
+
+    _mock_millis = 100000;                        // non-zero origin: pulseLastMs == 0 must keep
+    uint32_t t0 = _mock_millis;                   // meaning "this unit has never accented"
+    if (contractParse("**C:bpm=120,ph=0,bpb=4,beat=0", q)) applyContract(q);
+    if (contractParse("HFA:i=solid,c=0000FF,at=0,am=1,m=0,ae=flash,ac=FF0000,ad=200", q)) applyContract(q);
+    if (contractParse("HRA:i=solid,c=00FF00,at=0,am=2,m=0,ae=pulse", q)) applyContract(q);
+    if (contractParse("HTA:i=solid,c=00FF00,at=0,am=2,m=200", q)) applyContract(q);
+
+    uint32_t startBefore[HPCOUNT]; bool activeBefore[HPCOUNT];
+    auto tick = [&](uint32_t ms) {
+      _mock_millis = ms;
+      for (uint8_t hp = 0; hp < HPCOUNT; hp++) {
+        startBefore[hp]  = gUnit[hp].pulseStartMs;
+        activeBefore[hp] = gUnit[hp].pulseActive;
+      }
+      contractBeatTick();
+    };
+    // an accent FIRED on this tick == the overlay is armed AND its start time is new
+    auto fired = [&](uint8_t hp) {
+      return gUnit[hp].pulseActive &&
+             (!activeBefore[hp] || gUnit[hp].pulseStartMs != startBefore[hp]);
+    };
+
+    tick(t0 + 10);                                                     // beat 0, barPos 0
+    if (!fired(0)) { printf("FAIL: a scored ae= did not fire an accent on the downbeat — a "
+                            "delivered blueprint has NO effect accent at all\n"); return 1; }
+    if (!fired(1)) { printf("FAIL: an am=2 scored accent did not fire on beat 0\n"); return 1; }
+    if (fired(2))  { printf("FAIL: a v1.1 score entry (no ae=) armed the accent overlay — the "
+                            "v1.2 layer is NOT backward compatible\n"); return 1; }
+    if (gUnit[0].pulseFx != CE_FLASH || gUnit[0].pulseColor.r != 255 ||
+        gUnit[0].pulseColor.g != 0   || gUnit[0].pulseColor.b != 0 || gUnit[0].pulseDurMs != 200) {
+      printf("FAIL: the scored accent did not carry ae=flash / ac=FF0000 / ad=200 "
+             "(fx=%d rgb=%u,%u,%u dur=%lu)\n", (int)gUnit[0].pulseFx,
+             (unsigned)gUnit[0].pulseColor.r, (unsigned)gUnit[0].pulseColor.g,
+             (unsigned)gUnit[0].pulseColor.b, (unsigned long)gUnit[0].pulseDurMs);
+      return 1;
+    }
+    // no ac= => the accent inherits the SECTION's colour (resolved at insert); no ad= => 180 ms
+    if (gUnit[1].pulseFx != CE_PULSE || gUnit[1].pulseColor.g != 255 ||
+        gUnit[1].pulseColor.r != 0 || gUnit[1].pulseDurMs != 180) {
+      printf("FAIL: an ac=-less accent did not inherit the section colour / the 180 ms default "
+             "(fx=%d rgb=%u,%u,%u dur=%lu)\n", (int)gUnit[1].pulseFx,
+             (unsigned)gUnit[1].pulseColor.r, (unsigned)gUnit[1].pulseColor.g,
+             (unsigned)gUnit[1].pulseColor.b, (unsigned long)gUnit[1].pulseDurMs);
+      return 1;
+    }
+    // ...and it must actually be LAYERED onto the jewel: the accent's red over the blue base
+    contractRenderHP(0);
+    uint32_t px = neoStrips[0].shown[0];
+    if (((px >> 16) & 0xFF) == 0 || (px & 0xFF) != 0) {
+      printf("FAIL: the accent overlay is not on the jewel (want the ae= RED over the blue "
+             "base, got 0x%06lX)\n", (unsigned long)px);
+      return 1;
+    }
+
+    tick(t0 + 400);                              // STILL beat 0, and 390 ms on => PAST the
+                                                 // 340 ms cool-down: only the beat EDGE can
+                                                 // stop a re-fire here
+    if (fired(0) || fired(1)) {
+      printf("FAIL: the accent re-fired INSIDE the same beat — the once-per-beat edge is not "
+             "being consumed, so a 180 ms accent becomes a permanent latch\n");
+      return 1;
+    }
+    contractRenderHP(0);                         // the 200 ms accent has expired -> base back
+    px = neoStrips[0].shown[0];
+    if ((px & 0xFF) == 0 || ((px >> 16) & 0xFF) != 0) {
+      printf("FAIL: the accent did not auto-restore the base look (want the blue base back, "
+             "got 0x%06lX)\n", (unsigned long)px);
+      return 1;
+    }
+
+    for (int beat = 1; beat <= 3; beat++) {      // barPos 1..3
+      tick(t0 + (uint32_t)beat * 500u + 10u);
+      if (fired(0)) {
+        printf("FAIL: an am=1 (downbeat) accent fired on OFF-BEAT %d — the board-side trigger "
+               "is not using the same fire predicate as the brightness pump\n", beat);
+        return 1;
+      }
+      if (!fired(1)) {
+        printf("FAIL: an am=2 (every-beat) accent did not fire on beat %d\n", beat);
+        return 1;
+      }
+      if (fired(2)) { printf("FAIL: a v1.1 score entry accented on beat %d\n", beat); return 1; }
+    }
+
+    tick(t0 + 2010);                             // beat 4 == the next DOWNBEAT
+    if (!fired(0)) {
+      printf("FAIL: an am=1 accent did not fire on the next downbeat (beat 4)\n"); return 1;
+    }
+    if (gUnit[2].pulseActive || gUnit[2].pulseStartMs != 0) {
+      printf("FAIL: a v1.1 score entry armed the overlay somewhere across the run\n"); return 1;
+    }
+
+    // ---------------------------------------------------------------------------------
+    // A2 guard (PHYSICAL — the reason this fork exists as an LED-ONLY fork): the accent path
+    // must NEVER move a holoprojector SERVO. main.cpp reaches the servos only through
+    // HP_command[] and positionHP/twitchHP/wagHP/RCHP (+ flushCommandArray(hp,1)), and every
+    // one of those is a tripwire in mock_flthy.h. The entire Phase-2 delivery and autonomous
+    // playback above — score load, section switch, beat edges, accent fires, renders — must
+    // not have tripped a single one, nor changed the operator's servo-twitch flags.
+    if (_mock_servoTouches != 0) {
+      printf("FAIL: the accent path touched the HP SERVO command path %d time(s) — this fork "
+             "promises LED-EFFECTS-ONLY and must never move a holoprojector\n", _mock_servoTouches);
+      return 1;
+    }
+    for (uint8_t hp = 0; hp < HPCOUNT; hp++) {
+      if (enableTwitchHP[hp] != twitchBefore[hp]) {
+        printf("FAIL: the accent path changed enableTwitchHP[%u] (a PHYSICAL servo flag)\n",
+               (unsigned)hp);
+        return 1;
+      }
+      if ((byte)HP_command[hp].HPFunction != 0 || (byte)HP_command[hp].HPOption1 != 0) {
+        printf("FAIL: the accent path left an HP SERVO command staged on HP %u\n", (unsigned)hp);
+        return 1;
+      }
+    }
+    if (contractParse("**X", q)) applyContract(q);
+  }
+
+  // A2b guard: the overlay must render the ae= EFFECT — not merely a solid fill in the accent
+  // colour. That distinction IS the feature: Phase 1's verb-P accent was ALREADY a solid
+  // 180 ms fill, and what a delivered blueprint was missing is the EFFECT SWAP.
+  // Pinned with a look whose render differs from solid: at s=128 an ae=flash strobes with a
+  // 434 ms ON half, so 500 ms into a 900 ms accent it must be DARK — where a solid overlay
+  // would still be lit red, and the base look would be lit blue.
+  {
+    ParsedContract q;
+    if (contractParse("**X", q)) applyContract(q);
+    _mock_millis = 400000;
+    uint32_t t0 = _mock_millis;
+    if (contractParse("**C:bpm=120,ph=0,bpb=4,beat=0", q)) applyContract(q);
+    if (contractParse("HTA:i=solid,c=0000FF,s=128,at=0,am=1,ae=flash,ac=FF0000,ad=900", q)) applyContract(q);
+
+    _mock_millis = t0 + 10;  contractBeatTick(); contractRenderHP(2);   // the accent fires here
+    uint32_t lit = neoStrips[2].shown[0];
+    if (((lit >> 16) & 0xFF) == 0) {
+      printf("FAIL: the ae=flash accent is not lit in its ON half (got 0x%06lX) — this guard "
+             "is measuring nothing\n", (unsigned long)lit);
+      return 1;
+    }
+    _mock_millis = t0 + 510;               // 500 ms into the 900 ms accent => the flash's OFF
+    contractRenderHP(2);                   // half. NB: render only — no tick, no new accent.
+    uint32_t dark = neoStrips[2].shown[0];
+    if (dark != 0x000000) {
+      printf("FAIL: the accent overlay is NOT rendering its ae= EFFECT (got 0x%06lX 500 ms into "
+             "a 900 ms ae=flash, where the strobe must be DARK). Red means it collapsed to a "
+             "solid fill; blue means the base look is showing through\n", (unsigned long)dark);
+      return 1;
+    }
+    if (!gUnit[2].pulseActive) { printf("FAIL: the 900 ms accent expired early\n"); return 1; }
+    if (contractParse("**X", q)) applyContract(q);
+  }
+
+  // A3 guard: a show boundary must DROP the beat edge. If a stale lastAccentBeat survives, the
+  // next show's first accent beat is silently swallowed (beatEdge() sees no change in index).
+  // All five boundaries, pinned individually, then the end-to-end trap.
+  {
+    ParsedContract q;
+    struct { const char* cmd; const char* what; } bounds[] = {
+      {"HFX",                           "verb X (stop)"},
+      {"HFM:v=show",                    "verb M v=show (a new show is loading)"},
+      {"HFM:v=idle",                    "verb M v=idle (the show ended)"},
+      {"**C:bpm=120,ph=0,bpb=4,beat=0", "verb C (the beat ORIGIN moved: a Play/seek re-anchor)"},
+      {"HFA:i=solid,c=0000FF,at=0,am=2,ae=flash", "a scored A (a new show's sections)"},
+    };
+    for (auto& b : bounds) {
+      gUnit[0].lastAccentBeat = 7;                       // pretend beat 7 accented, last show
+      if (contractParse(b.cmd, q)) applyContract(q);
+      if (gUnit[0].lastAccentBeat != BEAT_NONE) {
+        printf("FAIL: %s did not reset the accent beat edge — a stale edge swallows the next "
+               "show's first accent\n", b.what);
+        return 1;
+      }
+    }
+    if (contractParse("**X", q)) applyContract(q);
+
+    // end-to-end: show 1 accents beat 0; STOP; show 2 is re-anchored so it ALSO starts at
+    // beat 0 — its very first accent must still fire.
+    _mock_millis = 200000;
+    uint32_t t1 = _mock_millis;
+    if (contractParse("**C:bpm=120,ph=0,bpb=4,beat=0", q)) applyContract(q);
+    if (contractParse("HFA:i=solid,c=0000FF,at=0,am=2,ae=flash", q)) applyContract(q);
+    _mock_millis = t1 + 10; contractBeatTick();
+    if (!gUnit[0].pulseActive) { printf("FAIL: show 1's first accent never fired\n"); return 1; }
+
+    if (contractParse("HFX", q)) applyContract(q);                  // show 1 ends
+    _mock_millis = t1 + 5000;                                       // show 2 arrives, re-anchors
+    uint32_t t2 = _mock_millis;
+    if (contractParse("**C:bpm=120,ph=0,bpb=4,beat=0", q)) applyContract(q);
+    if (contractParse("HFA:i=solid,c=00FF00,at=0,am=2,ae=flash", q)) applyContract(q);
+    _mock_millis = t2 + 10; contractBeatTick();
+    if (!gUnit[0].pulseActive || gUnit[0].pulseStartMs != t2 + 10) {
+      printf("FAIL: the new show's first accent was SWALLOWED by a stale beat edge from the "
+             "previous show (both start at beat 0)\n");
+      return 1;
+    }
+    if (contractParse("**X", q)) applyContract(q);
+  }
+
+  // A4 guard (SAFETY / photosensitivity): accent STARTS must be at least 2x the min state
+  // apart (2 * 170 = 340 ms => <= ~2.9 accents/sec, inside the <= 3 flashes/sec guidance).
+  // v1.1 gated on 1x the min state here — the loosest cool-down of the three boards — so a
+  // Phase-2 every-beat accent above ~176 BPM could have strobed the jewels at up to 5.9 Hz.
+  // The cap must not be over-tightened either: a 2.5 Hz accent has to pass, or a Studio show
+  // silently stutters on alternate beats and just looks broken.
+  {
+    ParsedContract q;
+    if (contractParse("**X", q)) applyContract(q);
+    _mock_millis = 500000;
+    uint32_t t = _mock_millis;
+    if (contractParse("HFP:c=FFFFFF,d=200", q)) applyContract(q);
+    uint32_t first = gUnit[0].pulseStartMs;
+    if (!gUnit[0].pulseActive || first != t) { printf("FAIL: verb P did not fire an accent\n"); return 1; }
+
+    _mock_millis = t + 200;                        // 200 ms after the last one == 5 Hz: DROP
+    if (contractParse("HFP:c=FFFFFF,d=200", q)) applyContract(q);
+    if (gUnit[0].pulseStartMs != first) {
+      printf("FAIL: an accent only 200 ms after the previous one was accepted — 5 flashes/sec "
+             "exceeds the <= 3 flashes/sec photosensitivity cap\n");
+      return 1;
+    }
+    _mock_millis = t + 400;                        // 400 ms == 2.5 Hz: must PASS
+    if (contractParse("HFP:c=FFFFFF,d=200", q)) applyContract(q);
+    if (gUnit[0].pulseStartMs != t + 400) {
+      printf("FAIL: the strobe cool-down is dropping accents it should pass (2.5 Hz) — a "
+             "Studio-authored show would stutter on alternate beats\n");
+      return 1;
+    }
+    if (contractParse("**X", q)) applyContract(q);
+  }
+
+  // A5 guard: Flthy's CE_FLASH BEAT-PUMPS — it renders at the envelope, not at the raw b=
+  // ceiling. The Logics' CE_FLASH is being aligned TO this line, so pin it here or the
+  // alignment target can drift out from under the other two boards.
+  // Also pins that a LIVE (unscored) look NEVER self-accents: only the score path fires the
+  // board-side overlay, so a board driven live cannot double-fire (the Pi's verb P AND its
+  // own beat edge on the same beat).
+  // 120 BPM (500 ms/beat), s=128 => the flash's ON half is 434 ms. Sample two moments that are
+  // both inside an ON half but at opposite ends of a beat: phase ~0.02 (full accent) vs phase
+  // ~0.92 (the envelope has decayed to its floor).
+  {
+    ParsedContract q;
+    if (contractParse("**X", q)) applyContract(q);
+    _mock_millis = 300000;
+    uint32_t T0 = _mock_millis;
+    if (contractParse("**C:bpm=120,ph=0,bpb=4,beat=0", q)) applyContract(q);
+    if (contractParse("HFA:i=flash,c=0000FF,s=128,b=200,m=200,am=2", q)) applyContract(q);  // LIVE: no at=
+
+    auto litBlue = [&](uint32_t ms) -> uint8_t {
+      _mock_millis = ms;
+      contractBeatTick();
+      contractRenderHP(0);
+      return (uint8_t)(neoStrips[0].shown[0] & 0xFFu);      // c=0000FF => blue == the level
+    };
+    uint8_t onBeat  = litBlue(T0 + 10);    // beat 0 phase 0.02, flash elapsed  10 ms -> ON
+    uint8_t offBeat = litBlue(T0 + 960);   // beat 1 phase 0.92, flash elapsed 960 ms -> ON (960 % 868 = 92)
+
+    if (gUnit[0].pulseActive) {
+      printf("FAIL: a LIVE (unscored) look self-accented — only a scored section may fire the "
+             "board-side overlay, or a live-driven board double-fires with the Pi's verb P\n");
+      return 1;
+    }
+    if (onBeat == 0 || offBeat == 0) {
+      printf("FAIL: the CE_FLASH pump guard sampled the OFF half of the strobe (on=%u off=%u) — "
+             "it is measuring nothing\n", (unsigned)onBeat, (unsigned)offBeat);
+      return 1;
+    }
+    if (onBeat < offBeat + 24) {
+      printf("FAIL: CE_FLASH does not BEAT-PUMP — its lit level is the same on the beat as it is "
+             "at the end of one (on=%u off=%u); it is rendering at the raw b= ceiling instead of "
+             "the envelope\n", (unsigned)onBeat, (unsigned)offBeat);
+      return 1;
+    }
+    if (contractParse("**X", q)) applyContract(q);
+    _mock_millis = 0;
+  }
+
   // Minor guard: the verb-Q ack must echo the unit that answered. It hardcoded 'f', so
   // !HRQ and !HTQ both replied "!Hfq:..." and a host could not tell which HP responded.
   {
@@ -229,7 +544,8 @@ int main() {
     if (Serial.last[0] != 0) { printf("FAIL: Flthy answered a broadcast Q (\"%s\")\n", Serial.last); return 1; }
   }
 
-  printf("ContractFlthy.h type-check + score-native / servo-twitch / score-clear / "
-         "build-ramp / Q-unit guards OK\n");
+  printf("ContractFlthy.h type-check + score-native / servo-twitch / score-clear / build-ramp / "
+         "Q-unit / v1.2 accent-self-fire / servo-interlock / beat-edge / strobe-cap / "
+         "flash-pump guards OK\n");
   return 0;
 }
