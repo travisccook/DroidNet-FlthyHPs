@@ -28,7 +28,7 @@ I2C intake) still behaves exactly as it did before.
   and the per-board render layer are all in.
 - **Six parametric effects: built.** comet, chase, wipe, gradient, colorcycle, twinkle —
   rendered around the jewel ring.
-- **Host verification: green.** `bash test/host/run.sh` → 154/154 parser checks, plus a
+- **Host verification: green.** `bash test/host/run.sh` → 341/341 parser checks, plus a
   type-check of `ContractFlthy.h` against `test/host/mock_flthy.h`.
 - **Hardware verification: NONE.** This has never been flashed to a board. Not once. Nothing
   about flash fit, loop stability, LED timing, or how any of it actually looks has been

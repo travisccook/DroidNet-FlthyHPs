@@ -78,19 +78,31 @@ We take that at face value and we intend to respect it exactly.
 **Nothing in this fork has ever been flashed to a real board.** Not to a Mega ADK, not to a
 NeoPixel jewel, not to a servo, not to anything.
 
-Verification here is **host-side only**:
+Be precise about what is and is not verified, because the two are easy to blur:
 
-- `test/host/test_contract_core.cpp` — 154 checks against the wire parser, beat clock, effect
-  math, and score table, compiled and run on a normal computer.
+**What IS verified.** It cross-compiles for the real microcontroller. `pio run` builds a complete
+firmware image with the real avr-gcc for the real ATmega2560, and the real linker signs off on it.
+That is a genuine step up from where this fork started — it used to be checked only against a
+hand-written mock, and mocks lie (on the sister PSI fork, one hid a critical bug by making the
+non-latching render primitive a no-op). Verified here:
+
+- `test/host/test_contract_core.cpp` — 341 checks against the wire parser, beat clock, effect math
+  and score table, compiled and run on a normal computer.
 - `test/host/compile_contract.cpp` — a type-check of the firmware layer against a **mock** of the
-  board's API (`test/host/mock_flthy.h`). It proves the code compiles and that a few invariants
-  hold. It does not prove anything at all about real LEDs, real timing, or real hardware.
+  board's API (`test/host/mock_flthy.h`), plus the LED-only invariant (this layer must never move a
+  holoprojector servo) and the serial wire budget.
+- `bash test/host/run.sh` now finishes by cross-compiling the firmware for real.
 
-Everything else — that it fits in flash, that the loop stays stable, that a jewel looks like
-anything you would want on a droid — is **unverified**.
+Flash is comfortable on this board, unlike its PSI sibling: **32,570 B of 253,952 B (12.8%)**, with
+SRAM at 2,332 B of 8,192 B (28.5%). Nowhere near either ceiling.
 
-If you are going to put this near a real droid: bench-compile it, bench-test it on a jewel that is
-not installed in a dome, and be ready for it to be wrong. This is a starting point, not a release.
+**What is NOT verified.** Everything only a physical board can tell you. **A successful link is not a
+bench test.** That the loop stays stable, that the timing holds, that a jewel looks like anything you
+would want on a droid, what the power draw is — all **unverified**. The code has never executed a
+single instruction outside a host test.
+
+If you are going to put this near a real droid: bench-test it on a jewel that is not installed in a
+dome, and be ready for it to be wrong. This is a starting point, not a release.
 
 ---
 
@@ -200,21 +212,34 @@ The host suite needs nothing but a C++ compiler:
 
 ```bash
 bash test/host/run.sh
-# [1/2] contract_core parser unit tests   -> 154/154 checks
-# [2/2] ContractFlthy.h firmware type-check
+# [1/4] contract_core parser unit tests   -> 341/341 checks
+# [2/4] ContractFlthy.h firmware type-check
+# [3/4] static source guards (LED-only invariant + wire budget)
+# [4/4] REAL cross-compile (ATmega2560)   <- needs PlatformIO; skips cleanly without it
 ```
 
-Heads up: there is no `platformio.ini` in this tree. The PlatformIO layout (`src/` + `include/`) came
-from the droid-side working collection this was seeded from, not from Ryan — upstream FlthyHPs is a
-flat Arduino sketch, not a PlatformIO project. To build the firmware you will need to supply your own
-project file (board `megaADK`, framework `arduino`, deps Adafruit NeoPixel + Adafruit PWM Servo
-Driver, with the bundled `lib/Servos`) or copy the sources back into an Arduino sketch folder. The
-build commands in [README_C2B5.md](README_C2B5.md) assume a `platformio.ini` that is not here, so
-they will not work as written.
+To build the firmware:
+
+```bash
+pio run                 # build (ATmega2560 / Mega ADK)
+pio run -t upload       # flash it (add --upload-port /dev/cu.usbmodemXXXX)
+bash test/host/run.sh   # host checks + the same cross-compile
+```
+
+`platformio.ini` is in the tree and builds out of the box. (It did not used to be: the PlatformIO
+layout — `src/` + `include/` — came from the droid-side working collection this was seeded from, not
+from Ryan, whose upstream FlthyHPs is a flat Arduino sketch. That collection kept one project file at
+its root, and it stayed behind when this board was vendored out. It has now been written and used.)
+
+Dependencies are derived from what `src/main.cpp` actually includes — Adafruit NeoPixel and Adafruit
+PWM Servo Driver, plus Wire from the Arduino AVR core. Graham Short's `Servos`/`SlowServo` library is
+bundled at `lib/Servos` and is picked up automatically, since `lib/` is already PlatformIO's default
+library directory.
 
 For the original firmware and the real documentation, go to Ryan's repo.
 
-Remember: a green host suite proves nothing about hardware. See the warning above.
+Remember: a green suite means it compiles for the real MCU. It still proves nothing about hardware —
+see the warning above.
 
 ---
 
