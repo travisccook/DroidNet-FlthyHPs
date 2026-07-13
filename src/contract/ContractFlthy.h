@@ -108,14 +108,14 @@ static inline uint32_t _wheel(uint8_t pos, uint8_t bri) {
 // ------------------------------------------------------------- envelope -------
 // Effective per-write brightness for a unit: baseline dips by beatMod depth, the
 // accent rides it back up on the beat (fork spec §9). am=0 => flat brightBase.
+// Level math lives in contract_core's envBright() — the SHARED envelope all three
+// boards render through (b= is the ceiling, m= is the dip depth). Do not reintroduce
+// a board-local floor here: it desyncs the HPs from the Logics/PSIs on every cue.
 static inline uint8_t _envBright(const FlthyUnit& u) {
   if (!gBeat.running || u.beatMod == 0 || u.accentMode == 0) return u.brightBase;
   BeatPos bp = beatPosAt(gBeat, millis());
   uint8_t accent = beatAccentAmount(u.accentMode, bp, u.beatMod, 1.0f);   // am=3 build -> full (deferred, §9)
-  uint16_t floorB = (uint16_t)u.brightBase * (uint16_t)(255 - u.beatMod) / 255;
-  uint16_t rideB  = (uint16_t)(floorB + (uint32_t)accent * (u.brightBase - floorB) / 255);
-  if (rideB > u.brightBase) rideB = u.brightBase;
-  return (uint8_t)rideB;
+  return envBright(u.brightBase, u.beatMod, accent);
 }
 
 // --------------------------------------------------- the single render fn -----
