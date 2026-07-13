@@ -416,6 +416,7 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
 
     case CV_STOP:
       u.active = false; u.pulseActive = false;
+      scoreClear(gScoreCount[hp], gScoreActive[hp]);   // forget the show (contract_core)
       ledOFF(hp);                                      // blackout (main.cpp:1205)
       LED_command[hp].LEDFunction = 0;                 // do-nothing
       u.lastEnvBright = -1;
@@ -441,6 +442,7 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
           gInterlocked[hp]   = false;
         }
         u.active = false; u.pulseActive = false;
+        scoreClear(gScoreCount[hp], gScoreActive[hp]); // the show is over: forget its sections
         LED_command[hp].LEDFunction = 0;
       }
       break;
