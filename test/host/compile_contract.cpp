@@ -87,6 +87,55 @@ int main() {
     if (!enableTwitchHP[1]) { printf("FAIL: Flthy idle did not restore the operator's HP servo twitch\n"); return 1; }
   }
 
-  printf("ContractFlthy.h type-check + score-native guard + servo-twitch guard OK\n");
+  // I3 guard: ending a show must CLEAR the Phase-2 score. Without scoreClear(),
+  // gScoreCount/gScoreActive survived verb X — and because a later at= insert resets
+  // gScoreActive[hp] to -1, the very next contractBeatTick() re-applied the OLD table's
+  // section and RESURRECTED the previous show on a jewel that had just been blacked out.
+  // Semantics: !HFX clears that HP; !**X clears all three units plus the beat clock;
+  // M:v=idle (the other way a show ends) clears too.
+  {
+    ParsedContract q;
+    if (contractParse("**X", q)) applyContract(q);                            // clean slate
+    if (contractParse("**C:bpm=120,ph=0,bpb=4,beat=0", q)) applyContract(q);  // clock at beat 0 (millis()==0)
+    if (contractParse("HFA:i=flash,c=FF0000,at=0", q)) applyContract(q);      // show 1, section at beat 0
+    contractBeatTick();
+    if (!gUnit[0].active || gUnit[0].effect != CE_FLASH) { printf("FAIL: Flthy scored section never applied\n"); return 1; }
+
+    if (contractParse("HFX", q)) applyContract(q);                            // per-unit STOP
+    if (gUnit[0].active)   { printf("FAIL: Flthy STOP left the unit active\n"); return 1; }
+    if (gScoreCount[0] != 0 || gScoreActive[0] != -1) { printf("FAIL: Flthy STOP left the Phase-2 score armed\n"); return 1; }
+
+    // show 2 arrives: its at= insert resets the active cursor, so a table that was never
+    // cleared re-applies show 1's beat-0 section on the next tick (the resurrection path).
+    if (contractParse("HFA:i=solid,c=00FF00,at=8", q)) applyContract(q);      // show 2 starts at beat 8
+    contractBeatTick();                                                        // still beat 0 => nothing to play
+    if (gUnit[0].active) { printf("FAIL: Flthy beat tick resurrected the stopped show from a stale score\n"); return 1; }
+
+    // !**X: every unit's score cleared, plus the beat clock
+    if (contractParse("**C:bpm=120,ph=0,bpb=4,beat=0", q)) applyContract(q);
+    if (contractParse("H*A:i=solid,c=00FF00,at=0", q)) applyContract(q);
+    contractBeatTick();
+    if (contractParse("**X", q)) applyContract(q);
+    for (uint8_t hp = 0; hp < HPCOUNT; hp++) {
+      if (gScoreCount[hp] != 0 || gScoreActive[hp] != -1 || gUnit[hp].active) {
+        printf("FAIL: Flthy !**X did not clear HP %u\n", (unsigned)hp); return 1;
+      }
+    }
+    if (gBeat.running) { printf("FAIL: Flthy !**X did not stop the beat clock\n"); return 1; }
+
+    // M:v=idle also ends a show: its sections must not survive it
+    if (contractParse("**C:bpm=120,ph=0,bpb=4,beat=0", q)) applyContract(q);
+    if (contractParse("HRA:i=flash,c=FF0000,at=0", q)) applyContract(q);
+    contractBeatTick();
+    if (!gUnit[1].active) { printf("FAIL: Flthy scored section never applied (idle case)\n"); return 1; }
+    if (contractParse("HRM:v=idle", q)) applyContract(q);
+    if (gScoreCount[1] != 0 || gScoreActive[1] != -1) { printf("FAIL: Flthy idle left the Phase-2 score armed\n"); return 1; }
+    if (contractParse("HRA:i=solid,c=00FF00,at=8", q)) applyContract(q);
+    contractBeatTick();
+    if (gUnit[1].active) { printf("FAIL: Flthy beat tick resurrected a show after idle\n"); return 1; }
+    if (contractParse("**X", q)) applyContract(q);                            // leave a clean slate
+  }
+
+  printf("ContractFlthy.h type-check + score-native / servo-twitch / score-clear guards OK\n");
   return 0;
 }
