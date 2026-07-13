@@ -85,10 +85,14 @@ static bool       gShowMode = false;
 //     the boot config startEnableTwitchHP[] (main.cpp:575). NEVER write `true` here from
 //     a literal: enableTwitchHP drives a PHYSICAL actuator and the operator may have
 //     turned it off in the sketch config or at runtime (native servo cmd 98, main.cpp:984).
+//   * gSavedOffColor[hp] likewise holds the native "off color" override observed at show
+//     entry (show forces it on so the off state is truly black); without restoring it, the
+//     operator's off-color stayed suppressed after every show until a native 98/99 command.
 static bool    gInterlocked[HPCOUNT]  = {false, false, false};
 static boolean gSavedTwitchHP[HPCOUNT] = {startEnableTwitchHP[0],
                                           startEnableTwitchHP[1],
                                           startEnableTwitchHP[2]};
+static boolean gSavedOffColor[HPCOUNT] = {false, false, false};   // main.cpp:619 default
 
 // Phase-2 score (per unit, sorted asc by atBeat via contract_core scoreInsert)
 static ScoreEntry gScore[HPCOUNT][FLTHY_SCORE_CAP];
@@ -426,6 +430,7 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
       if (pr.mode == 's') {                            // show: LED-only interlock
         if (!gInterlocked[hp]) {                       // snapshot what we are about to take (once)
           gSavedTwitchHP[hp] = enableTwitchHP[hp];
+          gSavedOffColor[hp] = offcoloroverride[hp];
           gInterlocked[hp]   = true;
         }
         gShowMode = true;
@@ -438,8 +443,9 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
         gShowMode = false;
         enableTwitchLED[hp] = startEnableTwitchLED[hp];// (main.cpp:574)
         if (gInterlocked[hp]) {                        // ONLY undo what show actually took
-          enableTwitchHP[hp] = gSavedTwitchHP[hp];     // NEVER a literal true: this moves a servo
-          gInterlocked[hp]   = false;
+          enableTwitchHP[hp]   = gSavedTwitchHP[hp];   // NEVER a literal true: this moves a servo
+          offcoloroverride[hp] = gSavedOffColor[hp];   // give the native off-color back
+          gInterlocked[hp]     = false;
         }
         u.active = false; u.pulseActive = false;
         scoreClear(gScoreCount[hp], gScoreActive[hp]); // the show is over: forget its sections

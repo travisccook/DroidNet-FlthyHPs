@@ -87,6 +87,24 @@ int main() {
     if (!enableTwitchHP[1]) { printf("FAIL: Flthy idle did not restore the operator's HP servo twitch\n"); return 1; }
   }
 
+  // Minor guard: show forces offcoloroverride[] on (so the off state is truly black); idle
+  // must hand the native off-color behavior back. It used to stay overridden after every
+  // show until the operator sent a native 98/99 command.
+  {
+    ParsedContract q;
+    offcoloroverride[2] = false;                  // native off-color ACTIVE on the top HP
+    if (contractParse("HTM:v=show", q)) applyContract(q);
+    if (!offcoloroverride[2]) { printf("FAIL: Flthy show must override the off color (truly black)\n"); return 1; }
+    if (contractParse("HTM:v=idle", q)) applyContract(q);
+    if (offcoloroverride[2]) { printf("FAIL: Flthy idle left the native off color overridden\n"); return 1; }
+
+    offcoloroverride[2] = true;                   // operator had it overridden already (native 96/97)
+    if (contractParse("HTM:v=show", q)) applyContract(q);
+    if (contractParse("HTM:v=idle", q)) applyContract(q);
+    if (!offcoloroverride[2]) { printf("FAIL: Flthy idle clobbered an operator-set off-color override\n"); return 1; }
+    offcoloroverride[2] = false;
+  }
+
   // I3 guard: ending a show must CLEAR the Phase-2 score. Without scoreClear(),
   // gScoreCount/gScoreActive survived verb X — and because a later at= insert resets
   // gScoreActive[hp] to -1, the very next contractBeatTick() re-applied the OLD table's
