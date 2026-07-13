@@ -583,8 +583,11 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
         enableTwitchHP[hp]  = false;                   // no auto SERVO twitch (main.cpp:1001) -> LED-only
         offcoloroverride[hp] = true;                   // off state truly black
         u.active = false; u.pulseActive = false;
-        u.lastAccentBeat = BEAT_NONE;                  // v=show is the FIRST line of Studio's
-                                                       // load burst: a new show starts here
+        // v=show is the FIRST line of Studio's load burst, and Resend re-sends that burst with
+        // no intervening X — so a new show starts HERE and must not inherit the last one's
+        // sections (they would merge, and past FLTHY_SCORE_CAP the new ones would be dropped).
+        scoreClear(gScoreCount[hp], gScoreActive[hp]);
+        u.lastAccentBeat = BEAT_NONE;                  // ...nor its beat edge
         ledOFF(hp);
       } else if (pr.mode == 'i') {                     // idle: restore native autonomy
         gShowMode = false;

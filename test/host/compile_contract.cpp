@@ -714,8 +714,116 @@ int main() {
     if (Serial.last[0] != 0) { printf("FAIL: Flthy answered a broadcast Q (\"%s\")\n", Serial.last); return 1; }
   }
 
+  // A7 (SPEC): a RE-SENT show must REPLACE the last one, not ACCUMULATE into it.
+  // The score-clear guard above covers X and M:v=idle. The boundary they miss is the one the
+  // product actually hits: Studio's Deliver "Resend" re-pushes the load burst with NO
+  // intervening stop, and that burst is `!**M:v=show` FIRST and the scored A entries after it
+  // (web/studio/src/dome/blueprint-emit.js: `const load = ['!**M:v=show']`, then a
+  // `load.push(...)` per section). So show entry must mean "a FRESH show" — otherwise show B
+  // is inserted INTO show A. Two failure modes, one leg each: (a) the tables MERGE and the HP
+  // plays A's sections in between B's; (b) at FLTHY_SCORE_CAP scoreInsert() silently DROPS B
+  // and the HP replays A forever.
+  {
+    ParsedContract q;
+    #define SEND(s) do { ParsedContract _p; if (contractParse((s), _p)) applyContract(_p); } while (0)
+
+    // (a) MERGE — both shows fit under the cap, so the interleave is the only thing on trial.
+    //     A: RED@0, PURPLE@200.  B: GREEN@100, BLUE@300.
+    //     Merged, beat 250 lands on A's PURPLE@200; cleanly, it lands on B's GREEN@100.
+    SEND("**X");
+    _mock_servoTouches = 0;                            // LED-only (§11): a resend must not move
+                                                       // the holoprojector SERVO either
+    _mock_millis = 900000;
+    uint32_t t0 = _mock_millis;                        // 120 BPM => 500 ms/beat
+    SEND("**C:bpm=120,ph=0,bpb=4,beat=0");
+    SEND("H*M:v=show");
+    SEND("HFA:i=solid,c=FF0000,at=0");
+    SEND("HFA:i=solid,c=800080,at=200");
+    if (gScoreCount[0] != 2) {
+      printf("FAIL: show A did not load (count=%d)\n", gScoreCount[0]); return 1;
+    }
+    _mock_millis = t0 + 210 * 500 + 10;                // beat 210: A's 2nd section is PLAYING
+    contractBeatTick();
+    if (gScoreActive[0] != 1 || gUnit[0].color.r != 0x80 || gUnit[0].color.b != 0x80) {
+      printf("FAIL: show A is not playing its purple @200 section at beat 210 (active=%d "
+             "rgb=%u,%u,%u) — the rest of A7 would prove nothing\n", gScoreActive[0],
+             (unsigned)gUnit[0].color.r, (unsigned)gUnit[0].color.g, (unsigned)gUnit[0].color.b);
+      return 1;
+    }
+
+    SEND("H*M:v=show");                                // ---- the Resend. No stop. ----
+    if (gScoreCount[0] != 0 || gScoreActive[0] != -1) {
+      printf("FAIL: M:v=show did not CLEAR the score (count=%d active=%d) — Studio's Resend "
+             "sends v=show and then the new sections, so show B is now merging into show A\n",
+             gScoreCount[0], gScoreActive[0]);
+      return 1;
+    }
+    SEND("HFA:i=solid,c=00FF00,at=100");
+    SEND("HFA:i=solid,c=0000FF,at=300");
+    if (gScoreCount[0] != 2 || gScore[0][0].atBeat != 100 || gScore[0][0].color.g != 0xFF
+        || gScore[0][1].atBeat != 300 || gScore[0][1].color.b != 0xFF) {
+      printf("FAIL: the score is not EXACTLY show B's two sections (count=%d, first at=%ld) — "
+             "a section of show A survived the resend\n",
+             gScoreCount[0], (long)gScore[0][0].atBeat);
+      return 1;
+    }
+    _mock_millis = t0 + 250 * 500 + 10;                // beat 250
+    contractBeatTick();
+    if (gScoreActive[0] != 0 || gUnit[0].color.g != 0xFF || gUnit[0].color.r != 0
+        || gUnit[0].color.b != 0) {
+      printf("FAIL: at beat 250 the re-sent show rendered rgb=%u,%u,%u — it is playing a "
+             "section from the PREVIOUS show (purple 800080 @200), which outlived the resend "
+             "and now sits between show B's sections\n", (unsigned)gUnit[0].color.r,
+             (unsigned)gUnit[0].color.g, (unsigned)gUnit[0].color.b);
+      return 1;
+    }
+
+    // (b) CAP DROP — fill show A to FLTHY_SCORE_CAP, then resend. scoreInsert() returns
+    //     unchanged at cap, so with the score uncleared show B is discarded OUTRIGHT. B's
+    //     beats sit BELOW A's so a merge cannot hide the drop behind an exact-atBeat replace.
+    SEND("**X");
+    _mock_millis = 1000000;
+    t0 = _mock_millis;
+    SEND("**C:bpm=120,ph=0,bpb=4,beat=0");
+    SEND("H*M:v=show");
+    for (int i = 0; i < FLTHY_SCORE_CAP; i++) {
+      char c[48]; snprintf(c, sizeof(c), "HFA:i=solid,c=FF0000,at=%d", i * 10);
+      SEND(c);
+    }
+    if (gScoreCount[0] != FLTHY_SCORE_CAP) {           // non-vacuous: the table really IS full
+      printf("FAIL: show A did not fill the score to cap (count=%d)\n", gScoreCount[0]); return 1;
+    }
+    SEND("H*M:v=show");                                // ---- the Resend. No stop. ----
+    SEND("HFA:i=solid,c=00FF00,at=5");
+    SEND("HFA:i=solid,c=0000FF,at=15");
+    if (gScoreCount[0] != 2) {
+      printf("FAIL: after a resend onto a FULL score the table holds %d entries, not show B's "
+             "2 — scoreInsert() silently dropped show B at the %d-entry cap\n",
+             gScoreCount[0], FLTHY_SCORE_CAP);
+      return 1;
+    }
+    _mock_millis = t0 + 6 * 500 + 10;                  // beat 6 => show B's GREEN@5
+    contractBeatTick();
+    if (gUnit[0].color.g != 0xFF || gUnit[0].color.r != 0) {
+      printf("FAIL: the re-sent show is playing show A's RED section (rgb=%u,%u,%u) — every one "
+             "of show B's sections was dropped at the cap, so the HP replays the FIRST show "
+             "forever\n", (unsigned)gUnit[0].color.r, (unsigned)gUnit[0].color.g,
+             (unsigned)gUnit[0].color.b);
+      return 1;
+    }
+    SEND("**X");
+    if (_mock_servoTouches != 0) {
+      printf("FAIL: the show-resend path touched the HP SERVO %d time(s) — this fork is "
+             "LED-ONLY (§11)\n", _mock_servoTouches);
+      return 1;
+    }
+    (void)q;
+    #undef SEND
+  }
+
   printf("ContractFlthy.h type-check + score-native / servo-twitch / score-clear / build-ramp / "
          "Q-unit / v1.2 accent-self-fire / servo-interlock / beat-edge / strobe-cap / "
-         "accent-allow-gate (no stateful or native overlay, ever) / flash-pump guards OK\n");
+         "accent-allow-gate (no stateful or native overlay, ever) / flash-pump / "
+         "show-resend guards OK\n");
   return 0;
 }
