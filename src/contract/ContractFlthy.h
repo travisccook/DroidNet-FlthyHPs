@@ -68,7 +68,7 @@ static const uint8_t  FLTHY_FX_MAX          = _fxCode(CE_TWINKLE);   // 115
 struct FlthyUnit {
   bool           active   = false;        // the ! path is driving this jewel
   ContractEffect effect   = CE_SOLID;
-  RGB            color{0, 0, 0};
+  ContractRGB            color{0, 0, 0};
   uint8_t        speed    = 128;
   uint8_t        brightBase = FLTHY_SAFE_MAX_BRIGHT;   // b (pre-envelope)
   uint8_t        beatMod  = 0;            // m (envelope depth)
@@ -93,7 +93,7 @@ struct FlthyUnit {
   ContractEffect pulseFx     = CE_NONE;   // v1.2: which effect the overlay renders.
                                           // CE_NONE == the v1.1 wire shape (a verb P with no
                                           // i=) and still means a solid full-field fill.
-  RGB            pulseColor{255, 255, 255};
+  ContractRGB            pulseColor{255, 255, 255};
   uint8_t        pulseBright  = FLTHY_SAFE_MAX_BRIGHT;
   uint32_t       pulseStartMs = 0;
   uint32_t       pulseDurMs   = 0;
@@ -137,7 +137,7 @@ static inline uint8_t _clampBright(int v) {
 }
 // pack an RGB scaled by a 0..255 brightness multiplier into 0xRRGGBB (NEO_GRB
 // ordering is handled inside the library; we always pass logical R,G,B).
-static inline uint32_t _scale(const RGB& c, uint8_t bri) {
+static inline uint32_t _scale(const ContractRGB& c, uint8_t bri) {
   uint8_t r = (uint8_t)((uint16_t)c.r * bri / 255);
   uint8_t g = (uint8_t)((uint16_t)c.g * bri / 255);
   uint8_t b = (uint8_t)((uint16_t)c.b * bri / 255);
@@ -150,7 +150,7 @@ static inline void _fillShow(uint8_t hp, uint32_t color) {
 // self-contained rainbow wheel (mirrors native Wheel(), main.cpp:1328) so a verb-P
 // overlay still composites over rainbow through the single contract render path.
 static inline uint32_t _wheel(uint8_t pos, uint8_t bri) {
-  RGB c{0, 0, 0};
+  ContractRGB c{0, 0, 0};
   if (pos < 85)       { c.r = (uint8_t)(pos * 3);        c.g = (uint8_t)(255 - pos * 3); c.b = 0; }
   else if (pos < 170) { pos = (uint8_t)(pos - 85);  c.r = (uint8_t)(255 - pos * 3); c.g = 0; c.b = (uint8_t)(pos * 3); }
   else                { pos = (uint8_t)(pos - 170); c.r = 0; c.g = (uint8_t)(pos * 3); c.b = (uint8_t)(255 - pos * 3); }
@@ -188,7 +188,7 @@ static inline uint8_t _envBright(uint8_t hp) {
 // is exactly why the STATEFUL effects — scan/sparkle/meter — are barred from ae= in
 // contract_core's accentEffectAllowed(): a 180 ms swap-and-restore would corrupt the base
 // look's state machine mid-song).
-static inline void _renderLook(uint8_t hp, ContractEffect eff, const RGB& color,
+static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB& color,
                                uint8_t envB, uint32_t startMs) {
   FlthyUnit& u = gUnit[hp];
   uint32_t now = millis();
@@ -307,7 +307,7 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const RGB& color,
       neoStrips[hp].setPixelColor(0, 0x000000);           // center off
       for (int p = 0; p < N; p++) {
         uint8_t hue = fxGradientHue(p, N, 0, el, u.speed); // base hue 0, color-independent (like rainbow)
-        RGB c = fxHsv2rgb(hue, 255, envB);
+        ContractRGB c = fxHsv2rgb(hue, 255, envB);
         uint32_t packed = ((uint32_t)c.r << 16) | ((uint32_t)c.g << 8) | (uint32_t)c.b;
         neoStrips[hp].setPixelColor((uint16_t)(p + 1), packed);
       }
@@ -316,7 +316,7 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const RGB& color,
     }
 
     case CE_COLORCYCLE: {                               // whole-jewel hue rotation (color-independent)
-      RGB c = fxHsv2rgb(fxCycleHue(0, now - startMs, u.speed), 255, envB);
+      ContractRGB c = fxHsv2rgb(fxCycleHue(0, now - startMs, u.speed), 255, envB);
       uint32_t packed = ((uint32_t)c.r << 16) | ((uint32_t)c.g << 8) | (uint32_t)c.b;
       _fillShow(hp, packed);
       break;
@@ -387,7 +387,7 @@ inline void contractRenderHP(uint8_t hp) {
 // and only to keep a contract render slot selected (the same guard verb P already used).
 // It also deliberately does NOT go through _applyLook() — that is the only place varResets()
 // runs — so the base look's frame/frameMs counters survive the accent untouched.
-static inline bool _fireAccent(uint8_t hp, ContractEffect fx, const RGB& color,
+static inline bool _fireAccent(uint8_t hp, ContractEffect fx, const ContractRGB& color,
                                uint8_t bright, uint32_t durMs) {
   FlthyUnit& u = gUnit[hp];
   uint32_t now = millis();
@@ -420,7 +420,7 @@ static inline bool _fireAccent(uint8_t hp, ContractEffect fx, const RGB& color,
 // Common path for Phase-1 (live A) and Phase-2 (score switch): sets cState + the
 // render code. NEVER flushes to black, NEVER writes HP_command (LED-only, §11).
 static inline void _applyLook(uint8_t hp, ContractEffect eff, int nativeCode,
-                              const RGB& color, uint8_t speed, uint8_t bright,
+                              const ContractRGB& color, uint8_t speed, uint8_t bright,
                               uint8_t beatMod, uint8_t am, uint32_t durMs,
                               bool freshEffect) {
   FlthyUnit& u = gUnit[hp];
@@ -502,7 +502,7 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
       }
       // Phase-1: apply now. Omitting i= patches params of the current look.
       ContractEffect eff = pr.hasEffect ? pr.effect : u.effect;
-      RGB   col   = pr.hasColor   ? pr.color   : u.color;
+      ContractRGB   col   = pr.hasColor   ? pr.color   : u.color;
       uint8_t spd = pr.hasSpeed   ? pr.speed   : u.speed;
       uint8_t bri = pr.hasBright  ? pr.bright  : u.brightBase;
       uint8_t bm  = pr.hasBeatMod ? pr.beatMod : u.beatMod;
@@ -535,7 +535,7 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
       ContractEffect fx = (pr.hasEffect && accentEffectAllowed(pr.effect)) ? pr.effect : CE_SOLID;
       _fireAccent(hp,
                   fx,
-                  pr.hasColor  ? pr.color  : RGB{255, 255, 255},
+                  pr.hasColor  ? pr.color  : ContractRGB{255, 255, 255},
                   pr.hasBright ? pr.bright : u.brightBase,   // the unit's own CEILING, not a
                                                              // literal 200: an accent must land
                                                              // at the same level on all 3 boards

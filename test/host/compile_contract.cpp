@@ -611,7 +611,7 @@ int main() {
     const ContractEffect rejected[] = {CE_SCAN, CE_SPARKLE, CE_METER, CE_NATIVE};
     for (unsigned i = 0; i < sizeof(rejected) / sizeof(rejected[0]); i++) {
       _mock_millis = t + 2000 + (uint32_t)i * 400u;        // each fire clear of the cool-down
-      if (!_fireAccent(0, rejected[i], RGB{255, 0, 0}, 200, 200)) {
+      if (!_fireAccent(0, rejected[i], ContractRGB{255, 0, 0}, 200, 200)) {
         printf("FAIL: _fireAccent refused to fire at all (effect %d) — this guard is measuring "
                "nothing\n", (int)rejected[i]);
         return 1;

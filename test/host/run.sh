@@ -5,20 +5,21 @@
 # The firmware this harness checks is Ryan Sondgeroth's work; it carries no license and
 # is all rights reserved by him, and that MIT license covers our files only. See README.
 #
-# Host checks for the Flthy HPs contract fork (no hardware / no AVR toolchain needed):
+# Host checks for the Flthy HPs contract fork (stages 1-3 need no hardware and no toolchain; stage 4 is the real cross-compile):
 #   1. contract_core.h parser unit tests
 #   2. ContractFlthy.h firmware-layer type-check against a mock of the board API
 #   3. static source guards (the LED-only invariant + the serial wire budget)
+#   4. REAL cross-compile for the ATmega2560 (optional; needs PlatformIO)
 set -e
 cd "$(dirname "$0")"
-echo "[1/3] contract_core parser unit tests"
+echo "[1/4] contract_core parser unit tests"
 clang++ -std=c++17 -Wall -Wextra -O0 test_contract_core.cpp -o /tmp/flthy_contract_test
 /tmp/flthy_contract_test
-echo "[2/3] ContractFlthy.h firmware type-check"
+echo "[2/4] ContractFlthy.h firmware type-check"
 clang++ -std=c++17 -Wall -Wextra compile_contract.cpp -o /tmp/flthy_fw_syntax
 /tmp/flthy_fw_syntax
 
-echo "[3/3] static source guards"
+echo "[3/4] static source guards"
 # --- LED-ONLY INVARIANT (README §11) -------------------------------------------------
 # The '!' contract layer must never move a holoprojector SERVO. compile_contract.cpp has a
 # runtime tripwire for this, but that can only catch a servo touch on a path the guard
@@ -65,4 +66,34 @@ if [ "$FW_BUF" != "$MOCK_BUF" ]; then
   exit 1
 fi
 echo "LED-only invariant + wire budget (INPUTBUFFERLEN=$FW_BUF) OK"
+
+echo "[4/4] REAL cross-compile (ATmega2560 (Arduino Mega ADK)) -- optional"
+# THIS is the stage that makes "it compiles" a claim about the FIRMWARE rather than a claim
+# about our mock. Stages 1-3 are host checks: they prove the contract logic and they pin the
+# board API against a HAND-WRITTEN MOCK -- and a mock is only ever as honest as its author.
+# This one was not honest. The first real avr-gcc/xtensa build caught two things stages 1-3
+# could never see, by construction:
+#   * FastLED declares RGB as an ENUMERATOR of fl::EOrder, which name-hides a `struct RGB`.
+#     Our shared core defined exactly that struct. Every plain use of the type failed to
+#     compile on both FastLED boards. The mocks never modelled EOrder, so the type-check
+#     passed happily.
+#   * fill_column() is DEFINED in the PSI firmware but declared in no header, and our include
+#     point sits above the definition. The mock DEFINED it, so the name was always in scope.
+# (Both are fixed. The lesson is why this stage exists.)
+#
+# OPTIONAL because it needs PlatformIO and a ~200 MB toolchain. Skipped cleanly without it:
+# stages 1-3 still run and still mean something -- just strictly less than they appear to.
+PIO="${PIO:-$HOME/.platformio/penv/bin/pio}"
+[ -x "$PIO" ] || PIO="$(command -v pio 2>/dev/null || true)"
+if [ -z "$PIO" ] || [ ! -x "$PIO" ]; then
+  echo "SKIP: PlatformIO not found, so NOTHING here was compiled for the real MCU."
+  echo "      Stages 1-3 passed, but they only type-check against our mock."
+  echo "      Install it and re-run for the real check:  pip install platformio"
+  echo "      Or point this at an existing install:      PIO=/path/to/pio $0"
+  exit 0
+fi
+echo "using $PIO"
+( cd ../.. && "$PIO" run -e FlthyHPs )
+echo "cross-compiles for the real MCU (ATmega2560 (Arduino Mega ADK)) OK"
+echo "    (a successful LINK is not a bench test: this firmware has never been flashed.)"
 
