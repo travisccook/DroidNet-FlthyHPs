@@ -63,8 +63,7 @@ We take that at face value and we intend to respect it exactly.
 - We claim **no rights whatsoever** over Ryan's work. It is his.
 - This is a hobby project on one person's droid. It is entirely non-commercial. Nothing here is
   sold, nothing here will be sold, and this fork is not a product and never will be.
-- We have contacted Ryan to ask his permission for this fork to exist, and to invite him to add a
-  license of his choosing to the original project if he wants one.
+- Whether to license the original project, and how, is Ryan's call and nobody else's.
 - **If Ryan would prefer this repository not exist, we will delete it immediately, without
   argument or discussion.** If that is you, Ryan: just say the word, anywhere, and it is gone.
 - We do **not** redistribute his manual. `FlthyHPsManual_v1.8.pdf` was in our baseline import and
