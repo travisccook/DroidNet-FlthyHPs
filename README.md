@@ -166,14 +166,13 @@ Honest, file-level:
 
 | Path | Whose | What |
 | --- | --- | --- |
-| `src/main.cpp` | **Ryan Sondgeroth** | The firmware. ~1,500 lines. Ours: ~45 lines of hooks (see below). |
+| `src/main.cpp` | **Ryan Sondgeroth** | The firmware. 1,567 lines. Ours: ~45 lines of hooks (see below). |
 | `include/functions.h` | **Ryan Sondgeroth** | Function declarations. Untouched. |
 | `lib/Servos/*` | **Graham Short** (BHD) | The slow-servo library, GPL-3.0-or-later. Untouched except that we added the missing `LICENSE` file. |
 | `README_C2B5.md` | prior collection | The README that came with our vendored copy. Not Ryan's own words. |
-| `WIPDocs/` | prior collection | An unrelated reference doc that came along with the import. |
-| `src/contract/contract_core.h` | **ours** (354 lines) | Wire parser, beat clock, effect math, score table. Pure C++, no dependencies. Byte-identical across all three DroidNet forks. |
-| `src/contract/ContractFlthy.h` | **ours** (516 lines) | The render layer: maps the contract onto *this* board's LED primitives. |
-| `test/host/*` | **ours** (~700 lines) | The host test harness. |
+| `src/contract/contract_core.h` | **ours** (362 lines) | Wire parser, beat clock, effect math, score table. Pure C++, no dependencies. Byte-identical across all three DroidNet forks. |
+| `src/contract/ContractFlthy.h` | **ours** (523 lines) | The render layer: maps the contract onto *this* board's LED primitives. |
+| `test/host/*` | **ours** (723 lines) | The host test harness. |
 | `LICENSE-DroidNet-Contract` | **ours** | MIT, covering only our own files. |
 
 The hooks in `src/main.cpp` are the whole of our footprint in Ryan's file, and they are small on
@@ -189,8 +188,10 @@ purpose:
 - one boot-time snapshot (`startEnableTwitchHP[]`) mirroring the existing `startEnableTwitchLED[]`,
   so show mode can restore what it found.
 
-`git diff <baseline>..HEAD --stat` says 1,602 insertions across 7 files. Ryan's firmware is the
-rest of the repository.
+`git diff <baseline>..HEAD --stat` says 2,800 insertions across 15 files. Only 1,645 of those
+lines are code we wrote — the seven files listed above; the rest is the GPL-3.0 license text we
+added for Graham's library, the READMEs, and this notice. Ryan's firmware is the rest of the
+repository.
 
 ---
 

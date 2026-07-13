@@ -1,3 +1,10 @@
+// Part of the DroidNet Driveable-Animation Contract — an additive layer bolted onto
+// Ryan Sondgeroth's FlthyHPs firmware. Copyright (c) 2026 Travis Cook.
+// SPDX-License-Identifier: MIT (see LICENSE-DroidNet-Contract)
+// The firmware this layer drives — every LED primitive it calls — is Ryan Sondgeroth's
+// work; it carries no license and is all rights reserved by him, and that MIT license
+// covers our files only. See the NOTICE in README.md.
+//
 // src/contract/ContractFlthy.h — Flthy Holoprojectors firmware layer for the
 // Driveable-Animation Contract. LED-ONLY: the '!' path NEVER writes HP_command[*]
 // and NEVER calls positionHP/twitchHP/wagHP/RCHP — no servo motion, ever.
