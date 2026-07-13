@@ -65,7 +65,12 @@ int main() {
   // overlay keys (ae=/ac=/ad=) to an already-long scored line, so pin the worst case Studio
   // can emit against the buffer that has to survive it.
   {
-    const char* worst = "!H*A:i=colorcycle,c=3b82f6,at=1234,am=2,m=200,ae=colorcycle,ac=ffffff,ad=250";
+    // The SAME worst case the RSeries and PSI guards use — every key the Studio emitter can put
+    // on a scored verb-A line, each at its longest value (5-digit at=, 4-digit ad=). Flthy's
+    // buffer is the widest, but the DOCUMENTED figure must match the other two boards: they all
+    // parse the same grammar, and a future contributor trimming INPUTBUFFERLEN to an optimistic
+    // number gets silent truncation.
+    const char* worst = "!H*A:i=colorcycle,c=3b82f6,s=255,b=255,at=99999,am=3,m=255,ae=colorcycle,ac=ffffff,ad=2550";
     if ((int)strlen(worst) + 1 > INPUTBUFFERLEN) {
       printf("FAIL: the longest v1.2 scored line (%d chars) does not fit INPUTBUFFERLEN=%d — "
              "main.cpp would truncate it SILENTLY\n", (int)strlen(worst), INPUTBUFFERLEN);
@@ -73,7 +78,7 @@ int main() {
     }
     ParsedContract q;                                  // ...and it must still parse in full
     if (!contractParse(worst + 1, q) || !q.params.hasAccentFx ||
-        q.params.accentFx != CE_COLORCYCLE || !q.params.hasAt || q.params.atBeat != 1234) {
+        q.params.accentFx != CE_COLORCYCLE || !q.params.hasAt || q.params.atBeat != 99999) {
       printf("FAIL: the longest v1.2 scored line did not parse intact\n");
       return 1;
     }
