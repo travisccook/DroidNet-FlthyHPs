@@ -8,6 +8,7 @@
 #include "mock_flthy.h"
 #include "../../src/contract/ContractFlthy.h"
 #include <cstdio>
+#include <cstring>
 
 int main() {
   // parse + fan-out
@@ -154,6 +155,26 @@ int main() {
     if (contractParse("**X", q)) applyContract(q);                            // leave a clean slate
   }
 
-  printf("ContractFlthy.h type-check + score-native / servo-twitch / score-clear guards OK\n");
+  // Minor guard: the verb-Q ack must echo the unit that answered. It hardcoded 'f', so
+  // !HRQ and !HTQ both replied "!Hfq:..." and a host could not tell which HP responded.
+  {
+    ParsedContract q;
+    const char* want[3] = {"!HFq:", "!HRq:", "!HTq:"};
+    const char* cmd[3]  = {"HFQ", "HRQ", "HTQ"};
+    for (int i = 0; i < 3; i++) {
+      Serial.clear();
+      if (contractParse(cmd[i], q)) applyContract(q);
+      if (strncmp(Serial.last, want[i], 5) != 0) {
+        printf("FAIL: Flthy %s ack did not echo its unit (wanted \"%s...\", got \"%s\")\n",
+               cmd[i], want[i], Serial.last);
+        return 1;
+      }
+    }
+    Serial.clear();                                    // broadcast Q must stay silent (§8)
+    if (contractParse("H*Q", q)) applyContract(q);
+    if (Serial.last[0] != 0) { printf("FAIL: Flthy answered a broadcast Q (\"%s\")\n", Serial.last); return 1; }
+  }
+
+  printf("ContractFlthy.h type-check + score-native / servo-twitch / score-clear / Q-unit guards OK\n");
   return 0;
 }

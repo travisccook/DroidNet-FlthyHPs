@@ -9,6 +9,8 @@
 #pragma once
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
 
 typedef uint8_t byte;
 typedef bool    boolean;
@@ -27,11 +29,20 @@ inline long map(long x, long in_min, long in_max, long out_min, long out_max) {
 }
 #define F(str) (str)                                   // flash-string macro no-op on host
 
+// Records what the fork writes (Serial.last) so a host guard can assert on the ack line.
 struct _MockSerial {
-  void print(const char*) {}
-  void print(int) {}
-  void println(const char*) {}
-  void println(int) {}
+  char last[128] = {0};
+  void clear() { last[0] = 0; }
+  void print(const char* s) {
+    size_t n = strlen(last);
+    snprintf(last + n, sizeof(last) - n, "%s", s);
+  }
+  void print(int v) {
+    size_t n = strlen(last);
+    snprintf(last + n, sizeof(last) - n, "%d", v);
+  }
+  void println(const char* s) { print(s); print("\r\n"); }
+  void println(int v)         { print(v); print("\r\n"); }
 } Serial;
 
 // ---- Adafruit_NeoPixel surface (only what the fork calls) ----

@@ -32,6 +32,7 @@
 // and the Phase-2 score (verb A + at=) switches sections on-beat, board-side.
 #pragma once
 #include "contract_core.h"
+#include <stdio.h>          // snprintf (verb Q ack line)
 
 // -------------------------------------------------------------- constants ----
 static const uint8_t  FLTHY_SAFE_MAX_BRIGHT = 200;   // conservative jewel clamp (fork spec §11)
@@ -41,6 +42,8 @@ static const int      FLTHY_SCORE_CAP       = 8;     // per-unit Phase-2 section
 
 // contract effectId -> LEDFunction render code (CE_OFF..CE_TWINKLE map to 101..115)
 static inline byte _fxCode(ContractEffect e) { return (byte)(FLTHY_FX_BASE + (uint8_t)e); }
+// hp index -> the contract unit letter it answers as (Front/Rear/Top, fork spec §4)
+static inline char _unitChar(uint8_t hp) { return (hp == 0) ? 'F' : ((hp == 1) ? 'R' : 'T'); }
 // upper bound of the contract render-slot range (main.cpp's render switch + the
 // CV_PULSE guard below both gate on this; bump it here, not with a fresh
 // literal, when a later task adds another effect after CE_TWINKLE).
@@ -455,10 +458,12 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
 
     case CV_QUERY: {                                   // targeted ack only (contract §8)
       if (p.unit == '*') break;                        // never broadcast Q
-      Serial.print(F("!Hfq:ver=1.1,phase=2,i="));
-      Serial.print((int)u.effect);
-      Serial.print(F(",bpm="));
-      Serial.println((int)gBeat.bpm);
+      // echo the unit that actually answered — this used to hardcode 'f', so !HRQ and
+      // !HTQ both replied "!Hfq:..." and a host could not tell the HPs apart.
+      char buf[56];
+      snprintf(buf, sizeof(buf), "!H%cq:ver=1.1,phase=2,i=%d,bpm=%u\r\n",
+               _unitChar(hp), (int)u.effect, (unsigned)gBeat.bpm);
+      Serial.print(buf);
       break;
     }
 
