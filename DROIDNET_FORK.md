@@ -37,7 +37,7 @@ I2C intake) still behaves exactly as it did before.
 
 ## Fork facts
 
-- **Fork head:** `main` in this repository. Baseline import is commit `2720ced`; every commit
+- **Fork head:** `main` in this repository. Baseline import is commit `5385a7c`; every commit
   after it is the DroidNet layer.
 - **Seeded from:** the vendored copy of FlthyHPs (v1.8 / sketch header v1.81) in the owner's
   private working collection of firmware for the C2B5 droid, 2026-07-12, git-tracked files
@@ -47,7 +47,7 @@ I2C intake) still behaves exactly as it did before.
   256 KB flash — the roomiest of the three boards this contract targets.
 - **Role:** one of three board forks in the Cantina dome light-show program (RSeries Logics,
   PSI Pro, FlthyHPs).
-- **GitHub remote:** TBD (set on publication).
+- **GitHub remote:** <https://github.com/travisccook/DroidNet-FlthyHPs> (public).
 
 ## Shared core
 
