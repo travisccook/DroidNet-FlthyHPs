@@ -34,6 +34,24 @@ if sed 's://.*::' ../../src/contract/ContractFlthy.h \
   exit 1
 fi
 
+# --- v1.2 ACCENT ALLOW-GATE ON VERB P ------------------------------------------------
+# The scored accent is gated at PARSE time (ae= refuses to store a rejected effect). Verb P is
+# the other door: it hands the wire's i= straight to the overlay. BOTH the CV_PULSE call site
+# and _fireAccent() must allow-gate it, exactly as the Logics and the PSI do.
+# compile_contract.cpp's A6 guard proves the BEHAVIOUR, and its white-box leg catches the gate
+# inside _fireAccent() going missing — but the two gates are redundant BY DESIGN, so no runtime
+# test can see the CALL-SITE one deleted on its own (the inner gate still returns CE_SOLID and
+# the board still behaves). That is exactly how it rotted away unnoticed before. Pin it here.
+if ! sed 's://.*::' ../../src/contract/ContractFlthy.h \
+     | awk '/case CV_PULSE:/,/break;/' | grep -q 'accentEffectAllowed'; then
+  echo "FAIL: ContractFlthy.h's CV_PULSE handler does not allow-gate the wire's i= with"
+  echo "      accentEffectAllowed(). A stateful i= (scan/sparkle/meter) would reach the overlay"
+  echo "      and corrupt the base look's shared frame counters; a native i= would hand the"
+  echo "      render slot to a renderer contractRenderHP never dispatches, so the accent could"
+  echo "      NEVER EXPIRE and the jewel would LATCH. Gate at the call site AND in _fireAccent."
+  exit 1
+fi
+
 # --- WIRE BUDGET ---------------------------------------------------------------------
 # main.cpp's serial line buffer truncates SILENTLY. compile_contract.cpp pins the longest v1.2
 # line against the MOCK's INPUTBUFFERLEN; this pins the mock against the FIRMWARE's, so the

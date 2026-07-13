@@ -518,8 +518,23 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
       // P is still exactly today's solid fill — no v1.1 client ever sent one). Same
       // _fireAccent() the board-side score edge uses: ONE overlay primitive, two triggers,
       // so a mirrored show and a delivered blueprint cannot look different.
+      //
+      // ALLOW-GATE THE WIRE'S i= HERE (parity with the Logics and the PSI, which gate at
+      // their call sites too). The SCORED accent is gated at PARSE time — ae= never stores a
+      // rejected effect — but verb P hands the wire's i= straight to the overlay, so this is
+      // the one path a stateful/native effect can reach it by. Rejected => CE_SOLID, i.e. the
+      // v1.1 solid fill, never "no accent": a P the operator sent must still punctuate.
+      //   * scan/sparkle/meter are STATEFUL — they share u.frame/u.frameMs with the BASE look,
+      //     so a 180 ms swap-and-restore corrupts the base look's state machine mid-song.
+      //   * native:<n> hands the frame to a renderer we do not own. contractRenderHP() — and
+      //     therefore the overlay's EXPIRY CHECK — only runs from LEDFunction 101..FLTHY_FX_MAX,
+      //     so a native overlay could never expire and would LATCH the jewel.
+      // _fireAccent() re-asserts the same gate. BOTH are load-bearing: this one keeps the bad
+      // effect out of the overlay primitive, that one covers every other caller of it. Neither
+      // is redundant belt-and-braces — see the CV_PULSE gate check in test/host/run.sh.
+      ContractEffect fx = (pr.hasEffect && accentEffectAllowed(pr.effect)) ? pr.effect : CE_SOLID;
       _fireAccent(hp,
-                  pr.hasEffect ? pr.effect : CE_SOLID,
+                  fx,
                   pr.hasColor  ? pr.color  : RGB{255, 255, 255},
                   pr.hasBright ? pr.bright : u.brightBase,   // the unit's own CEILING, not a
                                                              // literal 200: an accent must land

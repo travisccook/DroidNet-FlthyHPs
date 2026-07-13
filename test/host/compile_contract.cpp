@@ -478,6 +478,176 @@ int main() {
     if (contractParse("**X", q)) applyContract(q);
   }
 
+  // ======================================================================================
+  // A6 guard (contract v1.2 — the LATCH / STATE-CORRUPTION hazard on verb P).
+  // The SCORED accent is allow-gated at PARSE time: ae= simply refuses to store a rejected
+  // effect, so a ScoreEntry can never carry one. Verb P is the OTHER door — it hands the
+  // wire's i= straight to the overlay — and nothing here used to send a rejected i= on a P,
+  // so the gate that stops it was covered by NO test at all.
+  // Two effects classes must never become an overlay (contract_core's accentEffectAllowed):
+  //   * STATEFUL (scan/sparkle/meter): they drive u.frame/u.frameMs, which they SHARE with the
+  //     BASE look — a ~200 ms swap-and-restore corrupts the base look's state machine mid-song.
+  //   * NATIVE (native:<n>): contractRenderHP() — and therefore the overlay's EXPIRY CHECK —
+  //     only ever runs from LEDFunction 101..FLTHY_FX_MAX. Hand the render slot to a renderer
+  //     the contract does not own and the overlay can never expire: the jewel LATCHES.
+  // Rejected => CE_SOLID (the v1.1 solid fill), never "no accent": a P the operator sent must
+  // still punctuate. Pinned three ways, because the gates are deliberately redundant:
+  //   (a)+(b) BLACK BOX through verb P — the contract-level promise;
+  //   (c)     WHITE BOX straight into _fireAccent(), which BYPASSES the CV_PULSE call site and
+  //           is therefore the only thing that can see the gate INSIDE _fireAccent go missing.
+  {
+    ParsedContract q;
+    if (contractParse("**X", q)) applyContract(q);
+    _mock_millis = 600000;
+    uint32_t t = _mock_millis;
+    _mock_servoTouches = 0;                       // LED-only audit across this whole guard
+    boolean twitchBefore[HPCOUNT] = {enableTwitchHP[0], enableTwitchHP[1], enableTwitchHP[2]};
+
+    // a plain contract base look: blue, no beat pump, d=0 so it never ms-reverts under us
+    if (contractParse("HFA:i=solid,c=0000FF,b=200,m=0,d=0", q)) applyContract(q);
+    byte baseSlot = LED_command[0].LEDFunction;
+    if (baseSlot < 101 || baseSlot > FLTHY_FX_MAX) {
+      printf("FAIL: the base look is not in a contract render slot (LEDFunction=%u) — this "
+             "guard is measuring nothing\n", (unsigned)baseSlot);
+      return 1;
+    }
+
+    // ---- (a) verb P carrying i=native:3 — the LATCH hazard --------------------------------
+    if (contractParse("HFP:i=native:3,c=FF0000,d=200", q)) applyContract(q);
+    if (!gUnit[0].pulseActive || gUnit[0].pulseStartMs != t) {
+      printf("FAIL: verb P did not fire an accent at all — this guard is measuring nothing\n");
+      return 1;
+    }
+    if (gUnit[0].pulseFx != CE_SOLID) {
+      printf("FAIL: a verb P with i=native:3 ARMED A NATIVE OVERLAY (pulseFx=%d, want CE_SOLID=%d). "
+             "The native renderer is not in contractRenderHP's dispatch, so the overlay's expiry "
+             "check would never run again and the jewel LATCHES\n",
+             (int)gUnit[0].pulseFx, (int)CE_SOLID);
+      return 1;
+    }
+    if (LED_command[0].LEDFunction != baseSlot) {
+      printf("FAIL: a verb P with i=native:3 handed the render slot to the NATIVE path "
+             "(LEDFunction=%u, want the contract slot %u) — contractRenderHP stops running and "
+             "the accent can never expire\n",
+             (unsigned)LED_command[0].LEDFunction, (unsigned)baseSlot);
+      return 1;
+    }
+    contractRenderHP(0);                          // it must fall back to the SOLID fill: accent
+    uint32_t px = neoStrips[0].shown[0];          // red over the blue base, centre pixel included
+    if (((px >> 16) & 0xFF) == 0 || (px & 0xFF) != 0) {
+      printf("FAIL: the native-rejected accent did not fall back to the solid fill (want the "
+             "accent RED, got 0x%06lX)\n", (unsigned long)px);
+      return 1;
+    }
+    _mock_millis = t + 400;                       // ...and, above all, it must EXPIRE
+    contractRenderHP(0);
+    if (gUnit[0].pulseActive) {
+      printf("FAIL: the accent overlay NEVER EXPIRED 400 ms into a 200 ms accent — the board is "
+             "LATCHED\n");
+      return 1;
+    }
+    px = neoStrips[0].shown[0];
+    if ((px & 0xFF) == 0 || ((px >> 16) & 0xFF) != 0) {
+      printf("FAIL: the expired accent did not restore the blue base look (got 0x%06lX)\n",
+             (unsigned long)px);
+      return 1;
+    }
+
+    // ---- (b) verb P carrying i=scan — the STATE-CORRUPTION hazard -------------------------
+    // CE_SCAN walks a dot around ring pixels 1..6 and leaves the jewel's CENTRE pixel (px0)
+    // DARK, off frame counters it shares with the base look. The solid fallback lights px0.
+    // So px0 tells the two renders apart, and frame/frameMs tell us the base look survived.
+    uint8_t  frameBefore   = gUnit[0].frame;
+    uint32_t frameMsBefore = gUnit[0].frameMs;
+    _mock_millis = t + 1000;                      // well clear of the 340 ms strobe cool-down
+    if (contractParse("HFP:i=scan,c=FF0000,d=200", q)) applyContract(q);
+    if (!gUnit[0].pulseActive || gUnit[0].pulseStartMs != t + 1000) {
+      printf("FAIL: verb P (i=scan) did not fire an accent at all — this guard is measuring "
+             "nothing\n");
+      return 1;
+    }
+    if (gUnit[0].pulseFx != CE_SOLID) {
+      printf("FAIL: a verb P with i=scan ARMED A STATEFUL OVERLAY (pulseFx=%d, want CE_SOLID=%d) "
+             "— CE_SCAN drives the frame counters it SHARES with the base look, so the swap-and-"
+             "restore corrupts the base look's state machine mid-song\n",
+             (int)gUnit[0].pulseFx, (int)CE_SOLID);
+      return 1;
+    }
+    contractRenderHP(0);
+    px = neoStrips[0].shown[0];                   // the CENTRE pixel
+    if (px == 0) {
+      printf("FAIL: the scan-rejected accent is rendering CE_SCAN — the jewel's CENTRE pixel is "
+             "dark, where the solid fallback must light it\n");
+      return 1;
+    }
+    if (((px >> 16) & 0xFF) == 0 || (px & 0xFF) != 0) {
+      printf("FAIL: the scan-rejected accent did not fall back to the solid fill (want the accent "
+             "RED, got 0x%06lX)\n", (unsigned long)px);
+      return 1;
+    }
+    if (gUnit[0].frame != frameBefore || gUnit[0].frameMs != frameMsBefore) {
+      printf("FAIL: the accent overlay advanced the BASE look's shared frame counters "
+             "(frame %u->%u, frameMs %lu->%lu) — a stateful effect got in\n",
+             (unsigned)frameBefore, (unsigned)gUnit[0].frame,
+             (unsigned long)frameMsBefore, (unsigned long)gUnit[0].frameMs);
+      return 1;
+    }
+    _mock_millis = t + 1400;                      // and it EXPIRES: no latch here either
+    contractRenderHP(0);
+    if (gUnit[0].pulseActive) {
+      printf("FAIL: the scan-rejected accent never EXPIRED — the board is LATCHED\n");
+      return 1;
+    }
+
+    // ---- (c) WHITE BOX: straight into _fireAccent(), bypassing the CV_PULSE call site ------
+    // (a) and (b) are satisfied by EITHER gate, so on their own they cannot see the one inside
+    // _fireAccent() disappear. This can: it is the primitive's own contract, and it also covers
+    // every future caller of it.
+    const ContractEffect rejected[] = {CE_SCAN, CE_SPARKLE, CE_METER, CE_NATIVE};
+    for (unsigned i = 0; i < sizeof(rejected) / sizeof(rejected[0]); i++) {
+      _mock_millis = t + 2000 + (uint32_t)i * 400u;        // each fire clear of the cool-down
+      if (!_fireAccent(0, rejected[i], RGB{255, 0, 0}, 200, 200)) {
+        printf("FAIL: _fireAccent refused to fire at all (effect %d) — this guard is measuring "
+               "nothing\n", (int)rejected[i]);
+        return 1;
+      }
+      if (gUnit[0].pulseFx != CE_SOLID) {
+        printf("FAIL: _fireAccent ARMED a stateful/native overlay (effect %d -> pulseFx=%d, want "
+               "CE_SOLID=%d) when handed one DIRECTLY. The allow-gate inside _fireAccent is gone, "
+               "so the CV_PULSE call site is the only thing left between a native i= and a "
+               "permanently LATCHED jewel\n",
+               (int)rejected[i], (int)gUnit[0].pulseFx, (int)CE_SOLID);
+        return 1;
+      }
+      if (LED_command[0].LEDFunction < 101 || LED_command[0].LEDFunction > FLTHY_FX_MAX) {
+        printf("FAIL: _fireAccent left the render slot outside the contract range "
+               "(LEDFunction=%u) — contractRenderHP stops running and the accent can never "
+               "expire\n", (unsigned)LED_command[0].LEDFunction);
+        return 1;
+      }
+    }
+
+    // LED-ONLY INVARIANT (§11): none of the above may have gone near a holoprojector SERVO.
+    if (_mock_servoTouches != 0) {
+      printf("FAIL: the rejected-accent path touched the HP SERVO command path %d time(s) — this "
+             "fork promises LED-EFFECTS-ONLY\n", _mock_servoTouches);
+      return 1;
+    }
+    for (uint8_t hp = 0; hp < HPCOUNT; hp++) {
+      if (enableTwitchHP[hp] != twitchBefore[hp]) {
+        printf("FAIL: the rejected-accent path changed enableTwitchHP[%u] (a PHYSICAL servo "
+               "flag)\n", (unsigned)hp);
+        return 1;
+      }
+      if ((byte)HP_command[hp].HPFunction != 0 || (byte)HP_command[hp].HPOption1 != 0) {
+        printf("FAIL: the rejected-accent path left an HP SERVO command staged on HP %u\n",
+               (unsigned)hp);
+        return 1;
+      }
+    }
+    if (contractParse("**X", q)) applyContract(q);
+  }
+
   // A5 guard: Flthy's CE_FLASH BEAT-PUMPS — it renders at the envelope, not at the raw b=
   // ceiling. The Logics' CE_FLASH is being aligned TO this line, so pin it here or the
   // alignment target can drift out from under the other two boards.
@@ -546,6 +716,6 @@ int main() {
 
   printf("ContractFlthy.h type-check + score-native / servo-twitch / score-clear / build-ramp / "
          "Q-unit / v1.2 accent-self-fire / servo-interlock / beat-edge / strobe-cap / "
-         "flash-pump guards OK\n");
+         "accent-allow-gate (no stateful or native overlay, ever) / flash-pump guards OK\n");
   return 0;
 }
