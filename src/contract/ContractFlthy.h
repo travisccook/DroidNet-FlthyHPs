@@ -396,7 +396,7 @@ static inline bool _fireAccent(uint8_t hp, ContractEffect fx, const ContractRGB&
   // v1.1 gated on 1x the min state here — with a Phase-2 every-beat accent above ~176 BPM
   // that would have let the jewels strobe at up to 5.9 Hz, the one board of the three that
   // could exceed the guidance.
-  if (u.pulseLastMs != 0 && (uint32_t)(now - u.pulseLastMs) < 2 * FLTHY_STROBE_MIN_MS) return false;
+  if (!strobeCoolDownExpired(u.pulseLastMs, now, 2 * FLTHY_STROBE_MIN_MS)) return false;
   if (durMs < FLTHY_STROBE_MIN_MS) durMs = FLTHY_STROBE_MIN_MS;   // a state shorter than the
   if (durMs > 2550u) durMs = 2550u;                               // min state IS a strobe
   // A stateful/native effect can never become an overlay: it would corrupt the base look's
