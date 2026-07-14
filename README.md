@@ -93,8 +93,18 @@ non-latching render primitive a no-op). Verified here:
   holoprojector servo) and the serial wire budget.
 - `bash test/host/run.sh` now finishes by cross-compiling the firmware for real.
 
-Flash is comfortable on this board, unlike its PSI sibling: **32,570 B of 253,952 B (12.8%)**, with
+Flash is comfortable on this board, unlike its PSI sibling: **32,826 B of 253,952 B (12.9%)**, with
 SRAM at 2,332 B of 8,192 B (28.5%). Nowhere near either ceiling.
+
+The stack has been bounded statically too (`test/host/stack_report.py`): **386 B of the 5,860 B
+available (7%)**, with no recursion, no `alloca`/VLA, and — unlike the PSI — **no interrupt-nesting
+hazard**. That last point is down to Ryan's choice of library, and it is worth crediting:
+Adafruit_NeoPixel's `show()` saves and *restores* `SREG` rather than blindly re-enabling interrupts,
+so even though this firmware also renders LEDs from inside its I2C interrupt, that interrupt cannot
+re-enter itself. The sister PSI fork, which uses FastLED, is not so lucky. (One caveat: this board
+*does* link the heap — Arduino `String` pulls in `malloc`/`free` — and the heap grows up toward the
+stack. With 5.4 KB free that is not an overflow risk, but long-run fragmentation is not something a
+static analysis can rule out.)
 
 **What is NOT verified.** Everything only a physical board can tell you. **A successful link is not a
 bench test.** That the loop stays stable, that the timing holds, that a jewel looks like anything you

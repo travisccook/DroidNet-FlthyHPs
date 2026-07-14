@@ -214,6 +214,18 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB
       uint32_t ph = (now - startMs) % period;
       uint32_t tri = (ph < period / 2) ? (ph * 2 * 255 / period)
                                        : ((period - ph) * 2 * 255 / period);
+      // An ODD period's midpoint raw-computes 256, not 255 (e.g. period=241, ph=120 ->
+      // 121*510/241 == 256). At full brightness that is 255*256/255 == 256, and the uint8_t
+      // cast truncates it to 0 — the BRIGHTEST instant of the breathe would render BLACK.
+      // contract_core.h's fxTwinkleBright() computes the same triangle and already carries
+      // exactly this guard; this copy of the math was missing it.
+      // Today the bug is unreachable, but only by accident: every brightness store goes through
+      // _clampBright(), so envB can never exceed FLTHY_SAFE_MAX_BRIGHT (200), and 200*256/255
+      // truncates to 200 — the same value the clamp gives. Verified by brute force over the whole
+      // (period, ph, envB<=200) space: this clamp changes ZERO rendered values, so nothing moves
+      // in the JS visualizer mirror either. Raise that photosensitivity cap toward 255 without
+      // this line, though, and the black flash comes back (8 samples at envB=255).
+      if (tri > 255u) tri = 255u;
       uint8_t br = (uint8_t)((uint16_t)envB * (uint16_t)tri / 255);
       _fillShow(hp, _scale(color, br));
       break;
