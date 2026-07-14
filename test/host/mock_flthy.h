@@ -1,9 +1,6 @@
 // Part of the DroidNet Driveable-Animation Contract test harness — an additive layer
 // bolted onto Ryan Sondgeroth's FlthyHPs firmware. Copyright (c) 2026 Travis Cook.
-// SPDX-License-Identifier: MIT (see LICENSE-DroidNet-Contract)
-// The firmware whose API this file mocks is Ryan Sondgeroth's work; it carries no
-// license and is all rights reserved by him, and that MIT license covers our files
-// only. See the NOTICE in README.md.
+// SPDX-License-Identifier: MIT
 //
 // Minimal host mock of the Flthy board API surface that ContractFlthy.h uses, to
 // TYPE-CHECK the firmware layer on the host (NOT a behavioral sim). Signatures

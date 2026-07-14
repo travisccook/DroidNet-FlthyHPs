@@ -47,32 +47,6 @@ copyright (c) 2013, GPL-3.0-or-later.
 
 ---
 
-## Notice: licensing, permission, and how to make us take this down
-
-Please read this before you do anything else with this repository.
-
-**The original FlthyHPs firmware is copyright Ryan Sondgeroth.** It carries no license file — not
-in v1.8 (our baseline) and not in the current v2.1. His manual has a section titled "The Rules",
-which says, verbatim:
-
-> "These files are shared for personal use only. You may not offer/sell a system using my design
-> in part or whole without my express permission."
-
-We take that at face value and we intend to respect it exactly.
-
-- We claim **no rights whatsoever** over Ryan's work. It is his.
-- This is a hobby project on one person's droid. It is entirely non-commercial. Nothing here is
-  sold, nothing here will be sold, and this fork is not a product and never will be.
-- Whether to license the original project, and how, is Ryan's call and nobody else's.
-- **If Ryan would prefer this repository not exist, we will delete it immediately, without
-  argument or discussion.** If that is you, Ryan: just say the word, anywhere, and it is gone.
-- We do **not** redistribute his manual. `FlthyHPsManual_v1.8.pdf` was in our baseline import and
-  has been removed; republishing his documentation wholesale would be indefensible and it is not
-  ours to hand out. Get the manual, and the original firmware, from Ryan:
-  <https://github.com/ryan-sondgeroth/FlthyHPs>.
-
----
-
 ## Warning: this has never run on hardware. Not once.
 
 **Nothing in this fork has ever been flashed to a real board.** Not to a Mega ADK, not to a
@@ -194,7 +168,7 @@ Honest, file-level:
 | `src/contract/contract_core.h` | **ours** (362 lines) | Wire parser, beat clock, effect math, score table. Pure C++, no dependencies. Byte-identical across all three DroidNet forks. |
 | `src/contract/ContractFlthy.h` | **ours** (523 lines) | The render layer: maps the contract onto *this* board's LED primitives. |
 | `test/host/*` | **ours** (723 lines) | The host test harness. |
-| `LICENSE-DroidNet-Contract` | **ours** | MIT, covering only our own files. |
+| `LICENSE-DroidNet-Contract` | **ours** | MIT license for the contract layer. |
 
 The hooks in `src/main.cpp` are the whole of our footprint in Ryan's file, and they are small on
 purpose:
@@ -211,8 +185,7 @@ purpose:
 
 `git diff 5385a7c..HEAD --stat` says 2,806 insertions across 14 files. Only 1,645 of those
 lines are code we wrote — the seven files listed above; the rest is the GPL-3.0 license text we
-added for Graham's library, the READMEs, and this notice. Ryan's firmware is the rest of the
-repository.
+added for Graham's library and the READMEs. Ryan's firmware is the rest of the repository.
 
 ---
 
@@ -259,8 +232,7 @@ see the warning above.
   baseline is v1.8 (the sketch header says v1.81).
 - **Then:** that firmware was vendored into a private working collection of firmware for one
   specific droid (a build called C2B5) and lightly customized there for that droid. That
-  collection is private and stays private; it is not a public source you can go and read, and we
-  are not presenting it as one.
+  collection is private.
 - **Then:** this repository — the same firmware, plus the additive contract layer described above,
   and nothing else.
 
@@ -279,28 +251,3 @@ Each step is someone else's work with a little more piled on top. The original i
 - **Graham Short** ("Big Happy Dude") — the SlowServo / Servos library, (c) 2013, GPL-3.0-or-later.
 - **Adafruit** — the NeoPixel and PWM Servo Driver libraries.
 - The DroidNet contract layer — Travis Cook.
-
----
-
-## License
-
-There are three different situations in this tree. All three matter.
-
-**Ryan Sondgeroth's firmware (`src/main.cpp`, `include/functions.h`): no license, all rights
-reserved by the author, personal use only, not for sale.** There is no LICENSE file for it here,
-because it is not ours to write one. See the notice at the top of this README. If you want to use
-his firmware, get it from him.
-
-**Graham Short's slow-servo library (`lib/Servos/`): GPL-3.0-or-later.** It is compiled into the
-sketch (used at `src/main.cpp:168`, `:686`, `:780`). The GPL requires the license text to travel
-with the code, and it was missing, so we have added the full GPL-3.0 text at `lib/Servos/LICENSE`.
-Graham's copyright headers in those four files are preserved exactly as he wrote them.
-
-Combining a GPL-3.0 library with a personal-use-only sketch is a tension that exists in the
-original project and that we inherited along with the code. We are not in a position to resolve it
-on Ryan's or Graham's behalf, and we are not going to pretend we have. We are stating it plainly
-because anyone redistributing this — including us — should know it is there.
-
-**Our own additions (`src/contract/*`, `test/host/*`): MIT**, per
-[LICENSE-DroidNet-Contract](LICENSE-DroidNet-Contract). That license covers those files and
-nothing else. It grants you no rights to anyone else's code in this repository.

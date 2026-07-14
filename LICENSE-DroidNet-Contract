@@ -1,27 +1,8 @@
-DroidNet Driveable-Animation Contract — license for OUR files only
-==================================================================
-
-SCOPE. This license applies ONLY to the files added by the DroidNet fork:
-
-    src/contract/contract_core.h
-    src/contract/ContractFlthy.h
-    test/host/*
-    DROIDNET_FORK.md
-
-It applies to NOTHING ELSE in this repository.
-
-In particular, it does NOT apply to:
-
-  * src/main.cpp and include/functions.h — the FlthyHPs firmware, copyright (c) Ryan
-    Sondgeroth (FlthyMcNsty). No license; all rights reserved by the author. His manual
-    states the files are shared for personal use only and that no system using his design
-    may be offered or sold without his express permission. We claim no rights over his
-    work and grant you none. See README.md.
-
-  * lib/Servos/* — the SlowServoPCS9685 library, copyright (c) 2013 Graham Short
-    ("Big Happy Dude"). GPL-3.0-or-later; see lib/Servos/LICENSE.
-
-Nothing in this file grants any right to any other author's code.
+DroidNet contract layer — src/contract/contract_core.h, src/contract/ContractFlthy.h, test/host/
+(Everything else in this tree is the upstream FlthyHPs firmware by Ryan Sondgeroth and
+contributors, plus the bundled slow-servo library by Graham Short.)
+contract_core.h is shared byte-identically with the DroidNet RSeries and PSI forks; its author
+licenses it LGPL-2.1-only in the RSeries fork and MIT here.
 
 
 MIT License

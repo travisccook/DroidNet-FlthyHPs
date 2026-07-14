@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 # Part of the DroidNet Driveable-Animation Contract test harness — an additive layer
 # bolted onto Ryan Sondgeroth's FlthyHPs firmware. Copyright (c) 2026 Travis Cook.
-# SPDX-License-Identifier: MIT (see LICENSE-DroidNet-Contract)
-# The firmware this harness checks is Ryan Sondgeroth's work; it carries no license and
-# is all rights reserved by him, and that MIT license covers our files only. See README.
+# SPDX-License-Identifier: MIT
 #
 # Host checks for the Flthy HPs contract fork (stages 1-3 need no hardware and no toolchain; stage 4 is the real cross-compile):
 #   1. contract_core.h parser unit tests

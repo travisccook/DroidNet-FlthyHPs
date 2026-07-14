@@ -1,8 +1,7 @@
 # DroidNet fork notes — FlthyHPs
 
-Working notes for the fork itself. The user-facing documentation, attribution, licensing
-notice, and the "never run on hardware" warning are in [README.md](README.md) — read that
-first.
+Working notes for the fork itself. The user-facing documentation, attribution, and the
+"never run on hardware" warning are in [README.md](README.md) — read that first.
 
 This is an **additive** fork of FlthyHPs by Ryan Sondgeroth
 (<https://github.com/ryan-sondgeroth/FlthyHPs>). His firmware is the repository; our layer
@@ -41,8 +40,7 @@ I2C intake) still behaves exactly as it did before.
   after it is the DroidNet layer.
 - **Seeded from:** the vendored copy of FlthyHPs (v1.8 / sketch header v1.81) in the owner's
   private working collection of firmware for the C2B5 droid, 2026-07-12, git-tracked files
-  only. That collection is private and is not a source anyone can visit; upstream is Ryan's
-  repo, linked above.
+  only. That collection is private; upstream is Ryan's repo, linked above.
 - **MCU/toolchain:** ATmega2560 (Arduino Mega ADK), Arduino/AVR via PlatformIO. 8 KB SRAM /
   256 KB flash — the roomiest of the three boards this contract targets.
 - **Role:** one of three board forks in the Cantina dome light-show program (RSeries Logics,
