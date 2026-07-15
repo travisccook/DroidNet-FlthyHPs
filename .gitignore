@@ -8,3 +8,7 @@ build/
 # https://github.com/ryan-sondgeroth/FlthyHPs. Ignored so a local copy is never
 # committed back into this fork.
 FlthyHPsManual*.pdf
+
+# Committed flashable firmware images live here on purpose (override *.hex above)
+!firmware/
+!firmware/**

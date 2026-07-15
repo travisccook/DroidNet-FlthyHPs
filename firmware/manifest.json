@@ -1,0 +1,26 @@
+{
+  "built": "2026-07-15",
+  "toolchain": "PlatformIO Core 6.1.19, esptool 4.9.0, avrdude (tool-avrdude 1.70300)",
+  "status": "NEVER FLASHED TO HARDWARE \u2014 built and verified against DroidNet's flasher logic only. Bench-test before field use.",
+  "flash_via": "DroidNet web UI -> Flash tab (upload file, connect board over USB).",
+  "board": "FlthyHPs Holoprojectors (Ryan Sondgeroth) \u2014 Arduino Mega ADK, ATmega2560",
+  "source_repo": "https://github.com/travisccook/DroidNet-FlthyHPs",
+  "source_commit": "310f372",
+  "artifacts": [
+    {
+      "file": "DroidNet-FlthyHPs-atmega2560-310f372.hex",
+      "role": "PRIMARY",
+      "chip": "atmega2560",
+      "mcu": "ATmega2560",
+      "env": "FlthyHPs",
+      "droidnet_flash": {
+        "file_type": "hex",
+        "select_chip": "auto (Mega, wiring @115200)",
+        "flash_address": "n/a",
+        "note": "Board auto-detected from MCU signature (0x1e9801 -> mega). Serial 9600 for the monitor; flashing uses the Mega/STK500v2 'wiring' programmer."
+      },
+      "size_bytes": 92354,
+      "sha256": "e683727a3a8c9dab8e93cd9ec3b8e1842e2b5f342411c0567a9ccd086cbef60b"
+    }
+  ]
+}
