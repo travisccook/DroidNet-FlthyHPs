@@ -3,21 +3,23 @@
 # bolted onto Ryan Sondgeroth's FlthyHPs firmware. Copyright (c) 2026 Travis Cook.
 # SPDX-License-Identifier: MIT
 #
-# Host checks for the Flthy HPs contract fork (stages 1-3 need no hardware and no toolchain; stage 4 is the real cross-compile):
+# Host checks for the Flthy HPs fork (stages 1-5 need no hardware and no toolchain; stage 6 is the real cross-compile):
 #   1. contract_core.h parser unit tests
 #   2. ContractFlthy.h firmware-layer type-check against a mock of the board API
 #   3. static source guards (the LED-only invariant + the serial wire budget)
-#   4. REAL cross-compile for the ATmega2560 (optional; needs PlatformIO)
+#   4. contract parser fuzz + differential (ASan/UBSan)
+#   5. native_ext.h (H<unit>B<level> brightness) parser unit tests
+#   6. REAL cross-compile for the ATmega2560 (optional; needs PlatformIO)
 set -e
 cd "$(dirname "$0")"
-echo "[1/5] contract_core parser unit tests"
+echo "[1/6] contract_core parser unit tests"
 clang++ -std=c++17 -Wall -Wextra -O0 test_contract_core.cpp -o /tmp/flthy_contract_test
 /tmp/flthy_contract_test
-echo "[2/5] ContractFlthy.h firmware type-check"
+echo "[2/6] ContractFlthy.h firmware type-check"
 clang++ -std=c++17 -Wall -Wextra compile_contract.cpp -o /tmp/flthy_fw_syntax
 /tmp/flthy_fw_syntax
 
-echo "[3/5] static source guards"
+echo "[3/6] static source guards"
 # --- LED-ONLY INVARIANT (README §11) -------------------------------------------------
 # The '!' contract layer must never move a holoprojector SERVO. compile_contract.cpp has a
 # runtime tripwire for this, but that can only catch a servo touch on a path the guard
@@ -65,7 +67,7 @@ if [ "$FW_BUF" != "$MOCK_BUF" ]; then
 fi
 echo "LED-only invariant + wire budget (INPUTBUFFERLEN=$FW_BUF) OK"
 
-echo "[4/5] parser fuzz + differential (ASan/UBSan, deterministic)"
+echo "[4/6] parser fuzz + differential (ASan/UBSan, deterministic)"
 # The parsers are the one place this project eats bytes off a shared, noisy serial bus, and to
 # save 1,008 B of flash on the PSI they were hand-rolled instead of using strtol/strtoul. This
 # stage is the differential that keeps them honest: ~1.55M checks against an INDEPENDENT model
@@ -77,7 +79,14 @@ clang++ -std=c++17 -O1 -fsanitize=address,undefined -fno-sanitize-recover=all \
         fuzz_parsers.cpp -o /tmp/flthyhps_fuzz
 /tmp/flthyhps_fuzz
 
-echo "[5/5] REAL cross-compile (ATmega2560 (Arduino Mega ADK)) -- optional"
+echo "[5/6] native_ext parser unit tests (H<unit>B<level> brightness)"
+# The fork's one native command. nativeExtParse() is pure (no Arduino), so its whole accept/
+# reject table runs here. -Wconversion -Werror because the same code runs with a 16-bit int
+# on the ATmega2560, where a silent narrowing is a real bug.
+clang++ -std=c++17 -Wall -Wextra -Wconversion -Werror -O0 test_native_ext.cpp -o /tmp/flthy_native_ext_test
+/tmp/flthy_native_ext_test
+
+echo "[6/6] REAL cross-compile (ATmega2560 (Arduino Mega ADK)) -- optional"
 # THIS is the stage that makes "it compiles" a claim about the FIRMWARE rather than a claim
 # about our mock. Stages 1-3 are host checks: they prove the contract logic and they pin the
 # board API against a HAND-WRITTEN MOCK -- and a mock is only ever as honest as its author.
