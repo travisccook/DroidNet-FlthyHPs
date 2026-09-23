@@ -65,9 +65,12 @@ non-latching render primitive a no-op). Verified here:
 - `test/host/compile_contract.cpp` — a type-check of the firmware layer against a **mock** of the
   board's API (`test/host/mock_flthy.h`), plus the LED-only invariant (this layer must never move a
   holoprojector servo) and the serial wire budget.
+- `test/host/test_native_ext.cpp` — 77 accept/reject checks for the native brightness parser
+  (`src/droidnet/native_ext.h`), and `test/host/fuzz_native_ext.cpp` — 2,965,122 differential
+  checks of the same parser against an independent model under ASan/UBSan.
 - `bash test/host/run.sh` now finishes by cross-compiling the firmware for real.
 
-Flash is comfortable on this board, unlike its PSI sibling: **32,826 B of 253,952 B (12.9%)**, with
+Flash is comfortable on this board, unlike its PSI sibling: **33,122 B of 253,952 B (13.0%)**, with
 SRAM at 2,332 B of 8,192 B (28.5%). Nowhere near either ceiling.
 
 The stack has been bounded statically too (`test/host/stack_report.py`): **386 B of the 5,860 B
@@ -92,9 +95,13 @@ dome, and be ready for it to be wrong. This is a starting point, not a release.
 
 ## What this fork adds
 
-One thing: an additive **Driveable-Animation Contract**, so an external tool (Cantina Studio — a
-music-analysis and dome-lighting authoring tool) can drive the holoprojector jewels in time with a
-song.
+Two things:
+
+1. an additive **Driveable-Animation Contract**, so an external tool (Cantina Studio — a
+   music-analysis and dome-lighting authoring tool) can drive the holoprojector jewels in time with
+   a song (the rest of this section);
+2. one native **brightness** command, `H<unit>B<level>` (see
+   [One native command: brightness](#one-native-command-brightness) below).
 
 The wire grammar is a single new command prefix:
 
@@ -137,7 +144,8 @@ pixel is handled separately per effect.)
 
 This is additive and backward-compatible. It is **not** a rewrite. Every `DT##` LED command, every
 servo command, every `S#` sequence, the auto-twitch system, and the I2C intake all behave exactly
-as they did before. The contract path is entered only when the first byte of a command is `!`.
+as they did before. The contract path is entered only when the first byte of a command is `!`, and
+the brightness command only when it is `H`.
 
 ### LED effects only. The contract never moves a servo. Ever.
 
@@ -153,6 +161,40 @@ This is a deliberate safety invariant, and builders should know about it:
 
 Ryan's servo code is entirely his and is untouched.
 
+### One native command: brightness
+
+`H<unit>B<level>` sets the brightness of one or more jewels. Library id: `flthy.led.brightness`.
+
+```text
+H <unit> B <level>        e.g. HAB128 (all), HFB255 (front), HTB1 (top)
+
+  unit    F R T X Y Z A, uppercase only, fanned out exactly like the stock designators:
+          F, X, Y, A -> front;  R, X, Z, A -> rear;  T, Y, Z, A -> top
+  level   1 to 3 digits, value 1-255 (leading zeros are accepted: HAB007 is 7)
+```
+
+- **Strict.** The line must end right after the level. Anything else is ignored silently, with no
+  clamp and no reply: `HAB0`, `HAB256`, `HAB1000`, `hab128`, `HAb128`, `HAB128 x`, a merged line
+  such as `HAB1283P100`, and any line the stock `|<n>` split fired on (`HAB128|5`). 0 never reaches
+  `setBrightness()`, which would wipe the pixel buffer.
+- **RAM only.** Nothing is written to EEPROM. The level lasts until the next command or a reset, and
+  power-on is still `BRIGHT 100`. Adafruit stores `brightness + 1` and scales by `>> 8`, so
+  `BRIGHT 100` is 101/256, about 39.5% of this command's scale; 255 is the unscaled hardware maximum,
+  about 2.53× today's look.
+- **Up to 255 on purpose.** The native command goes above the contract's
+  `FLTHY_SAFE_MAX_BRIGHT = 200` jewel clamp. That is a deliberate choice (1-255), not a regression.
+  The contract's own `B` verb is unchanged, and whichever of the two ran last sets the level.
+- **Repaints at once.** For each addressed jewel the handler calls `setBrightness(level)` (which
+  rescales the RAM buffer immediately), marks the contract's memoised looks for a repaint, and calls
+  `show()`, so held frames change too.
+- **LED-only, like the contract.** The parser is pure (`src/droidnet/native_ext.h`, no Arduino
+  includes) and the handler sits between `// DroidNet native brightness BEGIN` and `END` markers in
+  `src/main.cpp`. `test/host/run.sh` fails if either names the servo command path.
+- **The `B` is load-bearing.** If the `H` is ever lost, the tail (`AB128`) is inert under the stock
+  parser. Without it, `HA101` would leave `A101`, which centres every holoprojector servo.
+
+Stock v1.81 has no `H` branch, so an unflashed board ignores the command.
+
 ---
 
 ## What is theirs, and what is ours
@@ -161,31 +203,38 @@ Honest, file-level:
 
 | Path | Whose | What |
 | --- | --- | --- |
-| `src/main.cpp` | **Ryan Sondgeroth** | The firmware. 1,567 lines. Ours: ~45 lines of hooks (see below). |
+| `src/main.cpp` | **Ryan Sondgeroth** | The firmware. Ours: the hooks listed below. |
 | `include/functions.h` | **Ryan Sondgeroth** | Function declarations. Untouched. |
 | `lib/Servos/*` | **Graham Short** (BHD) | The slow-servo library, GPL-3.0-or-later. Untouched except that we added the missing `LICENSE` file. |
 | `README_C2B5.md` | prior collection | The README that came with our vendored copy. Not Ryan's own words. |
-| `src/contract/contract_core.h` | **ours** (362 lines) | Wire parser, beat clock, effect math, score table. Pure C++, no dependencies. Byte-identical across all three DroidNet forks. |
-| `src/contract/ContractFlthy.h` | **ours** (523 lines) | The render layer: maps the contract onto *this* board's LED primitives. |
-| `test/host/*` | **ours** (723 lines) | The host test harness. |
+| `src/contract/contract_core.h` | **ours** | Wire parser, beat clock, effect math, score table. Pure C++, no dependencies. Byte-identical across all three DroidNet forks. |
+| `src/contract/ContractFlthy.h` | **ours** | The render layer: maps the contract onto *this* board's LED primitives. |
+| `src/droidnet/native_ext.h` | **ours** | The pure parser for the native brightness command `H<unit>B<level>`. No dependencies. |
+| `test/host/*` | **ours** | The host test harness. |
 | `LICENSE-DroidNet-Contract` | **ours** | MIT license for the contract layer. |
 
 The hooks in `src/main.cpp` are the whole of our footprint in Ryan's file, and they are small on
 purpose:
 
 - one `#include` of the contract layer,
+- one `#include` of `droidnet/native_ext.h`, the native brightness parser,
 - one `else if (inputBuffer[0] == '!')` branch at the front of the command dispatch,
+- one marked `const bool dnPiped = (pipeIndex >= 1);` line right after the stock `|` search, so the
+  brightness branch can tell that the stock split fired (the split itself is unchanged),
+- one `else if (inputBuffer[0] == 'H')` branch, between the `!` branch and the designators, inside
+  `// DroidNet native brightness BEGIN` / `END` markers,
 - one `contractBeatTick()` call in the loop,
 - a contiguous block of render slots (`case 101..115`) added to the existing LED switch,
-- `INPUTBUFFERLEN` grown from 10 to 80, with a flood guard added in `serialEvent()` so a long line
+- `INPUTBUFFERLEN` grown from 10 to 96, with a flood guard added in `serialEvent()` so a long line
   drops its tail instead of overrunning,
 - two `&& !gUnit[i].active` guards so the native auto-twitch does not stomp a live contract look,
 - one boot-time snapshot (`startEnableTwitchHP[]`) mirroring the existing `startEnableTwitchLED[]`,
   so show mode can restore what it found.
 
-`git diff 5385a7c..HEAD --stat` says 2,806 insertions across 14 files. Only 1,645 of those
-lines are code we wrote — the seven files listed above; the rest is the GPL-3.0 license text we
-added for Graham's library and the READMEs. Ryan's firmware is the rest of the repository.
+Of everything `git diff 5385a7c..HEAD --stat` lists, only the files marked **ours** above and our
+hooks in `src/main.cpp` are code we wrote; the rest is the GPL-3.0 license text we added for
+Graham's library, the READMEs and the build files, and the prebuilt images under `firmware/`.
+Ryan's firmware is the rest of the repository.
 
 ---
 
@@ -195,11 +244,18 @@ The host suite needs nothing but a C++ compiler:
 
 ```bash
 bash test/host/run.sh
-# [1/4] contract_core parser unit tests   -> 341/341 checks
-# [2/4] ContractFlthy.h firmware type-check
-# [3/4] static source guards (LED-only invariant + wire budget)
-# [4/4] REAL cross-compile (ATmega2560)   <- needs PlatformIO; skips cleanly without it
+# [1/7] contract_core parser unit tests            -> 341/341 checks
+# [2/7] ContractFlthy.h firmware type-check
+# [3/7] static source guards (LED-only invariant for the contract and the brightness branch,
+#       wire budget)
+# [4/7] contract parser fuzz + differential        -> 1,554,686 checks (ASan/UBSan)
+# [5/7] native_ext brightness parser unit tests    -> 77/77 checks
+# [6/7] native_ext fuzz + differential             -> 2,965,122 checks (ASan/UBSan)
+# [7/7] REAL cross-compile (ATmega2560)            <- needs PlatformIO; skips cleanly without it
 ```
+
+`python3 test/host/stack_report.py --elf .pio/build/FlthyHPs/firmware.elf --mcu atmega2560 --objdump
+~/.platformio/packages/toolchain-atmelavr/bin/avr-objdump` gives the static stack bound after a build.
 
 To build the firmware:
 
