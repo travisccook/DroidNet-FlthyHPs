@@ -688,6 +688,13 @@ Adafruit_NeoPixel neoStrips[HPCOUNT];
 //////////////////////////////////////////////////////////////////////
 #include "contract/ContractFlthy.h"
 
+//////////////////////////////////////////////////////////////////////
+///*****   DroidNet native brightness: H<unit>B<level>        *****///
+///*****   Pure parser only; the handler is the marked 'H'    *****///
+///*****   branch in loop(). RAM only, never moves a servo.   *****///
+//////////////////////////////////////////////////////////////////////
+#include "droidnet/native_ext.h"
+
 
 //////////////////////////////////////////////////////////////////////
 ///*****                 Initialize Servo Board               *****///
@@ -799,6 +806,7 @@ void loop(){
     #endif
     
     pipeIndex = inputString.indexOf('|');
+    const bool dnPiped = (pipeIndex >= 1);   // DroidNet native brightness: the split below resets pipeIndex, so record that it fired
     halt = -1;
     if(pipeIndex >= 1) { 
         halt = inputString.substring(pipeIndex+1).toInt();
@@ -813,6 +821,26 @@ void loop(){
     {                               // BEFORE the fixed-offset F/R/T parser so '!' never misparses
       contractHandle(&inputBuffer[1]);   // bytes after '!' => <class><unit><verb>[:params]
     }
+    // DroidNet native brightness BEGIN -- H<unit>B<level>, RAM only (src/droidnet/native_ext.h).
+    // LED-only: nothing between these markers may name the HP servo path (test/host/run.sh stage 3).
+    else if( inputBuffer[0]=='H' )   // new leading character; stock v1.81 has no 'H' branch and ignores it
+    {
+      uint8_t dnMask = 0;
+      uint8_t dnLevel = 0;
+      if( nativeExtParse(inputBuffer, dnPiped, dnMask, dnLevel) )   // malformed, 0, >255 or piped: ignored
+      {
+        for( uint8_t hp = 0; hp < HPCOUNT; hp++ )
+        {
+          if( dnMask & (1 << hp) )
+          {
+            neoStrips[hp].setBrightness(dnLevel);   // rescales the RAM buffer at once (Adafruit NeoPixel 1.15.x)
+            gUnit[hp].lastEnvBright = -1;           // forces the contract's memoised solid/meter/off looks to repaint
+            neoStrips[hp].show();                   // shows held frames now (a finished Short Circuit, a contract idle hold)
+          }
+        }
+      }
+    }
+    // DroidNet native brightness END
     else if( inputBuffer[0]=='F' ||      // Front HP
         inputBuffer[0]=='R' ||      // Rear HP
         inputBuffer[0]=='T' ||      // Top HP

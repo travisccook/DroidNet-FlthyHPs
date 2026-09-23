@@ -36,6 +36,40 @@ if sed 's://.*::' ../../src/contract/ContractFlthy.h \
   exit 1
 fi
 
+# --- LED-ONLY INVARIANT, native brightness (H<unit>B<level>) ----------------------------
+# The fork's one native command is LED-only too: its parser (src/droidnet/native_ext.h) and its
+# handler in src/main.cpp (between the "DroidNet native brightness BEGIN" and "... END" markers)
+# must not name the servo command path either. src/main.cpp is CRLF, and the comment strip would
+# also delete the markers, so the region is cut out FIRST (CRs removed), and the check fails
+# CLOSED: exactly one BEGIN and one END marker, and the H branch itself inside the region.
+# Only then are comments stripped and the banned names grepped.
+NATIVE_BEGINS=$(tr -d '\r' < ../../src/main.cpp | grep -c 'DroidNet native brightness BEGIN' || true)
+NATIVE_ENDS=$(tr -d '\r' < ../../src/main.cpp | grep -c 'DroidNet native brightness END' || true)
+if [ "$NATIVE_BEGINS" != "1" ] || [ "$NATIVE_ENDS" != "1" ]; then
+  echo "FAIL: src/main.cpp must hold exactly one 'DroidNet native brightness BEGIN' marker and one"
+  echo "      '... END' marker (found $NATIVE_BEGINS and $NATIVE_ENDS), or this guard would check nothing."
+  exit 1
+fi
+NATIVE_REGION=$(tr -d '\r' < ../../src/main.cpp \
+  | awk '/DroidNet native brightness BEGIN/,/DroidNet native brightness END/' \
+  | sed 's://.*::')
+if [ -z "$NATIVE_REGION" ] || ! printf '%s\n' "$NATIVE_REGION" | grep -qF "inputBuffer[0]=='H'"; then
+  echo "FAIL: the marked native brightness region in src/main.cpp is empty or holds no"
+  echo "      inputBuffer[0]=='H' branch, so this guard would check nothing."
+  exit 1
+fi
+if printf '%s\n' "$NATIVE_REGION" | grep -nE '(HP_command|positionHP|twitchHP|wagHP|RCHP|flushCommandArray)'; then
+  echo "FAIL: the native brightness branch in src/main.cpp names the HP SERVO command path"
+  echo "      (see the lines above, numbered from the BEGIN marker). Brightness is LED-only."
+  exit 1
+fi
+if sed 's://.*::' ../../src/droidnet/native_ext.h \
+     | grep -nE '(HP_command|positionHP|twitchHP|wagHP|RCHP|flushCommandArray)'; then
+  echo "FAIL: src/droidnet/native_ext.h names the HP SERVO command path (see the lines above)."
+  echo "      The native brightness parser is LED-only and must stay pure."
+  exit 1
+fi
+
 # --- v1.2 ACCENT ALLOW-GATE ON VERB P ------------------------------------------------
 # The scored accent is gated at PARSE time (ae= refuses to store a rejected effect). Verb P is
 # the other door: it hands the wire's i= straight to the overlay. BOTH the CV_PULSE call site
@@ -66,7 +100,7 @@ if [ "$FW_BUF" != "$MOCK_BUF" ]; then
   echo "      The wire-budget guard only means something if the mock matches the firmware."
   exit 1
 fi
-echo "LED-only invariant + wire budget (INPUTBUFFERLEN=$FW_BUF) OK"
+echo "LED-only invariant (contract + native brightness) + wire budget (INPUTBUFFERLEN=$FW_BUF) OK"
 
 echo "[4/7] parser fuzz + differential (ASan/UBSan, deterministic)"
 # The parsers are the one place this project eats bytes off a shared, noisy serial bus, and to
