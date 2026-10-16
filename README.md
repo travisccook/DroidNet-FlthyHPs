@@ -51,11 +51,9 @@ copyright (c) 2013, GPL-3.0-or-later.
 
 ## Status
 
-**First release, shipping alongside DroidNet 3.0. It has not been confirmed on a real board yet.** It is host-tested and cross-compiled, as described below, but nobody has reported flashing it to a Mega ADK, a NeoPixel jewel or a servo. If anything misbehaves, flash the upstream FlthyHPs firmware back from Ryan's repo.
+**Work in progress.** This DroidNet build is provided as is, without warranty of any kind. Use it at your own risk. To go back, flash the upstream firmware (Ryan's original firmware, linked at the top of this page).
 
-Be precise about what is and is not verified, because the two are easy to blur:
-
-**What IS verified.** It cross-compiles for the real microcontroller. `pio run` builds a complete
+**Testing.** It cross-compiles for the real microcontroller. `pio run` builds a complete
 firmware image with the real avr-gcc for the real ATmega2560, and the real linker signs off on it.
 That is a genuine step up from where this fork started — it used to be checked only against a
 hand-written mock, and mocks lie (on the sister PSI fork, one hid a critical bug by making the
@@ -88,14 +86,6 @@ re-enter itself. The sister PSI fork, which uses FastLED, is not so lucky. (One 
 *does* link the heap — Arduino `String` pulls in `malloc`/`free` — and the heap grows up toward the
 stack. With 5.2 KB free that is not an overflow risk, but long-run fragmentation is not something a
 static analysis can rule out.)
-
-**What is NOT verified.** Everything only a physical board can tell you. **A successful link is not a
-bench test.** That the loop stays stable, that the timing holds, that a jewel looks like anything you
-would want on a droid, what the power draw is — all **unverified**. The code has never executed a
-single instruction outside a host test.
-
-If you are going to put this near a real droid: bench-test it on a jewel that is not installed in a
-dome, and be ready for it to be wrong. This is a starting point, not a release.
 
 ---
 
@@ -323,8 +313,8 @@ library directory.
 
 For the original firmware and the real documentation, go to Ryan's repo.
 
-Remember: a green suite means it compiles for the real MCU. It still proves nothing about hardware —
-see the warning above.
+Remember: a green suite means it compiles for the real MCU. It does not replace running it on a board —
+see Status above.
 
 ---
 
