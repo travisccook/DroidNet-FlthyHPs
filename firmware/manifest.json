@@ -1,11 +1,11 @@
 {
-  "built": "2026-09-23",
+  "built": "2026-10-16",
   "toolchain": "PlatformIO Core 6.2.0, toolchain-atmelavr @ 1.70300.191015",
   "status": "NEVER FLASHED TO HARDWARE — built and host-tested only. Flash in place per the runbook (spec section 6); take an avrdude flash dump first.",
   "flash_via": "DroidNet web UI -> Flash tab: select Board Type Arduino Mega, upload the .hex, flash. Unplug the WCB serial lead from the Mega (D0/RX0 and D1/TX0, or the whole connector) while flashing: UART0 is shared with the USB-serial chip.",
   "board": "FlthyHPs Holoprojectors (Ryan Sondgeroth) — Arduino Mega ADK, ATmega2560",
   "source_repo": "https://github.com/travisccook/DroidNet-FlthyHPs",
-  "source_commit": "75755de",
+  "source_commit": "9d28c52",
   "native_commands": [
     {
       "wire": "H<unit>B<level>",
@@ -13,9 +13,19 @@
       "summary": "unit F R T X Y Z A (stock designator fan-out), level 1-255; RAM only, anything else ignored"
     }
   ],
+  "wdp_announce": {
+    "type": "Flthy HP Controller",
+    "fw": "9d28c52",
+    "caps": [
+      "droidnet.contract",
+      "hp.servo",
+      "hp.led"
+    ],
+    "summary": "one @WDP1 line to the WCB on UART0 (D0/D1, 9600 baud; also the USB serial) 0.5-3 s after boot, then every 25-30 s"
+  },
   "artifacts": [
     {
-      "file": "DroidNet-FlthyHPs-atmega2560-75755de.hex",
+      "file": "DroidNet-FlthyHPs-atmega2560-9d28c52.hex",
       "role": "PRIMARY",
       "chip": "atmega2560",
       "mcu": "ATmega2560",
@@ -26,8 +36,8 @@
         "flash_address": "n/a",
         "note": "On a ttyACM Mega the Booster does not detect the ATmega2560 signature: auto-detect probes avr109 and stk500v1, then guesses with avrdude -n in the order uno, nano, mega, and it probes the first /dev/ttyACM* port, which may be another device. Select Board Type Arduino Mega. Unplug the WCB serial lead from the Mega (D0/RX0 and D1/TX0, or the whole connector) while flashing: UART0 is shared with the USB-serial chip. Flashing uses avrdude with the STK500v2 'wiring' programmer @ 115200."
       },
-      "size_bytes": 93180,
-      "sha256": "fe5cf75fd05753f4d427fd977e9b50b7199df061ac7eaec54f85840c95947d00"
+      "size_bytes": 97074,
+      "sha256": "5d31116f358bc56c23055b9af547c5c36e4a92a3977d2e9b5556d09783135bad"
     }
   ],
   "dependencies": {

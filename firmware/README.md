@@ -1,6 +1,6 @@
 # Prebuilt firmware — DroidNet FlthyHPs fork
 
-Ready-to-flash image built from this repo at commit `75755de` by `firmware/build-image.sh`, for
+Ready-to-flash image built from this repo at commit `9d28c52` by `firmware/build-image.sh`, for
 flashing through the DroidNet **Flash** tab. Details (sha256, size, dependency versions) are in
 [`manifest.json`](manifest.json).
 
@@ -11,7 +11,9 @@ Target: Arduino Mega ADK — **ATmega2560**.
 
 | File | |
 | ---- | --- |
-| `DroidNet-FlthyHPs-atmega2560-75755de.hex` | Holoprojector firmware, with the native brightness command `H<unit>B<level>` |
+| `DroidNet-FlthyHPs-atmega2560-9d28c52.hex` | Holoprojector firmware, with the native brightness command `H<unit>B<level>` and the WDP device announce |
+
+The image tells the WCB what it is every 25-30 s on UART0: type `Flthy HP Controller`, fw `9d28c52`.
 
 ## Before you flash
 
@@ -50,6 +52,7 @@ avrdude -C /etc/avrdude.conf -p atmega2560 -c wiring -P <port> -b 115200 -D -U f
 bash firmware/build-image.sh
 ```
 
-It refuses to run while `src/`, `include/`, `lib/` or `platformio.ini` has uncommitted changes,
-builds env `FlthyHPs` from clean, and rewrites this folder: the `.hex` named after the commit,
-`manifest.json` and this README. It does not commit.
+It refuses to run while `src/`, `include/`, `lib/`, `scripts/` or `platformio.ini` has uncommitted
+changes, builds env `FlthyHPs` from clean, checks that the image announces the commit as its fw (not
+`-dirty`), and rewrites this folder: the `.hex` named after the commit, `manifest.json` and this
+README. It does not commit.
