@@ -44,6 +44,7 @@
 // with no ae= can never arm the overlay: it behaves exactly as it did in v1.1.
 #pragma once
 #include "contract_core.h"
+#include "../wdp/wdp_fork.h" // wdpFinish() (verb Q ack line)
 #include <stdio.h>          // snprintf (verb Q ack line)
 
 // -------------------------------------------------------------- constants ----
@@ -620,6 +621,7 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
       char buf[56];
       snprintf(buf, sizeof(buf), "!H%cq:ver=1.1,phase=2,i=%d,bpm=%u\r\n",
                _unitChar(hp), (int)u.effect, (unsigned)gBeat.bpm);
+      wdpFinish();                                     // a WDP announce in flight goes out whole first
       Serial.print(buf);
       break;
     }

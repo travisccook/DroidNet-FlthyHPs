@@ -716,6 +716,33 @@ int main() {
     if (Serial.last[0] != 0) { printf("FAIL: Flthy answered a broadcast Q (\"%s\")\n", Serial.last); return 1; }
   }
 
+  // WDP: the verb-Q ack must never land INSIDE a WDP device announce. The announce leaves in
+  // pieces no bigger than the TX room (src/wdp/wdp_fork.h), so a Q handled between two pieces
+  // must send the rest of the line first (wdpFinish()), then its ack.
+  {
+    ParsedContract q;
+    char line[WDP_LINE_MAX];
+    size_t len = wdpBuildLine(line, sizeof(line), WDP_FORK_TYPE, WDP_FW, WDP_FORK_CAPS);
+    Serial.clear();
+    Serial.txFree = 20;                                // a nearly full TX buffer
+    _mock_millis = 0;
+    wdpForkSetup();                                    // first line due 0.5-3 s from now
+    for (; Serial.last[0] == 0 && _mock_millis < 4000; _mock_millis++) wdpForkTick();
+    if (len == 0 || strlen(Serial.last) != 20 || strncmp(Serial.last, line, 20) != 0) {
+      printf("FAIL: no WDP announce in flight to test against (got \"%s\")\n", Serial.last);
+      return 1;
+    }
+    if (contractParse("HRQ", q)) applyContract(q);
+    if (strlen(Serial.last) < len + 5 || strncmp(Serial.last, line, len) != 0 ||
+        strncmp(Serial.last + len, "!HRq:", 5) != 0) {
+      printf("FAIL: the verb-Q ack landed inside a WDP announce (got \"%s\")\n", Serial.last);
+      return 1;
+    }
+    Serial.txFree = 63;
+    Serial.clear();
+    _mock_millis = 0;
+  }
+
   // A7 (SPEC): a RE-SENT show must REPLACE the last one, not ACCUMULATE into it.
   // The score-clear guard above covers X and M:v=idle. The boundary they miss is the one the
   // product actually hits: Studio's Deliver "Resend" re-pushes the load burst with NO
@@ -824,7 +851,7 @@ int main() {
   }
 
   printf("ContractFlthy.h type-check + score-native / servo-twitch / score-clear / build-ramp / "
-         "Q-unit / v1.2 accent-self-fire / servo-interlock / beat-edge / strobe-cap / "
+         "Q-unit / Q-after-WDP-announce / v1.2 accent-self-fire / servo-interlock / beat-edge / strobe-cap / "
          "accent-allow-gate (no stateful or native overlay, ever) / flash-pump / "
          "show-resend guards OK\n");
   return 0;

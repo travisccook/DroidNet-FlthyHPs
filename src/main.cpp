@@ -695,6 +695,13 @@ Adafruit_NeoPixel neoStrips[HPCOUNT];
 //////////////////////////////////////////////////////////////////////
 #include "droidnet/native_ext.h"
 
+//////////////////////////////////////////////////////////////////////
+///*****   DroidNet WDP device announce (src/wdp/wdp_fork.h)  *****///
+///*****   Tells the WCB on Serial what this board is, every  *****///
+///*****   25-30 s. Other Serial writes call wdpFinish().     *****///
+//////////////////////////////////////////////////////////////////////
+#include "wdp/wdp_fork.h"
+
 
 //////////////////////////////////////////////////////////////////////
 ///*****                 Initialize Servo Board               *****///
@@ -738,6 +745,7 @@ void setup() {
       Serial.println(F("RC Control Disabled"));
     #endif
   #endif
+  wdpForkSetup();                          // DroidNet: WDP device announce; after the banner, seeded from A3 + micros()
   #ifdef DEBUG
   Serial.println(F("Entering Setup..."));
   #endif
@@ -968,6 +976,7 @@ void loop(){
   }
 
   contractBeatTick();   // DroidNet contract: tick beat-clock + switch Phase-2 sections on-beat (LED-only)
+  wdpForkTick();        // DroidNet: WDP device announce to the WCB, a few bytes a pass, never blocks
 
   for(int i=0; i<HPCOUNT; i++) {
 
@@ -1217,7 +1226,7 @@ void RCHP(byte hp, byte type) {
         }
         servos.moveTo(HPpins[hp][0],0,mapPulselength(servo1));servos.moveTo(HPpins[hp][1],0,mapPulselength(servo2));
       }
-      else { Serial.println(F("No RC Input Detected!")); }
+      else { wdpFinish(); Serial.println(F("No RC Input Detected!")); }   // DroidNet: a WDP announce in flight goes out whole first
     #else
       #ifdef DEBUG
         if(hp==0) {Serial.print(F("Front HP: "));}

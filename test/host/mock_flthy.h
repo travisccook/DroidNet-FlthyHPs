@@ -10,6 +10,8 @@
 //   enableTwitchLED/enableTwitchHP/startEnableTwitchLED/startEnableTwitchHP/offcoloroverride
 //     (315/335/574/575/619)
 //   ledOFF(byte) (1205), varResets(byte) (1460); millis/random/map/Serial (Arduino core)
+//   micros/analogRead and Serial.write/availableForWrite (Arduino core, for src/wdp/wdp_fork.h,
+//     which ContractFlthy.h includes for wdpFinish())
 #pragma once
 #include <stdint.h>
 #include <stdlib.h>
@@ -30,6 +32,10 @@ typedef bool    boolean;
 // ---- Arduino core stubs ----
 static unsigned long _mock_millis = 0;
 inline unsigned long millis() { return _mock_millis; }
+static unsigned long _mock_micros = 0;
+inline unsigned long micros() { return _mock_micros; }
+static int _mock_analog = 0;                             // what analogRead() returns
+inline int analogRead(uint8_t) { return _mock_analog; }
 inline long random(long a, long b) { (void)b; return a; }   // deterministic for type-check
 inline long random(long b) { (void)b; return 0; }
 inline long map(long x, long in_min, long in_max, long out_min, long out_max) {
@@ -38,10 +44,24 @@ inline long map(long x, long in_min, long in_max, long out_min, long out_max) {
 }
 #define F(str) (str)                                   // flash-string macro no-op on host
 
-// Records what the fork writes (Serial.last) so a host guard can assert on the ack line.
+// Records what the fork writes (Serial.last) so a host guard can assert on the ack line, and the
+// room it reports in the TX buffer (txFree; an AVR HardwareSerial has 63 bytes when empty), so a
+// host guard can hold a WDP announce in flight. write() records bytes as they are; the WDP lines
+// hold no NUL.
 struct _MockSerial {
-  char last[128] = {0};
-  void clear() { last[0] = 0; }
+  char last[256] = {0};
+  int  txFree = 63;
+  int  maxWrite = 0;                                   // the largest single write() so far
+  void clear() { last[0] = 0; maxWrite = 0; }
+  int  availableForWrite() { return txFree; }
+  size_t write(const uint8_t* b, size_t n) {
+    size_t at = strlen(last);
+    if (n > sizeof(last) - 1 - at) n = sizeof(last) - 1 - at;
+    memcpy(last + at, b, n);
+    last[at + n] = 0;
+    if ((int)n > maxWrite) maxWrite = (int)n;
+    return n;
+  }
   void print(const char* s) {
     size_t n = strlen(last);
     snprintf(last + n, sizeof(last) - n, "%s", s);

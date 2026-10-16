@@ -64,23 +64,28 @@ non-latching render primitive a no-op). Verified here:
   and score table, compiled and run on a normal computer.
 - `test/host/compile_contract.cpp` — a type-check of the firmware layer against a **mock** of the
   board's API (`test/host/mock_flthy.h`), plus the LED-only invariant (this layer must never move a
-  holoprojector servo) and the serial wire budget.
+  holoprojector servo), the serial wire budget, and that a verb-Q reply never lands inside a WDP
+  announce.
 - `test/host/test_native_ext.cpp` — 77 accept/reject checks for the native brightness parser
   (`src/droidnet/native_ext.h`), and `test/host/fuzz_native_ext.cpp` — 2,965,122 differential
   checks of the same parser against an independent model under ASan/UBSan.
+- `test/host/test_wdp_announce_core.cpp` — 37,506 checks of the WDP device announce core (the line,
+  the WCB's field limits, the 25-30 s schedule and its per-board jitter, pieces no bigger than the TX
+  room), shared with the other two forks; and `test/host/test_wdp_fork.cpp` — this board's announce
+  identity and its `Serial` adapter, with a 13-character `-dirty` fw and with none.
 - `bash test/host/run.sh` now finishes by cross-compiling the firmware for real.
 
-Flash is comfortable on this board, unlike its PSI sibling: **33,122 B of 253,952 B (13.0%)**, with
-SRAM at 2,332 B of 8,192 B (28.5%). Nowhere near either ceiling.
+Flash is comfortable on this board, unlike its PSI sibling: **34,510 B of 253,952 B (13.6%)**, with
+SRAM at 2,578 B of 8,192 B (31.5%). Nowhere near either ceiling.
 
-The stack has been bounded statically too (`test/host/stack_report.py`): **386 B of the 5,860 B
+The stack has been bounded statically too (`test/host/stack_report.py`): **394 B of the 5,614 B
 available (7%)**, with no recursion, no `alloca`/VLA, and — unlike the PSI — **no interrupt-nesting
 hazard**. That last point is down to Ryan's choice of library, and it is worth crediting:
 Adafruit_NeoPixel's `show()` saves and *restores* `SREG` rather than blindly re-enabling interrupts,
 so even though this firmware also renders LEDs from inside its I2C interrupt, that interrupt cannot
 re-enter itself. The sister PSI fork, which uses FastLED, is not so lucky. (One caveat: this board
 *does* link the heap — Arduino `String` pulls in `malloc`/`free` — and the heap grows up toward the
-stack. With 5.4 KB free that is not an overflow risk, but long-run fragmentation is not something a
+stack. With 5.2 KB free that is not an overflow risk, but long-run fragmentation is not something a
 static analysis can rule out.)
 
 **What is NOT verified.** Everything only a physical board can tell you. **A successful link is not a
@@ -95,13 +100,15 @@ dome, and be ready for it to be wrong. This is a starting point, not a release.
 
 ## What this fork adds
 
-Two things:
+Three things:
 
 1. an additive **Driveable-Animation Contract**, so an external tool (Cantina Studio — a
    music-analysis and dome-lighting authoring tool) can drive the holoprojector jewels in time with
    a song (the rest of this section);
 2. one native **brightness** command, `H<unit>B<level>` (see
-   [One native command: brightness](#one-native-command-brightness) below).
+   [One native command: brightness](#one-native-command-brightness) below);
+3. a **WDP device announce**, so the WCB it is wired to knows what it is (see
+   [WDP device announce](#wdp-device-announce) below).
 
 The wire grammar is a single new command prefix:
 
@@ -195,6 +202,36 @@ H <unit> B <level>        e.g. HAB128 (all), HFB255 (front), HTB1 (top)
 
 Stock v1.81 has no `H` branch, so an unflashed board ignores the command.
 
+### WDP device announce
+
+The board tells the WCB it is wired to what it is, with the WDP device announce of Greg Hulette's
+WCB firmware (7.0.1; `docs/WDP_DEVICE_ANNOUNCE.md` in his repo). 0.5-3 s after boot, then every
+25-30 s, it sends one line:
+
+```text
+@WDP1 {"type":"Flthy HP Controller","fw":"<commit>","caps":["droidnet.contract","hp.servo","hp.led"]}
+```
+
+- **Where:** `Serial` (UART0, D0/D1) at 9600 baud, the WCB's port. The Mega's USB-serial chip shares
+  UART0, so with a USB cable connected the line also shows on the serial monitor.
+- **`fw` is the commit the firmware was built from:** `git rev-parse --short=7 HEAD`, the name
+  `firmware/build-image.sh` gives the image, plus `-dirty` if the tree had uncommitted changes, or
+  `unknown` for a build without git or without PlatformIO (`scripts/wdp_fw.py` sets it).
+- **The WCB keeps the line to itself** and never forwards it; `?WDP,DA` on the WCB shows what each
+  port has announced. WCB firmware that does not know WDP ignores the line.
+- **It never holds up the loop.** The line is longer than the 63 bytes of `Serial`'s TX buffer, so it
+  leaves a piece at a time, never more than the buffer has room for. Anything else this firmware
+  writes to `Serial` (RCHP's `No RC Input Detected!` and the contract's verb-Q reply) first sends the
+  rest of a line in flight, so no other text lands inside an announce. The `DEBUG` prints do not:
+  with `DEBUG` turned on, one can split an announce, and the WCB drops that one.
+- **Each board picks its own timing.** The interval is jittered from a seed of 16 reads of the unused
+  A3 pin and `micros()`, so boards that power up together do not announce in lockstep.
+- **Flashing is unchanged:** the WCB serial lead (D0/RX0 and D1/TX0) must still be unplugged while
+  flashing; see [`firmware/README.md`](firmware/README.md).
+
+`src/wdp/wdp_announce_core.h` builds and schedules the line, byte-identical across the three DroidNet
+forks; `src/wdp/wdp_fork.h` holds this board's identity and its `Serial` adapter.
+
 ---
 
 ## What is theirs, and what is ours
@@ -210,6 +247,9 @@ Honest, file-level:
 | `src/contract/contract_core.h` | **ours** | Wire parser, beat clock, effect math, score table. Pure C++, no dependencies. Byte-identical across all three DroidNet forks. |
 | `src/contract/ContractFlthy.h` | **ours** | The render layer: maps the contract onto *this* board's LED primitives. |
 | `src/droidnet/native_ext.h` | **ours** | The pure parser for the native brightness command `H<unit>B<level>`. No dependencies. |
+| `src/wdp/wdp_announce_core.h` | **ours** | The WDP device announce: builds the line, schedules it, hands it out in pieces. Pure C++, no dependencies. Byte-identical across all three DroidNet forks. |
+| `src/wdp/wdp_fork.h` | **ours** | This board's announce identity and its `Serial` adapter. |
+| `scripts/wdp_fw.py` | **ours** | PlatformIO pre-build script that puts the commit in the announce's `fw`. |
 | `test/host/*` | **ours** | The host test harness. |
 | `LICENSE-DroidNet-Contract` | **ours** | MIT license for the contract layer. |
 
@@ -224,6 +264,9 @@ purpose:
 - one `else if (inputBuffer[0] == 'H')` branch, between the `!` branch and the designators, inside
   `// DroidNet native brightness BEGIN` / `END` markers,
 - one `contractBeatTick()` call in the loop,
+- one `#include` of `wdp/wdp_fork.h`, one `wdpForkSetup()` call in `setup()` right after the boot
+  banner, one `wdpForkTick()` call in the loop next to `contractBeatTick()`, and one `wdpFinish();`
+  in front of the stock `No RC Input Detected!` print, for the WDP device announce,
 - a contiguous block of render slots (`case 101..115`) added to the existing LED switch,
 - `INPUTBUFFERLEN` grown from 10 to 96, with a flood guard added in `serialEvent()` so a long line
   drops its tail instead of overrunning,
@@ -245,9 +288,11 @@ The host suite needs nothing but a C++ compiler:
 ```bash
 bash test/host/run.sh
 # [1/7] contract_core parser unit tests            -> 341/341 checks
+# [1b/7] wdp_announce_core unit tests              -> 37,506/37,506 checks
+# [1c/7] wdp_fork.h announce adapter + identity    -> 19/19 checks, with fw "abcdef0-dirty" and "unknown"
 # [2/7] ContractFlthy.h firmware type-check
 # [3/7] static source guards (LED-only invariant for the contract and the brightness branch,
-#       wire budget)
+#       wire budget, no Serial write that could land inside a WDP announce)
 # [4/7] contract parser fuzz + differential        -> 1,554,686 checks (ASan/UBSan)
 # [5/7] native_ext brightness parser unit tests    -> 77/77 checks
 # [6/7] native_ext fuzz + differential             -> 2,965,122 checks (ASan/UBSan)

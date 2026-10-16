@@ -24,6 +24,9 @@ I2C intake) still behaves exactly as it did before.
 It also adds **one native command**, `H<unit>B<level>` (library id `flthy.led.brightness`), which
 sets jewel brightness 1-255 in RAM. See "Native brightness" below.
 
+And it **announces itself to the WCB** (WDP device announce) every 25-30 s. See "WDP device
+announce" below.
+
 ## Status
 
 - **Contract layer: built.** Wire parser, beat clock, accent envelope, Phase-2 score table,
@@ -32,7 +35,8 @@ sets jewel brightness 1-255 in RAM. See "Native brightness" below.
   rendered around the jewel ring.
 - **Host verification: green.** `bash test/host/run.sh` → 341/341 parser checks, a
   type-check of `ContractFlthy.h` against `test/host/mock_flthy.h`, 1,554,686 contract fuzz checks,
-  77/77 native brightness parser checks and 2,965,122 native brightness fuzz checks.
+  77/77 native brightness parser checks and 2,965,122 native brightness fuzz checks, 37,506 WDP
+  announce core checks and 19 adapter checks (run twice).
 - **Hardware verification: NONE.** This has never been flashed to a board. Not once. Nothing
   about flash fit, loop stability, LED timing, or how any of it actually looks has been
   confirmed on real hardware. Bench-compile and bench-test before this goes anywhere near a
@@ -57,6 +61,9 @@ sets jewel brightness 1-255 in RAM. See "Native brightness" below.
 (RSeries / PSI / Flthy). If you change it here, the same change has to land in the other two,
 byte for byte, or beat-clock and effect math drift apart between boards. It is pure C++ with
 no Arduino dependency, which is why it can be unit-tested on a host.
+
+`src/wdp/wdp_announce_core.h` and `test/host/test_wdp_announce_core.cpp` are byte-identical across
+the three forks too (copied from DroidNet-RSeriesLogics 6645689).
 
 ## Board-specific notes
 
@@ -94,3 +101,27 @@ no Arduino dependency, which is why it can be unit-tested on a host.
   forks), and the `run.sh` stage 3 guard, which cuts the marked region out of `src/main.cpp` and
   fails closed if the markers or the `H` branch are missing, or if the region or the parser names
   the servo command path. `pio check` analyses `native_ext.h` too.
+
+## WDP device announce
+
+- **Line:** `@WDP1 {"type":"Flthy HP Controller","fw":"<commit>","caps":["droidnet.contract","hp.servo","hp.led"]}`
+  plus `\n`, 101 bytes with a 7-character commit (107 with `-dirty`; the core's buffer is 128). The
+  format is Greg Hulette's (`docs/WDP_DEVICE_ANNOUNCE.md` in the WCB repo, WCB 7.0.1); the WCB
+  consumes the line and never forwards it.
+- **Adapter:** `src/wdp/wdp_fork.h`: the identity, `wdpForkSetup()` (seed + first due time, called in
+  `setup()` after the boot banner), `wdpForkTick()` (every loop pass, next to `contractBeatTick()`;
+  writes at most `Serial.availableForWrite()` bytes, so it never blocks) and `wdpFinish()` (writes the
+  rest of a line in flight; blocking is fine there).
+- **Other writers:** every other `Serial` write once `loop()` runs calls `wdpFinish()` first: RCHP's
+  `No RC Input Detected!` (`src/main.cpp`) and the verb-Q reply (`ContractFlthy.h`). The `DEBUG`
+  prints do not; `DEBUG` is commented out. `run.sh` stage 3 fails on an unguarded non-`DEBUG`
+  write, and `compile_contract.cpp` checks the verb-Q reply after a part-sent announce.
+- **Seed:** 16 `analogRead(3)` samples (A3: unused by the sketch, already its `randomSeed()` source)
+  folded FNV-1a style over `micros()`; the core's own xorshift generator then jitters 0.5-3 s for the
+  first line and 25-30 s after.
+- **fw:** `scripts/wdp_fw.py` (`extra_scripts = pre:`) defines `WDP_FW` with `env.StringifyMacro()`:
+  `git rev-parse --short=7 HEAD`, `-dirty` if `git status --porcelain` lists anything, `unknown` if
+  git fails; `wdp_fork.h` falls back to `"unknown"` when it is not defined (an Arduino IDE build).
+  `firmware/build-image.sh` fails unless the image's fw string is exactly its `source_commit`.
+- **Tests:** `run.sh` stages 1b (the shared core test, `-std=c++11 -Werror`) and 1c
+  (`test/host/test_wdp_fork.cpp`, compiled with `WDP_FW` "abcdef0-dirty" and without it).

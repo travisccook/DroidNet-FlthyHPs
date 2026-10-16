@@ -5,8 +5,11 @@
 #
 # Host checks for the Flthy HPs fork (stages 1-6 need no hardware and no toolchain; stage 7 is the real cross-compile):
 #   1. contract_core.h parser unit tests
+#      1b. wdp_announce_core.h (WDP device announce) unit tests, shared with the other two forks
+#      1c. wdp_fork.h, this fork's announce adapter and identity
 #   2. ContractFlthy.h firmware-layer type-check against a mock of the board API
-#   3. static source guards (the LED-only invariant + the serial wire budget)
+#   3. static source guards (the LED-only invariant, the serial wire budget, and no Serial write
+#      that could land inside a WDP announce)
 #   4. contract parser fuzz + differential (ASan/UBSan)
 #   5. native_ext.h (H<unit>B<level> brightness) parser unit tests
 #   6. native_ext.h fuzz + differential (ASan/UBSan; fork-local, not the shared fuzz_parsers.cpp)
@@ -16,6 +19,21 @@ cd "$(dirname "$0")"
 echo "[1/7] contract_core parser unit tests"
 clang++ -std=c++17 -Wall -Wextra -O0 test_contract_core.cpp -o /tmp/flthy_contract_test
 /tmp/flthy_contract_test
+echo "[1b/7] wdp_announce_core WDP device announce unit tests"
+# Shared byte-identically with the RSeries and PSI forks (src/wdp/wdp_announce_core.h and this test).
+# -std=c++11: avr-gcc builds the same header as gnu++11 here.
+clang++ -std=c++11 -Wall -Wextra -Werror -O0 test_wdp_announce_core.cpp -o /tmp/flthy_wdp_test
+/tmp/flthy_wdp_test
+echo "[1c/7] wdp_fork.h announce adapter + this fork's identity"
+# Fork-local. Twice: with the longest fw scripts/wdp_fw.py makes (a 7-character commit + "-dirty",
+# 13 characters, which must still fit WDP_LINE_MAX), and with no WDP_FW at all (a build without the
+# script, e.g. the Arduino IDE), which must announce "unknown".
+clang++ -std=c++11 -Wall -Wextra -Werror -O0 -DWDP_FW='"abcdef0-dirty"' -DWDP_FW_EXPECT='"abcdef0-dirty"' \
+        test_wdp_fork.cpp -o /tmp/flthy_wdp_fork_test
+/tmp/flthy_wdp_fork_test
+clang++ -std=c++11 -Wall -Wextra -Werror -O0 -DWDP_FW_EXPECT='"unknown"' \
+        test_wdp_fork.cpp -o /tmp/flthy_wdp_fork_test
+/tmp/flthy_wdp_fork_test
 echo "[2/7] ContractFlthy.h firmware type-check"
 clang++ -std=c++17 -Wall -Wextra compile_contract.cpp -o /tmp/flthy_fw_syntax
 /tmp/flthy_fw_syntax
@@ -100,7 +118,52 @@ if [ "$FW_BUF" != "$MOCK_BUF" ]; then
   echo "      The wire-budget guard only means something if the mock matches the firmware."
   exit 1
 fi
-echo "LED-only invariant (contract + native brightness) + wire budget (INPUTBUFFERLEN=$FW_BUF) OK"
+
+# --- WDP: NO TEXT INSIDE AN ANNOUNCE ---------------------------------------------------
+# The WDP announce leaves Serial in pieces over a few loop() passes (src/wdp/wdp_fork.h), so every
+# other write to Serial once loop() runs must call wdpFinish() first -- on the same line or the
+# code line above -- or its text can land in the middle of an announce and the WCB drops both.
+# compile_contract.cpp proves it for the verb-Q ack; this finds every writer. In src/main.cpp it
+# checks from `void loop()` down (setup() writes before the first announce can start), skipping
+# what a build without DEBUG leaves out (#ifdef DEBUG, which is commented out). It fails closed:
+# each file must hold at least one checked write, or the scan has gone blind.
+wdp_writers() {   # <file> <start-regex>: prints "checked=<n>", then each unguarded write; exit 1 if any
+  tr -d '\r' < "$1" | awk -v start="$2" '
+    BEGIN { on = (start == ""); depth = 0; n = 0; bad = 0; prev = "" }
+    !on && $0 ~ start { on = 1 }
+    {
+      code = $0; sub(/\/\/.*/, "", code)
+      if (code ~ /^[ \t]*#[ \t]*if/) {
+        depth++
+        dbg[depth] = (code ~ /^[ \t]*#[ \t]*ifdef[ \t]+DEBUG[ \t]*$/) ? 1 : ((code ~ /^[ \t]*#[ \t]*ifndef[ \t]+DEBUG[ \t]*$/) ? -1 : 0)
+        next
+      }
+      if (code ~ /^[ \t]*#[ \t]*el/)    { dbg[depth] = -dbg[depth]; next }
+      if (code ~ /^[ \t]*#[ \t]*endif/) { depth--; next }
+      indebug = 0
+      for (i = 1; i <= depth; i++) if (dbg[i] == 1) indebug = 1
+      if (on && !indebug && code ~ /Serial[ \t]*\.[ \t]*(print|println|write)[ \t]*\(/) {
+        n++
+        if (code !~ /wdpFinish\(\)/ && prev !~ /wdpFinish\(\)/) { print "  " NR ": " $0; bad = 1 }
+      }
+      if (code ~ /[^ \t]/) prev = code
+    }
+    END { print "checked=" n; exit bad }'
+}
+for spec in "../../src/main.cpp|^void loop[(]" "../../src/contract/ContractFlthy.h|"; do
+  f="${spec%%|*}"; start="${spec#*|}"
+  if ! out=$(wdp_writers "$f" "$start"); then
+    printf '%s\n' "$out" | grep -v '^checked='
+    echo "FAIL: $f writes to Serial (lines above) without calling wdpFinish() first, so that text"
+    echo "      can land inside a WDP announce in flight. Call wdpFinish() on that line or the one above."
+    exit 1
+  fi
+  if [ "$(printf '%s\n' "$out" | sed -n 's/^checked=//p')" = "0" ]; then
+    echo "FAIL: the WDP writer scan found no Serial write at all in $f, so it checked nothing."
+    exit 1
+  fi
+done
+echo "LED-only invariant (contract + native brightness) + wire budget (INPUTBUFFERLEN=$FW_BUF) + WDP writers OK"
 
 echo "[4/7] parser fuzz + differential (ASan/UBSan, deterministic)"
 # The parsers are the one place this project eats bytes off a shared, noisy serial bus, and to

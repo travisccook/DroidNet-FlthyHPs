@@ -10,8 +10,11 @@
 #   * README.md
 #
 # source_commit is `git rev-parse --short=7 HEAD`, so the image must come from a committed tree:
-# the script refuses to run while src/, include/, lib/ or platformio.ini has uncommitted changes,
-# or when HEAD does not contain the native brightness branch. It does not stage or commit.
+# the script refuses to run while src/, include/, lib/, scripts/ or platformio.ini has uncommitted
+# changes, or when HEAD does not contain the native brightness branch. The image's WDP announce
+# carries the commit as its fw (scripts/wdp_fw.py); the script fails if that is not exactly
+# source_commit (scripts/wdp_fw.py adds "-dirty" for ANY changed or untracked file). It does not
+# stage or commit.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -25,10 +28,10 @@ fail() { echo "build-image.sh: $*" >&2; exit 1; }
 [ -x "$PIO" ] || fail "PlatformIO not found at $PIO (set PIO=/path/to/pio)."
 command -v python3 >/dev/null || fail "python3 is required to write manifest.json."
 
-DIRTY="$(git status --porcelain -- src include lib platformio.ini)"
+DIRTY="$(git status --porcelain -- src include lib scripts platformio.ini)"
 if [ -n "$DIRTY" ]; then
   echo "$DIRTY" >&2
-  fail "refusing to build: src/, include/, lib/ or platformio.ini has uncommitted changes (above). Commit first, so source_commit names what was built."
+  fail "refusing to build: src/, include/, lib/, scripts/ or platformio.ini has uncommitted changes (above). Commit first, so source_commit names what was built."
 fi
 
 SOURCE_COMMIT="$(git rev-parse --short=7 HEAD)"
@@ -47,6 +50,19 @@ grep -E '^(RAM|Flash):' "$WORK/build.log" || true
 
 HEX_SRC="$ROOT/.pio/build/$ENV_NAME/firmware.hex"
 [ -s "$HEX_SRC" ] || fail "no $HEX_SRC after the build."
+
+# The WDP announce's fw is a C string in the image (scripts/wdp_fw.py -> WDP_FW): it must be
+# exactly source_commit, not "<sha>-dirty" or "unknown".
+ELF="$ROOT/.pio/build/$ENV_NAME/firmware.elf"
+STRINGS="$HOME/.platformio/packages/toolchain-atmelavr/bin/avr-strings"
+[ -x "$STRINGS" ] || STRINGS="$(command -v strings || true)"
+[ -n "$STRINGS" ] || fail "no strings tool to read the WDP fw from $ELF."
+grep '^WDP_FW = ' "$WORK/build.log" || true
+"$STRINGS" -a "$ELF" > "$WORK/strings.txt" || fail "$STRINGS could not read $ELF."
+if ! grep -qx "$SOURCE_COMMIT" "$WORK/strings.txt"; then
+  git status --porcelain >&2
+  fail "the image does not announce fw $SOURCE_COMMIT (WDP_FW above): the tree has changed or untracked files (listed above). Commit or remove them, then rebuild."
+fi
 
 HEX_NAME="DroidNet-FlthyHPs-atmega2560-$SOURCE_COMMIT.hex"
 find "$FW_DIR" -maxdepth 1 -name 'DroidNet-FlthyHPs-atmega2560-*.hex' ! -name "$HEX_NAME" -print -delete
@@ -98,6 +114,15 @@ tc_ver, _ = pkg("toolchain-atmelavr")
 neo_ver, neo_req = pkg("Adafruit NeoPixel")
 pwm_ver, pwm_req = pkg("Adafruit PWM Servo Driver Library")
 
+# The WDP device announce identity, read from the adapter so the manifest cannot drift from it.
+wdp_src = (fw_dir.parent / "src" / "wdp" / "wdp_fork.h").read_text()
+m = re.search(r'^#define WDP_FORK_TYPE\s+"([^"]+)"', wdp_src, re.M)
+need(m, "WDP_FORK_TYPE")
+wdp_type = m.group(1)
+m = re.search(r'^#define WDP_FORK_CAPS\s+"([^"]+)"', wdp_src, re.M)
+need(m, "WDP_FORK_CAPS")
+wdp_caps = m.group(1).split(" ")
+
 hex_bytes = (fw_dir / hex_name).read_bytes()
 sha256 = hashlib.sha256(hex_bytes).hexdigest()
 
@@ -123,6 +148,13 @@ manifest = {
                         "anything else ignored"),
         }
     ],
+    "wdp_announce": {
+        "type": wdp_type,
+        "fw": sha,
+        "caps": wdp_caps,
+        "summary": ("one @WDP1 line to the WCB on UART0 (D0/D1, 9600 baud; also the USB serial) "
+                    "0.5-3 s after boot, then every 25-30 s"),
+    },
     "artifacts": [
         {
             "file": hex_name,
@@ -172,7 +204,9 @@ Target: Arduino Mega ADK — **ATmega2560**.
 
 | File | |
 | ---- | --- |
-| `{hex_name}` | Holoprojector firmware, with the native brightness command `H<unit>B<level>` |
+| `{hex_name}` | Holoprojector firmware, with the native brightness command `H<unit>B<level>` and the WDP device announce |
+
+The image tells the WCB what it is every 25-30 s on UART0: type `{wdp_type}`, fw `{sha}`.
 
 ## Before you flash
 
@@ -211,9 +245,10 @@ avrdude -C /etc/avrdude.conf -p atmega2560 -c wiring -P <port> -b 115200 -D -U f
 bash firmware/build-image.sh
 ```
 
-It refuses to run while `src/`, `include/`, `lib/` or `platformio.ini` has uncommitted changes,
-builds env `FlthyHPs` from clean, and rewrites this folder: the `.hex` named after the commit,
-`manifest.json` and this README. It does not commit.
+It refuses to run while `src/`, `include/`, `lib/`, `scripts/` or `platformio.ini` has uncommitted
+changes, builds env `FlthyHPs` from clean, checks that the image announces the commit as its fw (not
+`-dirty`), and rewrites this folder: the `.hex` named after the commit, `manifest.json` and this
+README. It does not commit.
 """
 (fw_dir / "README.md").write_text(readme)
 print(f"wrote firmware/{hex_name}  ({len(hex_bytes)} B, sha256 {sha256})")
