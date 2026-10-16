@@ -1,5 +1,7 @@
 # DroidNet-FlthyHPs
 
+Part of [DroidNet](https://github.com/travisccook/DroidNetSignalBooster-releases), the Signal Booster for droids. This is one of its board firmwares.
+
 A small, additive fork of **FlthyHPs — the Holoprojector Control System by Ryan Sondgeroth
 (FlthyMcNsty)**.
 
@@ -47,10 +49,9 @@ copyright (c) 2013, GPL-3.0-or-later.
 
 ---
 
-## Warning: this has never run on hardware. Not once.
+## Status
 
-**Nothing in this fork has ever been flashed to a real board.** Not to a Mega ADK, not to a
-NeoPixel jewel, not to a servo, not to anything.
+**First release, shipping alongside DroidNet 3.0. It has not been confirmed on a real board yet.** It is host-tested and cross-compiled, as described below, but nobody has reported flashing it to a Mega ADK, a NeoPixel jewel or a servo. If anything misbehaves, flash the upstream FlthyHPs firmware back from Ryan's repo.
 
 Be precise about what is and is not verified, because the two are easy to blur:
 
