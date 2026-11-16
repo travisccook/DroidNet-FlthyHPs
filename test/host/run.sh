@@ -173,6 +173,16 @@ if [ "$FW_BUF" != "$MOCK_BUF" ]; then
   exit 1
 fi
 
+# --- ONE inputString ------------------------------------------------------------------
+# loop() used to end its command block with `String inputString = "";`, a LOCAL that shadowed the
+# global line buffer: it reset nothing and allocated one byte per command. It is gone; this keeps
+# it from coming back.
+if [ "$(tr -d '\r' < ../../src/main.cpp | grep -c '^[[:space:]]*String inputString')" != "1" ]; then
+  echo "FAIL: src/main.cpp must declare 'String inputString' exactly once (a second one inside loop()"
+  echo "      shadows the serial line buffer)."
+  exit 1
+fi
+
 # --- WDP: NO TEXT INSIDE AN ANNOUNCE ---------------------------------------------------
 # The WDP announce leaves Serial in pieces over a few loop() passes (src/wdp/wdp_fork.h), so every
 # other write to Serial once loop() runs must call wdpFinish() first -- on the same line or the

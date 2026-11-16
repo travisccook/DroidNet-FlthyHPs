@@ -601,6 +601,9 @@ boolean       OEFlag = false;
 char inputBuffer[INPUTBUFFERLEN];  
 String inputString = "";                       // a string to hold incoming data
 volatile boolean stringComplete = false;       // whether the serial string is complete
+char dnI2cBuffer[MAXCOMMANDLENGTH + 1];        // DroidNet: the I2C intake's own line (filled in the TWI interrupt)
+volatile boolean dnI2cComplete = false;        // DroidNet: an I2C command is waiting in dnI2cBuffer
+String dnI2cLine = "";                         // DroidNet: loop()'s copy of it
 
 int halt = -1;
 int pipeIndex = -1;
@@ -717,6 +720,7 @@ Servos servos(SERVOI2CADDRESS);
 void setup() { 
   Serial.begin(9600);                      // Starts Serial with a baudrate of 9600
   inputString.reserve(INPUTBUFFERLEN);     // DroidNet contract: reserve full buffer (fork spec §5.1)
+  dnI2cLine.reserve(MAXCOMMANDLENGTH);     // DroidNet: no allocation when an I2C command is taken
 
   Wire.begin(I2CADDRESS);                  // Connects to I2C Bus and establishes address.
   Wire.onReceive(i2cEvent);                // Register event so when we receive something we jump to i2cEvent();
@@ -803,26 +807,35 @@ void loop(){
   
   statusLEDCheck();        // see if the status led should be turned off
  
-  if(stringComplete) {
-    inputString.trim();    // Trim any white space off off inputString, including \r and \n as they are unecessary now.
+  boolean dnFromI2C = false;                 // DroidNet: an I2C command goes first; a finished serial line waits one pass
+  if(dnI2cComplete) {
+    noInterrupts();
+    dnI2cLine = dnI2cBuffer;
+    dnI2cComplete = false;
+    interrupts();
+    dnFromI2C = true;
+  }
+  if(stringComplete || dnFromI2C) {
+    String &dnLine = dnFromI2C ? dnI2cLine : inputString;   // DroidNet: the line this pass handles
+    dnLine.trim();    // Trim any white space off off inputString, including \r and \n as they are unecessary now.
 
     #ifdef DEBUG
     Serial.print(F("Received Command: "));
-    Serial.println(inputString);
+    Serial.println(dnLine);
     #endif
     
-    pipeIndex = inputString.indexOf('|');
+    pipeIndex = dnLine.indexOf('|');
     const bool dnPiped = (pipeIndex >= 1);   // DroidNet native brightness: the split below resets pipeIndex, so record that it fired
     halt = -1;
     if(pipeIndex >= 1) { 
-        halt = inputString.substring(pipeIndex+1).toInt();
-        inputString = inputString.substring(0, pipeIndex);
+        halt = dnLine.substring(pipeIndex+1).toInt();
+        dnLine = dnLine.substring(0, pipeIndex);
         pipeIndex = -1;
     } 
 
-    commandLength = inputString.length();
-    inputString.toCharArray(inputBuffer, INPUTBUFFERLEN);
-    inputString="";       // If a complete Command string has been flagged, write the string to array to process.
+    commandLength = dnLine.length();
+    dnLine.toCharArray(inputBuffer, INPUTBUFFERLEN);
+    dnLine="";       // If a complete Command string has been flagged, write the string to array to process.
     if( inputBuffer[0]=='!' )       // DroidNet Driveable-Animation Contract (LED-only). Handled
     {                               // BEFORE the fixed-offset F/R/T parser so '!' never misparses
       contractHandle(&inputBuffer[1]);   // bytes after '!' => <class><unit><verb>[:params]
@@ -965,12 +978,9 @@ void loop(){
     }
 
     ///***  Clear States and Reset for next command.  ***///
-    String inputString = "";
-    stringComplete = false;
-    char inputBuffer[INPUTBUFFERLEN]; 
+    if(!dnFromI2C) { stringComplete = false; }   // DroidNet: the three shadowed locals that were here did nothing (one allocated)
     optionState = -1;  
     optionState2 = -1; 
-    int halt = -1;      
   }
 
   contractBeatTick();   // DroidNet contract: tick beat-clock + switch Phase-2 sections on-beat (LED-only)
@@ -1597,15 +1607,17 @@ void serialEvent() {
       
 void i2cEvent(int howMany)
 {  
-  inputString = "";                                     // Ensures inputString is empty
-  int i=0;
+  // DroidNet: this runs inside the TWI interrupt. It used to clear and fill inputString, the
+  // String serialEvent() is building, so an I2C command wiped a serial line in flight. It now
+  // fills its own buffer and loop() takes it from there.
+  byte i=0;
   while(Wire.available())  {                            // loop through all incoming bytes
     char inChar = (char)Wire.read();                    // Receive each byte as a character
     if(i<MAXCOMMANDLENGTH) {
-       inputString += inChar;                           // Add each Character to inputString
+       dnI2cBuffer[i++] = inChar;
     }
-    i++;
   }
-  stringComplete = true;                                // Once done, set a flag so the main loop can do something about it. 
+  dnI2cBuffer[i] = '\0';
+  dnI2cComplete = true;                                 // Once done, set a flag so the main loop can do something about it. 
   statusLEDOn();
 }
