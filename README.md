@@ -65,13 +65,14 @@ non-latching render primitive a no-op). Verified here:
   time with stand-ins for the flash-string hooks this board uses. Both run on a normal computer.
 - `test/host/sim` — the **real `src/main.cpp`** on a fake Arduino core, with a 9600-baud wire in
   both directions (the receive ring that loses bytes when full, the transmit ring that blocks a write
-  when full) and loop passes of random length: 73 scenarios, from the stock commands and the auto
+  when full) and loop passes of random length: 76 scenarios, from the stock commands and the auto
   twitch to bursts, a pushed score, the watchdog and the load check. Three things are checked on
   every simulated pass: a pass that handles a `!` line (whole, spliced or corrupted) starts no servo
   move and writes no `HP_command[]`; a unit the contract held does not move in the pass that lets it
   go; and, in the photometry scenarios, no jewel goes from dark to lit more than three times a
   second. One scenario runs every single-fault corruption of every realistic contract line (45,786
-  of them), one runs 150 random and hostile line streams and measures the latched frames.
+  of them), one runs 150 random and hostile line streams and measures the latched frames; in every
+  second stream every relight counts, whoever drew the pixels.
   A scenario named in `test/host/sim/xfail.txt` records a known defect and must fail; the file is
   empty.
 - `test/host/compile_contract.cpp` — a type-check of the firmware layer against a **mock** of the
@@ -87,10 +88,10 @@ non-latching render primitive a no-op). Verified here:
   identity and its `Serial` adapter, with a 13-character `-dirty` fw and with none.
 - `bash test/host/run.sh` now finishes by cross-compiling the firmware for real.
 
-Flash is comfortable on this board, unlike its PSI sibling: **39,706 B of 253,952 B (15.6%)**, with
-SRAM at 4,588 B of 8,192 B (56.0%); 2,112 B of that is the three 32-section score tables.
+Flash is comfortable on this board, unlike its PSI sibling: **40,096 B of 253,952 B (15.8%)**, with
+SRAM at 4,534 B of 8,192 B (55.3%); 2,112 B of that is the three 32-section score tables.
 
-The stack has been bounded statically too (`test/host/stack_report.py`): **442 B of the 3,604 B
+The stack has been bounded statically too (`test/host/stack_report.py`): **430 B of the 3,658 B
 available (12%)**, with no recursion, no `alloca`/VLA, and — unlike the PSI — **no interrupt-nesting
 hazard**: no interrupt handler reaches a `sei`, so interrupts cannot nest. The I2C handler does not
 render LEDs and does not touch a `String`: it copies the bytes into its own fixed buffer, and `loop()`
@@ -177,9 +178,9 @@ in the WDP announce). What that means on the holoprojectors:
   checks what a unit holds; a bad load idles that unit instead of playing a partial show.
 - **Query.** `Q:r=<route>` addressed to one unit is answered with a routed line,
   `;S0!H<u>q:ver=1.3,rel=1,cap=32,n=<held>,ok=<0|1|2>,bpm=<n>` (or behind `;W<n>,`), so the WCB does
-  not broadcast it. Any other `Q` gets no reply. The reply is sent whole from the main loop when the
-  transmit buffer has room for all of it, never in the middle of a WDP announce, and never by
-  waiting.
+  not broadcast it. Any other `Q` gets no reply. Each unit asked gets its own reply, one a loop
+  pass, sent whole when the transmit buffer has room for it, never in the middle of a WDP announce,
+  and never by waiting.
 - **Brightness.** `b=` is a fraction of the jewel's own level (`BRIGHT 100`, or what `H<unit>B<level>`
   last set): `b=255` is exactly as bright as a stock command. Verb `B` rides below that level inside
   a show only, and never outlives it.
@@ -198,7 +199,9 @@ in the WDP announce). What that means on the holoprojectors:
   more only 340 ms after it last lit or last got brighter; a frame that comes sooner waits, and a
   fall or a blackout never waits. It applies to a jewel the contract has, or handed back in the last
   340 ms, native looks the contract started included (a contract Leia flickers a little more calmly
-  than the stock one). Your own stock looks are never held back, the fast ones included.
+  than the stock one), and to a jewel verb `B` is dimming, even when the light on it is still your
+  stock look (between Send and Play). Otherwise your own stock looks are never held back, the fast
+  ones included.
 - **Pause.** `C:bpm=0` holds the clock and the score. A look that was pumping with the beat is shown
   still, at its own `b=` level, while held.
 - **Lines and bursts.** A line may be 128 bytes. A PlatformIO build has a 256-byte UART receive ring;
@@ -345,7 +348,8 @@ purpose:
   `loop()` takes an I2C line first,
 - two guards on the native auto twitch, `!contractLedTwitchHeld(i) &&` and
   `!contractServoTwitchHeld(i) &&`, first in each test, so it does not stomp a contract look or twitch
-  a servo during a show, and so a hold that ends re-arms the timer before the stock test reads it,
+  a servo during a show, and so a hold that ends re-arms an overdue timer before the stock test reads
+  it; and `dnServoTwitchOverdue()`, a one-line read-only view of the servo twitch timer for the layer,
 - `typeState = 255; functionState = 255;` in front of the stock designator parse, so a short line
   cannot reuse the previous command's type and function,
 - the jewels declared as `DnStrip` (`droidnet/dn_strip.h`: `Adafruit_NeoPixel` whose `show()` passes
@@ -375,7 +379,7 @@ bash test/host/run.sh
 # [1b] wdp_announce_core unit tests                -> 37,506/37,506 checks
 # [1c] wdp_fork.h announce adapter + identity      -> 19/19 checks, with fw "abcdef0-dirty" and "unknown"
 # [2]  ContractFlthy.h firmware type-check, against a mock
-# [2b] whole-firmware simulation                   -> 73 scenarios: the real src/main.cpp on a fake
+# [2b] whole-firmware simulation                   -> 76 scenarios: the real src/main.cpp on a fake
 #      Arduino core; a scenario named in test/host/sim/xfail.txt must fail (the file is empty)
 # [3]  static source guards (LED-only invariant for the contract and the brightness branch,
 #      wire budget, no Serial write that could land inside a WDP announce)

@@ -262,6 +262,9 @@ SCENARIO(s6_owner_brightness_during_a_show_sticks) {
   run(6); line("!**M:v=show\r"); line("!HFA:i=solid,c=ffffff\r"); line("!HFB:b=128\r");
   line("HFB050\r"); CHECK_EQ(neoStrips[0].getBrightness(), 50);   // the stock brightness command, mid-show
   CHECK(latched(0) == (RGB3{50, 50, 50}));           // the new ceiling, and the ride is over
+  line("!**M:v=show\r"); CHECK_EQ(neoStrips[0].getBrightness(), 50);    // a Resend keeps the owner's new level
+  line("!**C:bpm=120\r"); line("!HFA:i=solid,c=ffffff\r", 0.6); CHECK(latched(0) == (RGB3{50, 50, 50}));
+  line("!HFB:b=128\r"); line("!**M:v=show\r"); CHECK_EQ(neoStrips[0].getBrightness(), 50);   // also with a ride on at the Resend
   line("!**M:v=idle\r"); CHECK_EQ(neoStrips[0].getBrightness(), 50);
 }
 

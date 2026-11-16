@@ -18,8 +18,8 @@ beat-locked accents, a host-seeded beat clock, and autonomous board-side section
 `positionHP` / `twitchHP` / `wagHP` / `RCHP`. An armed show HOLDS a unit: `main.cpp`'s two auto-twitch
 gates ask `contractServoTwitchHeld(i)` and `contractLedTwitchHeld(i)`, first in their tests. The layer
 never writes `enableTwitchHP[]`, `enableTwitchLED[]` or `offcoloroverride[]`. When a hold ends,
-whichever way, the gate itself puts the twitch timer a full interval ahead before the stock test
-reads it, so no pass that handles a `!` line, ends an overlay or reaches a score section starts a
+whichever way, the gate itself puts an overdue twitch timer a full interval ahead before the stock
+test reads it (one that is not due yet is left alone, or short holds would starve the twitch), so no pass that handles a `!` line, ends an overlay or reaches a score section starts a
 servo twitch. A stock line too short to carry a type or function has none (`255`), so a bare `X` or
 `A` left over from a corrupted contract line cannot replay the last stock servo command.
 No servo motion, ever. `test/host/sim` checks all of it on the real `src/main.cpp`, on every
@@ -48,7 +48,7 @@ announce" below.
   `ContractFlthy.h` against `test/host/mock_flthy.h`, 1,581,274 contract fuzz checks, 77/77 native
   brightness parser checks and 2,965,122 native brightness fuzz checks, 37,506 WDP announce core
   checks and 19 adapter checks (run twice).
-- **Whole-firmware simulation: 73 scenarios pass.** Stage 2b of `run.sh`
+- **Whole-firmware simulation: 76 scenarios pass.** Stage 2b of `run.sh`
   (`test/host/sim`) runs the real `src/main.cpp` on a fake Arduino core: the 9600-baud wire with its
   receive ring (bytes are lost when it is full) and its transmit ring (a write blocks when it is
   full), `pulseIn()` blocking as it does in RC mode, and loop passes of random length. Origin is
@@ -60,8 +60,14 @@ announce" below.
   reply; `A199` in a show. `test/host/sim/scenarios_review.inc` holds a scenario for each, the
   single-fault sweep (45,786 corruptions) and the S9 property test (150 hostile streams, the latched
   frames measured by three observers).
-- **Build:** flash 39,706 B of 253,952; SRAM 4,588 B of 8,192 (the score tables are 2,112 B).
-  `stack_report.py`: worst-case stack 442 B of the 3,604 B left, 3,162 B spare. The heap (Arduino
+- **Second round of that review: three findings closed here, a fourth in the core.** Verb `B` flashing
+  stock light on an armed unit (S9); the hold-end re-arm starving the owner's auto twitch; one `Q`
+  reply slot for three units. The fourth, swings under a quarter of the ceiling, is closed by the
+  core's next revision (the gate's step becomes a tenth of the ceiling). The property test's oracle
+  has a strict mode since: every relight counts, whoever drew the pixels, apart from a stock
+  command's own for 400 ms.
+- **Build:** flash 40,096 B of 253,952; SRAM 4,534 B of 8,192 (the score tables are 2,112 B).
+  `stack_report.py`: worst-case stack 430 B of the 3,658 B left, 3,228 B spare. The heap (Arduino
   `String`) shares that space. (The tool takes any two bytes of `.data` equal to a function's address
   for a function pointer; on one build of the fix round two letters of "Flthy HP Controller" matched
   `RCHP()` and it called the bound "not sound" over an interrupt path that does not exist.)
@@ -166,7 +172,9 @@ What `ContractFlthy.h` does on top of the shared core. The spec's rule numbers a
   where every frame is latched. The jewels are `DnStrip` (`src/droidnet/dn_strip.h`), whose `show()`
   (in `ContractFlthy.h`) measures the field level (the mean over the seven pixels of each pixel's
   brightest channel, as latched; `s.ceil` is kept at the owner's strip level) and passes it through
-  the gate when the layer has the jewel or let go of it in the last 340 ms. A frame the gate allows
+  the gate when the layer has the jewel or let go of it in the last 340 ms. A verb-`B` ride counts as
+  having it: on an armed show that has not begun the pixels are still the stock firmware's, but `B`
+  dims and relights them through the strip's level. A frame the gate allows
   less than is not latched: what is on the jewel already passed the gate, and the tick offers the
   frame again every pass. Any other frame is stock light: never held back, and told to the gate
   with `contractFieldForced()`. Native looks the contract starts need no ask-then-tell here, because
@@ -183,9 +191,10 @@ What `ContractFlthy.h` does on top of the shared core. The spec's rule numbers a
 - **Score (section 6), load check (section 7), query (section 10).** 32 entries a unit with `b=` and
   every-N accents; overflow is a bad load; `V:n=,k=` idles a unit whose load is wrong and `ok=2`
   stays until the next `M:v=show`, and until then the unit drops every scored line; `Q:r=<route>` to
-  one unit gets the routed reply. The reply waits in one slot (the newest `Q` wins) and the tick
-  sends it whole, in one write, when no WDP announce is partly sent and the TX ring has room for all
-  of it: the line handler never writes to `Serial`, so a `Q` cannot stall `loop()`.
+  one unit gets the routed reply. Each unit has one pending route (a newer `Q` to it replaces the
+  route) and the tick sends one reply a pass, formatted at that moment, whole, in one write, when no
+  WDP announce is partly sent and the TX ring has room for the longest reply: the line handler never
+  writes to `Serial`, so a `Q` cannot stall `loop()`.
 - **Shared timing (section 12).** `flash`, `pulse` and `scan` use `fxFlashOn`, `fxPulseBright` and
   `fxScanPos`. A pulse the beat pump drives is a steady fill at the pumped level.
 
