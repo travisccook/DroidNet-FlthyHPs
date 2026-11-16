@@ -359,15 +359,16 @@ struct Observer {
 // (g) the field's COLOUR while it is lit, as one observer sees it: the mean colour, normalised to its
 // brightest channel. A jump of more than 96 in any channel against the frame before is a change of
 // look. S4: such changes are at least 170 ms apart, whichever path asked.
-// A colour is SEEN, and so dated, at the first frame of 4 levels or more in its strongest channel:
-// under that, one count of rounding in one LED moves the mean colour further than the test. A look
-// that comes up through 3 and 7 levels has changed the field's colour at the 7, not at the 3.
+// A colour is SEEN, and so dated, at the first frame whose BRIGHTEST LED is at 4 levels or more (the
+// core's LOOK_MIN_LEVEL since CA1.6; until then this observer wanted a field mean of 4 levels, which
+// missed one green pixel at 23). Under that a frame shows no colour: a pulse that fades in through 1,
+// 2 and 3 levels has changed the field's colour at the 4.
 struct ColourObs {
   int darkPct, litPct; bool lit = false, known = false, any = false; int chroma[3] = {0, 0, 0}; uint64_t at = 0;
-  void see(int S, int FS, long sr, long sg, long sb, bool counts, uint64_t now, uint64_t& closest, long& changes) {
+  void see(int S, int FS, long sr, long sg, long sb, int peak, bool counts, uint64_t now, uint64_t& closest, long& changes) {
     if (!lit && S * 100 >= FS * litPct) lit = true; else if (lit && S * 100 <= FS * darkPct) lit = false;
     const long top = std::max(sr, std::max(sg, sb));
-    if (!lit || top < 28) return;                    // too dim to have a colour: under 4 levels a channel it is rounding
+    if (!lit || peak < 4) return;                    // no LED at 4 levels: no colour
     const int c[3] = {(int)(sr * 255 / top), (int)(sg * 255 / top), (int)(sb * 255 / top)};
     int far = 0; for (int i = 0; i < 3; i++) far = std::max(far, abs(c[i] - chroma[i]));
     if (known && far > 96) {
@@ -379,12 +380,54 @@ struct ColourObs {
   }
   void afresh() { any = false; }
 };
+// (h) A PART OF THE FIELD (spec S12, core revision CA1.6). The whole-field gate cannot see a part of the
+// jewel going dark and lit while the whole stays legal. A REGION is a set of pixels; it is lit when its
+// level (the mean over its pixels of each pixel's brightest channel) reaches an observer's "lit" line
+// AND at least a quarter of the field in it is not dark: two pixels of the seven. It is dark again at
+// the observer's "dark" line. The limit is S9's: three onsets of one region in any one second.
+// The jewel is a centre (pixel 0) and a ring of six (1 to 6). Its regions: the whole; the centre with
+// each half of the ring, and each half of the ring alone (three pixels in a row, six rotations of
+// each); the three opposite pairs; the six pairs of neighbours. Twenty-two, each seen by the three
+// wide observers.
+struct Region { const char* name; uint8_t mask; };
+static std::vector<Region> jewelRegions() {
+  static char names[22][24]; std::vector<Region> r; int n = 0;
+  auto add = [&](const char* fmt, int a, uint8_t mask) { snprintf(names[n], sizeof names[n], fmt, a, a % 6 + 1); r.push_back({names[n], mask}); n++; };
+  auto ring = [](int k) { return (uint8_t)(1u << ((k - 1) % 6 + 1)); };          // ring pixel k (1..6, wrapping)
+  add("whole", 0, 0x7F);
+  for (int k = 1; k <= 6; k++) add("centre+half from %d", k, (uint8_t)(1u | ring(k) | ring(k + 1) | ring(k + 2)));
+  for (int k = 1; k <= 6; k++) add("half from %d", k, (uint8_t)(ring(k) | ring(k + 1) | ring(k + 2)));
+  for (int k = 1; k <= 3; k++) { snprintf(names[n], sizeof names[n], "opposite %d,%d", k, k + 3); r.push_back({names[n], (uint8_t)(ring(k) | ring(k + 3))}); n++; }
+  for (int k = 1; k <= 6; k++) add("neighbours %d,%d", k, (uint8_t)(ring(k) | ring(k + 1)));
+  return r;
+}
+struct RegionObs {
+  int darkPct = 0, litPct = 0; bool lit = false; std::vector<uint64_t> recent; int worst = 0; uint64_t closestUs = ~0ULL, worstAt = 0;
+  // m: each pixel's brightest channel; full: the ceiling's full scale for one pixel
+  void see(const int* m, uint8_t mask, int full, bool counts, uint64_t now) {
+    int S = 0, n = 0, alive = 0;
+    for (int i = 0; i < 7; i++) if (mask & (1u << i)) { S += m[i]; n++; if (m[i] * 100 > full * darkPct) alive++; }
+    const int FS = n * full;
+    if (!lit && S * 100 >= FS * litPct && alive >= 2) {
+      lit = true;
+      if (counts) { if (!recent.empty() && now - recent.back() < closestUs) closestUs = now - recent.back();
+                    recent.push_back(now); int c = 0; for (uint64_t x : recent) if (x + 1000000ULL > now) c++; if (c > worst) { worst = c; worstAt = now; } }
+    } else if (lit && (S * 100 <= FS * darkPct || alive < 2)) lit = false;
+  }
+  void reread(const int* m, uint8_t mask, int full) { int S = 0, n = 0, alive = 0; for (int i = 0; i < 7; i++) if (mask & (1u << i)) { S += m[i]; n++; if (m[i] * 100 > full * darkPct) alive++; }
+    if (S * 100 >= n * full * litPct && alive >= 2) lit = true; else if (S * 100 <= n * full * darkPct || alive < 2) lit = false; }
+  void afresh() { recent.clear(); }
+};
 struct Photo {
   int hp, ceil; bool started = false; uint64_t lastHad = 0; bool everHad = false;
   Observer obs[3] = {{10, 50}, {19, 75}, {4, 31}};   // (a) brightest channel, wide bands
   Observer narrow[4] = {{3, 15}, {40, 52}, {45, 60}, {80, 95}};   // ...and bands about a step wide (S9's tenth of the ceiling)
   Observer lum[3] = {{10, 50}, {19, 75}, {4, 31}};   // (f) Rec.709 luminance, the gate's own integer formula per LED
   ColourObs colour[5] = {{10, 50}, {19, 75}, {4, 31}, {3, 15}, {45, 60}};
+  std::vector<Region> regions = jewelRegions();     // (h) parts of the field
+  std::vector<RegionObs> regionObs = std::vector<RegionObs>(regions.size() * 3);
+  int regionWorst(size_t r) const { int w = 0; for (int k = 0; k < 3; k++) w = std::max(w, regionObs[r * 3 + k].worst); return w; }
+  int worstRegion(std::string* which = nullptr) const { int w = 0; for (size_t r = 0; r < regions.size(); r++) if (regionWorst(r) > w) { w = regionWorst(r); if (which) *which = regions[r].name; } return w; }
   uint64_t colourClosestUs = ~0ULL, colourBadAt = 0; long colourChanges = 0;
   int peak = 0, overCeiling = 0, prevS = 0;
   bool strict = false; uint64_t stockLineAt = 0; bool stockLineSeen = false;   // STRICT mode, and when the board last handled a stock command
@@ -411,15 +454,17 @@ struct Photo {
   }
   std::vector<std::pair<uint64_t, int>> colourLog;   // every counted change of colour: when, and which observer
   void frame(const uint8_t* p) {
-    int S = 0, FS = 7 * fullScale(ceil); long sr = 0, sg = 0, sb = 0, sy = 0;
+    int S = 0, FS = 7 * fullScale(ceil), peakLed = 0, pm[7]; long sr = 0, sg = 0, sb = 0, sy = 0;
+    if (regionObs[0].litPct == 0) { static const int BAND[3][2] = {{10, 50}, {19, 75}, {4, 31}}; for (size_t i = 0; i < regionObs.size(); i++) { regionObs[i].darkPct = BAND[i % 3][0]; regionObs[i].litPct = BAND[i % 3][1]; } }
     const int step = ceil < 10 ? 2 : ceil / 10 + 1;
     every([&](Observer& o) { o.minGap = 7 * (step + 1); });
     for (int i = 0; i < 7; i++) { const int g = p[i * 3], r = p[i * 3 + 1], b = p[i * 3 + 2];      // the strip keeps G,R,B
-      const int m = std::max(r, std::max(g, b)); S += m; peak = std::max(peak, m); if (m > fullScale(ceil)) overCeiling++;
+      const int m = std::max(r, std::max(g, b)); S += m; pm[i] = m; peak = std::max(peak, m); peakLed = std::max(peakLed, m); if (m > fullScale(ceil)) overCeiling++;
       sr += r; sg += g; sb += b; sy += (54 * r + 183 * g + 19 * b) >> 8; }
     if (neoStrips[hp].getBrightness() > ceil) overCeiling++;
     if (simHasLeds(hp)) { lastHad = us; everHad = true; }
-    if (!started || reread) { started = true; reread = false; prevS = S; for (auto& o : obs) o.reread(S, FS); for (auto& o : narrow) o.reread(S, FS); for (auto& o : lum) o.reread((int)sy, FS); return; }
+    if (!started || reread) { started = true; reread = false; prevS = S; for (auto& o : obs) o.reread(S, FS); for (auto& o : narrow) o.reread(S, FS); for (auto& o : lum) o.reread((int)sy, FS);
+      for (size_t i = 0; i < regionObs.size(); i++) regionObs[i].reread(pm, regions[i / 3].mask, fullScale(ceil)); return; }
     const bool afterStockLine = stockLineSeen && us - stockLineAt <= 400000ULL;
     // S10: the own frames of a runs-as-stock native look the contract started are the stock look's, like
     // a stock command's own relight. Its START is the contract's edge: the first onset after it counts.
@@ -437,13 +482,14 @@ struct Photo {
     if (stockNative) { cOnset = cOnset && edgeOnset; cColour = cColour && edgeColour; }
     if (afterStockLine) cOnset = cColour = false;                    // a stock command's own relight, in both modes
     const bool fresh = afterStockLine || (stockNative && !edgeOnset) || (!strict && !counts && S > prevS);
-    if (fresh) { every([](Observer& o) { o.afresh(); }); for (auto& c : colour) c.afresh(); }   // the owner's own light
+    if (fresh) { every([](Observer& o) { o.afresh(); }); for (auto& c : colour) c.afresh(); for (auto& o : regionObs) o.afresh(); }   // the owner's own light
     prevS = S;
     size_t n0 = 0; every([&](Observer& o) { n0 += o.onsets.size(); }); const long c0 = colourChanges;
     for (auto& o : obs) o.see(S, FS, cOnset, us);
     for (auto& o : narrow) o.see(S, FS, cOnset, us);
     for (auto& o : lum) o.see((int)sy, FS, cOnset, us);
-    { const uint64_t was = colourClosestUs; for (auto& c : colour) { const long n = colourChanges; c.see(S, FS, sr, sg, sb, cColour, us, colourClosestUs, colourChanges);
+    for (size_t i = 0; i < regionObs.size(); i++) regionObs[i].see(pm, regions[i / 3].mask, fullScale(ceil), cOnset, us);
+    { const uint64_t was = colourClosestUs; for (auto& c : colour) { const long n = colourChanges; c.see(S, FS, sr, sg, sb, peakLed, cColour, us, colourClosestUs, colourChanges);
         if (colourChanges != n) colourLog.push_back({c.at, (int)(&c - colour)}); }
       if (colourClosestUs < was && colourClosestUs < 165000ULL) colourBadAt = us; }
     size_t n1 = 0; every([&](Observer& o) { n1 += o.onsets.size(); });
@@ -597,7 +643,7 @@ static const char* G_CALM[] = {"F0055", "A0059|3", "A0055|1", "R006|2", "A096", 
                                "F1013", "A104", "A105|2", "A198", "A199", "T1042", "X0045|1"};
 // One latched frame as the core's gates measure it, for the REPLAY (S9_REPLAY=1): the core's own
 // contractFieldAsk()/contractFieldTell() run again, from a fresh state, on what the jewel showed.
-struct FrameRec { uint32_t ms; uint8_t level, lum, ceil; bool ours; uint32_t sig; byte fn; uint8_t eff; bool pulse; uint8_t chroma[3]; int top; };
+struct FrameRec { uint32_t ms; uint8_t level, lum, ceil; bool ours; uint32_t sig; byte fn; uint8_t eff; bool pulse; uint8_t chroma[3]; int peak; };
 struct Stream {                                      // drives the wire and measures the three jewels
   Photo ph[3] = {Photo(0), Photo(1), Photo(2)};
   std::vector<FrameRec> rec[3]; long recShows[3] = {-1, -1, -1}; bool recOn = getenv("S9_REPLAY") != 0;
@@ -608,14 +654,14 @@ struct Stream {                                      // drives the wire and meas
       while (recShows[hp] < nowShows) {
         const uint32_t at = neoStrips[hp].ringMs[recShows[hp] % Adafruit_NeoPixel::RING];   // the board's own clock at the latch
         const uint8_t* p = neoStrips[hp].ring[recShows[hp]++ % Adafruit_NeoPixel::RING];
-        int sum = 0, sumY = 0; long c[3] = {0, 0, 0};
-        for (int i = 0; i < 7; i++) { const int g = p[i * 3], r = p[i * 3 + 1], b = p[i * 3 + 2]; sum += std::max(r, std::max(g, b)); sumY += (54 * r + 183 * g + 19 * b) >> 8; c[0] += r; c[1] += g; c[2] += b; }
+        int sum = 0, sumY = 0, pk = 0; long c[3] = {0, 0, 0};
+        for (int i = 0; i < 7; i++) { const int g = p[i * 3], r = p[i * 3 + 1], b = p[i * 3 + 2]; sum += std::max(r, std::max(g, b)); pk = std::max(pk, std::max(r, std::max(g, b))); sumY += (54 * r + 183 * g + 19 * b) >> 8; c[0] += r; c[1] += g; c[2] += b; }
         const long top = std::max(c[0], std::max(c[1], c[2]));
         FrameRec f = {at, (uint8_t)(sum / 7), (uint8_t)(sumY / 7), gUnit[hp].s.ceil,
                       simHasLeds(hp) || (gLatch[hp].touched && (millis() - gLatch[hp].touchMs < 340 || gLatch[hp].owed)), gUnit[hp].s.lookSig,
                       LED_command[hp].LEDFunction, (uint8_t)gUnit[hp].s.effect, gUnit[hp].s.pulseActive,
-                      {(uint8_t)(top ? c[0] * 255 / top : 0), (uint8_t)(top ? c[1] * 255 / top : 0), (uint8_t)(top ? c[2] * 255 / top : 0)}, (int)top};
-        if (!rec[hp].empty()) { const FrameRec& l = rec[hp].back(); if (l.level == f.level && l.lum == f.lum && l.top == f.top && !memcmp(l.chroma, f.chroma, 3)) continue; }
+                      {(uint8_t)(top ? c[0] * 255 / top : 0), (uint8_t)(top ? c[1] * 255 / top : 0), (uint8_t)(top ? c[2] * 255 / top : 0)}, pk};
+        if (!rec[hp].empty()) { const FrameRec& l = rec[hp].back(); if (l.level == f.level && l.lum == f.lum && l.peak == f.peak && !memcmp(l.chroma, f.chroma, 3)) continue; }
         rec[hp].push_back(f);
       }
     }
@@ -626,7 +672,7 @@ struct Stream {                                      // drives the wire and meas
   //     layer measures them (whole levels); the reference is rescaled when the owner changes the level;
   //   * the look gate (contractLookAllowed / contractLookForced), fed the FRAME: a lit frame whose mean
   //     colour is more than 96 from the lit frame before it in any channel (the colour observer's own
-  //     test, and its own floor of 4 levels) is a new look.
+  //     test, and its floor: a LED at 4 levels) is a new look.
   // A frame either gate would have held is marked: F! (field) or C! (look); "up" is a frame at which
   // the field lit or got brighter, "colour" a change of colour. Times are the board's own clock at the
   // latch, the same the layer gave the gate.
@@ -640,7 +686,7 @@ struct Stream {                                      // drives the wire and meas
       const bool in = (uint64_t)f.ms * 1000 + 4000 >= fromUs && (uint64_t)f.ms * 1000 <= toUs + 4000;
       const bool fHeld = contractFieldAsk(rs, f.level, f.lum, f.ms) != 255;
       bool change = false, cHeld = false;
-      if (f.top >= 28) {
+      if (f.peak >= 4) {
         int far = 0; for (int i = 0; i < 3; i++) far = std::max(far, abs((int)f.chroma[i] - chroma[i]));
         if (known && far > 96) { change = true; sig++; cHeld = !contractLookAllowed(rs, sig, f.ms); }
         for (int i = 0; i < 3; i++) chroma[i] = f.chroma[i];
@@ -758,7 +804,7 @@ static bool backOnStock(Stream& st, double watch, std::string& why) {
 // any jewel, nothing above the ceiling, no servo moved by '!' traffic or by a hold ending, and once
 // the show ends (M:v=idle, the watchdog, or the operator's button) the board is stock again.
 SCENARIO(s9_property_hostile_streams) {
-  const int SEEDS = S9_SEEDS; int bad = 0, worst = 0;
+  const int SEEDS = S9_SEEDS; int bad = 0, worst = 0, regionOver = 0, regionMax = 0;
   for (int seed = 0; seed < SEEDS; seed++) {
     fflush(stdout); pid_t pid = fork();
     if (pid == 0) {
@@ -777,6 +823,12 @@ SCENARIO(s9_property_hostile_streams) {
       if (brk && getenv("S9_TRACE")) for (auto& p : st.ph) p.every([&](Observer& o) { if (o.maxPerSecond() > 3 || o.closestUs < 334000ULL) {
         printf("  hp%d observer %s%d/%d onsets (ms):", p.hp, (&o >= p.lum && &o < p.lum + 3) ? "lum " : "", o.darkPct, o.litPct); for (auto x : o.onsets) printf(" %.0f", x / 1000.0); printf("\n"); } });
       const bool brk = st.broken();
+      // S12: the regions of each jewel. Measured on every stream and reported; not part of `broken`, because
+      // the streams mix in the one known defect (a comet and a full look by turns: s12_a_comet_and_a_full_look_by_turns).
+      int regionWorst = 0; for (auto& p : st.ph) regionWorst = std::max(regionWorst, p.worstRegion());
+      if (regionWorst > 3 && st.recOn) for (auto& p : st.ph) for (size_t r = 0; r < p.regions.size(); r++) for (int k = 0; k < 3; k++) { const RegionObs& o = p.regionObs[r * 3 + k];
+        if (o.worst == regionWorst) { printf("  REGION seed %d hp%d %s (%d/%d): %d onsets in the second to %.0f ms:", seed, p.hp, p.regions[r].name, o.darkPct, o.litPct, o.worst, o.worstAt / 1000.0);
+          for (uint64_t x : o.recent) if (x + 1000000ULL > o.worstAt && x <= o.worstAt) printf(" %.0f", x / 1000.0); printf("\n"); r = p.regions.size(); break; } }
       if (brk || st.overCeiling() || !stock || ledOnlyViolations || holdViolations)
         printf("  seed %2d (%s, %s): %d onsets/s, %d frames over the ceiling, LED-only %ld, hold %ld%s%s\n", seed, ending == 0 ? "idle" : ending == 1 ? "host dies" : "button", st.strict ? "strict" : "attributed",
                n, st.overCeiling(), ledOnlyViolations, holdViolations, stock ? "" : ", NOT back on stock: ", why.c_str());
@@ -793,12 +845,14 @@ SCENARIO(s9_property_hostile_streams) {
       if (st.recOn && getenv("S9_SHOW")) { int h = 0; double a = 0, b = 0; if (sscanf(getenv("S9_SHOW"), "%d,%lf,%lf", &h, &a, &b) == 3) st.replay(h, (uint64_t)(a * 1000), (uint64_t)(b * 1000)); }
       if (brk) printf("      closest two onsets %.0f ms, closest two changes of colour %.0f ms\n", st.closestOnsetsMs() > 1e9 ? -1.0 : st.closestOnsetsMs(), st.closestColourMs() > 1e9 ? -1.0 : st.closestColourMs());
       fflush(stdout);
-      _exit((brk || st.overCeiling() || !stock || ledOnlyViolations || holdViolations) ? std::min(n > 3 ? n : 99, 120) : 0);
+      _exit((brk || st.overCeiling() || !stock || ledOnlyViolations || holdViolations) ? std::min(n > 3 ? n : 99, 120) : (regionWorst > 3 ? 200 + std::min(regionWorst, 50) : 0));
     }
     int stt = 0; waitpid(pid, &stt, 0); int code = WIFEXITED(stt) ? WEXITSTATUS(stt) : 99;
-    if (code) { bad++; if (code < 99) worst = std::max(worst, code); }
+    if (code >= 200) { regionOver++; regionMax = std::max(regionMax, code - 200); }
+    else if (code) { bad++; if (code < 99) worst = std::max(worst, code); }
   }
   printf("  %d of %d streams broke the property (worst %d onsets in a second)\n", bad, SEEDS, worst);
+  printf("  regions (S12, measured): %d of %d streams lit one part of a jewel more than three times in a second (at most %d)\n", regionOver, SEEDS, regionMax);
   CHECK_EQ(bad, 0);
 }
 
@@ -916,6 +970,20 @@ SCENARIO(gate_held_frames_table) {
       printf(pass ? "\n" : "  |");
     }
   }
+  // CA1.6, one rise is one onset: a coloured look that fades in crosses the step in its brightest
+  // channel before it does in luminance. Until CA1.6 the second crossing was held for 340 ms and
+  // the look then jumped. Pulse and wipe in five colours, at the slowest and the fastest speed.
+  double worstColour = 0;
+  for (const char* look : {"pulse", "wipe"}) for (const char* c : {"ff0000", "00ff00", "0000ff", "116530", "ffffff"}) {
+    printf("  %-5s %s", look, c);
+    for (int s : {0, 255}) {
+      char l[80]; snprintf(l, sizeof l, "!HFA:i=%s,c=%s,s=%d\r", look, c, s);
+      const double a = heldPct(l, 1000, 4000), b = heldPct(l, 10000, 15000);
+      printf("   s=%-3d %5.1f | %5.1f", s, a, b); worstColour = std::max(worstColour, std::max(a, b));
+    }
+    printf("\n");
+  }
+  CHECK(worstColour == 0.0);
   double worstPump = 0;
   for (int m : {64, 255}) for (int bpm : {60, 120, 240}) {
     char l[96]; snprintf(l, sizeof l, "!HFA:i=solid,c=ffffff,m=%d,am=1\r!**C:bpm=%d,ph=0,bpb=4\r", m, bpm);
@@ -933,22 +1001,26 @@ SCENARIO(gate_held_frames_table) {
 
 
 // ---- Sparkle, redrawn for seven pixels: a constant number lit, one moving at a time ---------------
-SCENARIO(sparkle_keeps_a_constant_number_of_pixels_lit) {
+SCENARIO(sparkle_keeps_a_constant_number_of_sparks_on_a_bed) {
   for (int s : {0, 64, 128, 192, 255}) {
     int bad = trial([s] {
       run(6); for (int i = 0; i < HPCOUNT; i++) enableTwitchLED[i] = 0;
       line("!**M:v=show\r"); char l[64]; snprintf(l, sizeof l, "!HFA:i=sparkle,c=ffffff,s=%d\r", s); line(l, 1.0);
       const int want = 2 + (s >> 6); long moves = 0, held = 0; uint8_t prev[21]; memcpy(prev, neoStrips[0].shown, 21); std::set<int> seen;
       for (int k = 0; k < 20000; k++) {
-        pass(1000); held += gLatch[0].pending; int lit = 0, changed = 0;
-        for (int px = 0; px < 7; px++) { RGB3 c = latched(0, px); if (c.r) { lit++; seen.insert(px); CHECK(c.r == c.g && c.g == c.b); }
+        pass(1000); held += gLatch[0].pending; int top = 0, sparks = 0, changed = 0;
+        for (int px = 0; px < 7; px++) top = std::max(top, (int)latched(0, px).r);
+        for (int px = 0; px < 7; px++) { RGB3 c = latched(0, px); CHECK(c.r == c.g && c.g == c.b);
+          if (c.r == top) { sparks++; seen.insert(px); }
+          else if (abs(c.r * 5 - top * 2) > 5) { printf("  s=%d: a pixel between the sparks at %d of %d, want two fifths\n", s, c.r, top); failures++; }   // S12: the bed
           if (memcmp(prev + px * 3, neoStrips[0].shown + px * 3, 3)) changed++; }
-        if (lit != want) { printf("  s=%d: %d pixels lit, want %d\n", s, lit, want); failures++; break; }
-        if (changed) { moves++; if (changed != 2) { printf("  s=%d: %d pixels changed in one step, want 2 (one off, one on)\n", s, changed); failures++; break; } }
+        if (failures) break;
+        if (sparks != want) { printf("  s=%d: %d sparks, want %d\n", s, sparks, want); failures++; break; }
+        if (changed) { moves++; if (changed != 2) { printf("  s=%d: %d pixels changed in one step, want 2 (one spark out, one in)\n", s, changed); failures++; break; } }
         memcpy(prev, neoStrips[0].shown, 21);
       }
       const double stepMs = 150.0 - s * 110.0 / 255.0;
-      printf("  s=%3d: %d of 7 lit at every frame, %ld moves in 20 s (one every %.0f ms asked), every pixel used: %s, frames held: %ld\n", s, want, moves, stepMs, seen.size() == 7 ? "yes" : "NO", held);
+      printf("  s=%3d: %d of 7 at full and the rest at two fifths at every frame, %ld moves in 20 s (one every %.0f ms asked), every pixel used: %s, frames held: %ld\n", s, want, moves, stepMs, seen.size() == 7 ? "yes" : "NO", held);
       CHECK(moves > 20000 / (stepMs + 6) && moves <= 20000 / stepMs + 1);  CHECK_EQ((int)seen.size(), 7);  CHECK_EQ(held, 0);
     });
     CHECK_EQ(bad, 0);
@@ -1096,29 +1168,49 @@ SCENARIO(s9_a_look_brighter_only_by_luminance_after_the_rainbow_is_an_onset) {
   });
   CHECK_EQ(bad, 0);
 }
-// (5) LEIA'S COLOUR, WHICHEVER FRAMES AN EYE COMPARES. The gated Leia re-rolls the field's colour by
-// itself. The latch judged each frame against the one before: two half-steps 141 ms apart were one
-// change to the observer whose band missed the dim frame between (soak 1600000 + 1324). Random Leia
-// does this once in thousands of streams, so here the test draws Leia's frames itself: Leia is up
-// through the contract, the loop stands still, and each frame goes to the latch as the stock code
-// would send it.
-static void leiaFrame(int r, int g, int b) {
+// (5) A LOOK'S OWN COLOURS, WHICHEVER FRAMES AN EYE COMPARES. Stock light and the gated Leia draw their
+// own colours under one name. The latch judged each frame against the one before: two half-steps 141 ms
+// apart were one change to the observer whose band missed the dim frame between (soak 1600000 + 1324,
+// on Leia). Since S12 Leia's frames are paced 340 ms apart, so the case is drawn on STOCK light in the
+// hand-back window: the test stands the loop still, opens the window as a hand-back does, and sends
+// each frame to the latch as the stock code would.
+static void jewelFrame(int r, int g, int b) {
   uint8_t* px = neoStrips[0].getPixels();
   for (int i = 0; i < 7; i++) { px[i * 3] = (uint8_t)g; px[i * 3 + 1] = (uint8_t)r; px[i * 3 + 2] = (uint8_t)b; }
   neoStrips[0].show();
 }
 static bool shownIs(int r, int g, int b) { const uint8_t* q = neoStrips[0].shown; for (int i = 0; i < 7; i++) if (q[i * 3] != g || q[i * 3 + 1] != r || q[i * 3 + 2] != b) return false; return true; }
 static void later(int ms) { us += (uint64_t)ms * 1000; g_ms = (uint32_t)(us / 1000); }
-SCENARIO(s4_leias_own_colours_are_judged_against_the_colour_of_the_last_change) {
+static void handBackNow() { gLatch[0].touchMs = millis(); gLatch[0].touched = true; gLatch[0].extended = true; }   // the window, and no second one
+SCENARIO(s4_a_looks_own_colours_are_judged_against_the_colour_of_the_last_change) {
+  run(9); calmStock();
+  CHECK(!lookUp(0));  CHECK_EQ(LED_command[0].LEDFunction, 100);               // stock light: the off colour
+  // a drift in two half-steps: light blue, then 47 and 50 nearer to blue, 70 and 141 ms later
+  later(1000); handBackNow(); jewelFrame(100, 0, 0);    CHECK(shownIs(100, 0, 0));
+  later(400);  handBackNow(); jewelFrame(54, 54, 100);  CHECK(shownIs(54, 54, 100));   // a change of colour: the 170 ms run from here
+  later(70);   handBackNow(); jewelFrame(35, 35, 100);  CHECK(shownIs(35, 35, 100));   // 47 of 255 from it: the same colour
+  later(71);   handBackNow(); jewelFrame(16, 16, 100);  CHECK(shownIs(35, 35, 100));   // 97 from it, after 141 ms: held
+  later(40);   handBackNow(); jewelFrame(16, 16, 100);  CHECK(shownIs(16, 16, 100));   // after 181 ms: shown
+}
+// (5b) S12: LEIA'S FRAMES ARE 340 ms APART WHEN A LED GETS BRIGHTER. Leia re-rolls every pixel, and a frame
+// that leaves the whole field's level where it was can still light two pixels the frame before left
+// dark: a quarter of the field. Through the contract Leia lit one half of the ring four times in a
+// second. The test draws Leia's frames itself, as above.
+static void jewelPixels(const int* v) {              // white, one level a pixel
+  uint8_t* px = neoStrips[0].getPixels();
+  for (int i = 0; i < 7; i++) px[i * 3] = px[i * 3 + 1] = px[i * 3 + 2] = (uint8_t)v[i];
+  neoStrips[0].show();
+}
+static bool shownPixels(const int* v) { const uint8_t* q = neoStrips[0].shown; for (int i = 0; i < 7; i++) if (q[i * 3] != v[i]) return false; return true; }
+SCENARIO(s12_leias_frames_that_brighten_a_pixel_are_340_ms_apart) {
   run(9); calmStock();
   say("!HFM:v=show\r!HFA:i=native:1\r"); run(3);
   CHECK_EQ(LED_command[0].LEDFunction, 1);  CHECK(gUnit[0].s.base == CB_NATIVE);  CHECK(!gUnit[0].nativeWait);
-  // a drift in two half-steps: light blue, then 47 and 50 nearer to blue, 70 and 141 ms later
-  later(1000); leiaFrame(100, 0, 0);    CHECK(shownIs(100, 0, 0));
-  later(400);  leiaFrame(54, 54, 100);  CHECK(shownIs(54, 54, 100));           // a change of colour: the 170 ms run from here
-  later(70);   leiaFrame(35, 35, 100);  CHECK(shownIs(35, 35, 100));           // 47 of 255 from it: the same colour
-  later(71);   leiaFrame(16, 16, 100);  CHECK(shownIs(35, 35, 100));           // 97 from it, after 141 ms: held
-  later(40);   leiaFrame(16, 16, 100);  CHECK(shownIs(16, 16, 100));           // after 181 ms: shown
+  static const int A[7] = {50, 0, 0, 50, 50, 50, 50}, B[7] = {50, 50, 50, 0, 0, 50, 50}, C[7] = {50, 40, 40, 0, 0, 50, 50};
+  later(1000); jewelPixels(A); CHECK(shownPixels(A));
+  later(100);  jewelPixels(B); CHECK(shownPixels(A));   // the same level, another pair lit: it waits
+  later(250);  jewelPixels(B); CHECK(shownPixels(B));   // 350 ms after A
+  later(50);   jewelPixels(C); CHECK(shownPixels(C));   // no LED brighter: a fall, at once
 }
 // (6) A LOOK THAT COMES UP DIM HAS CHANGED THE FIELD'S COLOUR WHEN A FRAME SHOWS IT. A green pulse drawn
 // as a wipe lights one pixel, then two: 3 levels, then 6. The look gate timed it from its first frame;
@@ -1167,4 +1259,63 @@ SCENARIO(s10_idle_while_a_native_look_waits_takes_down_the_look_that_stayed_up) 
   }
   printf("  the rainbow had to wait at %d of 40 moments\n", waited);
   CHECK_EQ(bad, 0);  CHECK(waited >= 5);
+}
+
+// ===== S12: a part of the field. Every contract look alone, at its fastest ========================
+// Each look runs by itself for 30 s at s=255 on the front jewel, in white and in 116530, and the
+// photometer's twenty-two regions count their onsets. The table is the measurement; the assert is the
+// limit, three onsets of one region in any one second.
+struct RegionRow { int worst, whole; char region[24]; uint64_t closestUs; };
+static RegionRow regionRate(const char* setup, double secs = 30.0) {
+  RegionRow row = {-1, -1, "", 0}; int fd[2]; if (pipe(fd)) return row;
+  fflush(stdout); pid_t pid = fork();
+  if (pid == 0) {
+    close(fd[0]); run(9); calmStock();
+    say("!HFM:v=show\r"); say(setup); run(2);
+    Photo p(0); p.strict = true; watchFor(p, secs);
+    std::string which; row.worst = p.worstRegion(&which); row.whole = p.maxPerSecond(); snprintf(row.region, sizeof row.region, "%s", which.c_str());
+    row.closestUs = ~0ULL; for (auto& o : p.regionObs) row.closestUs = std::min(row.closestUs, o.closestUs);
+    (void)!write(fd[1], &row, sizeof row); _exit(0);
+  }
+  close(fd[1]); (void)!read(fd[0], &row, sizeof row); close(fd[0]); int st; waitpid(pid, &st, 0);
+  return row;
+}
+SCENARIO(s12_region_rates_each_look_alone_at_its_fastest) {
+  static const char* LOOKS[] = {"solid", "flash", "pulse", "rainbow", "scan", "sparkle", "meter", "comet", "chase", "wipe", "gradient", "colorcycle", "twinkle", "native:1", "native:6"};
+  int worst = 0;
+  printf("  the most often one region lit in a second (and the whole field), s=255: white | 116530; the region; its closest two onsets\n");
+  for (const char* look : LOOKS) {
+    printf("  %-11s", look);
+    for (const char* c : {"ffffff", "116530"}) {
+      char l[96]; snprintf(l, sizeof l, "!HFA:i=%s,c=%s,s=255\r%s", look, c, !strcmp(look, "meter") ? "!HFL:v=200\r" : "");
+      const RegionRow r = regionRate(l);
+      printf("  %d (%d) %-20s %4.0f ms |", r.worst, r.whole, r.worst ? r.region : "-", r.closestUs > 1e15 ? 0.0 : r.closestUs / 1000.0);
+      worst = std::max(worst, r.worst);
+      if (r.worst < 0) failures++;
+    }
+    printf("\n");
+  }
+  CHECK(worst <= 3);
+}
+// S12, the defect the logics property stage records as a known failure: a comet and a full look sent by
+// turns (A:i=comet for 510 ms, A:i=solid for 170 ms, again and again). The comet's head passes a part of
+// the field and the full look lights it again: two onsets of that part in one 680 ms cycle, while the
+// field's level only ever rises from a field that is lit, which no whole-field gate holds.
+SCENARIO(s12_a_comet_and_a_full_look_by_turns) {
+  int worst = 0;
+  for (int s : {255, 128, 0}) {
+    int fd[2]; if (pipe(fd)) { failures++; return; }
+    fflush(stdout); pid_t pid = fork();
+    if (pid == 0) {
+      close(fd[0]); run(9); calmStock(); say("!HFM:v=show\r"); run(1);
+      Photo p(0); p.strict = true;
+      for (int i = 0; i < 30; i++) { char l[64]; snprintf(l, sizeof l, "!HFA:i=comet,c=ffffff,s=%d\r", s); say(l); watchFor(p, 0.51); say("!HFA:i=solid,c=ffffff\r"); watchFor(p, 0.17); }
+      std::string which; RegionRow row = {p.worstRegion(&which), p.maxPerSecond(), "", 0}; snprintf(row.region, sizeof row.region, "%s", which.c_str());
+      (void)!write(fd[1], &row, sizeof row); _exit(0);
+    }
+    close(fd[1]); RegionRow row = {-1, -1, "", 0}; (void)!read(fd[0], &row, sizeof row); close(fd[0]); int st; waitpid(pid, &st, 0);
+    printf("  comet s=%-3d 510 ms / solid 170 ms: one region lit %d times in a second at the most (%s); the whole field %d\n", s, row.worst, row.region, row.whole);
+    worst = std::max(worst, row.worst);
+  }
+  CHECK(worst <= 3);
 }
