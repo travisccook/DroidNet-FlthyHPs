@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Apply a prototype level to a scratch copy of ../../../../src and run the simulation on it.
 #   ./try.sh "<main.cpp levels>" "<ContractFlthy.h levels>"      e.g.  ./try.sh 12AD AGBCDE   (everything)
-# main.cpp levels:  1 serialEvent (F1)   2 I2C buffer + shadowed locals   A twitch gates   D owner-brightness hook
-# ContractFlthy.h:  A lifecycle (F2 F4 F7)   G letting go   B native allow-list (F3)   C pulse over the stock look (L3)
-#                   D brightness (S6 F8)   E pulse floor and d= (F9)
-# B, C, D, E and G need A. D in one file needs D in the other. A in one file needs A in the other.
+# main.cpp levels:  1 serialEvent + 128-byte line (F1, section 11)   2 I2C buffer + shadowed locals
+#                   A the two twitch gates   D owner-brightness hook
+# ContractFlthy.h:  A lifecycle (L1; F2 F4 F7)   G letting go   B native allow-list (S7; F3)
+#                   C pulse over the stock look (L3)   D brightness (S6; F8)   E pulse floor (S8), d= retired (L4)
+# B, C, D, E and G need A. A or D in one file needs the same level in the other.
 set -eu
 cd "$(dirname "$0")"
 OUT="$(mktemp -d "${TMPDIR:-/tmp}/flthy-r1.XXXXXX")"

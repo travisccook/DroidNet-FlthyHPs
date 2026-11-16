@@ -1,6 +1,6 @@
 diff -ru a/test/host/compile_contract.cpp b/test/host/compile_contract.cpp
---- a/test/host/compile_contract.cpp	2026-11-16 06:08:02.195316037 +0000
-+++ b/test/host/compile_contract.cpp	2026-11-16 06:08:02.196954904 +0000
+--- a/test/host/compile_contract.cpp	2026-11-16 06:34:29.807082314 +0000
++++ b/test/host/compile_contract.cpp	2026-11-16 06:34:29.808388490 +0000
 @@ -93,46 +93,27 @@
      }
    }
@@ -106,8 +106,17 @@ diff -ru a/test/host/compile_contract.cpp b/test/host/compile_contract.cpp
        printf("FAIL: after a resend onto a FULL score the table holds %d entries, not show B's "
               "2 — scoreInsert() silently dropped show B at the %d-entry cap\n",
 diff -ru a/test/host/mock_flthy.h b/test/host/mock_flthy.h
---- a/test/host/mock_flthy.h	2026-11-16 06:08:02.195284376 +0000
-+++ b/test/host/mock_flthy.h	2026-11-16 06:08:02.196926684 +0000
+--- a/test/host/mock_flthy.h	2026-11-16 06:34:29.807056679 +0000
++++ b/test/host/mock_flthy.h	2026-11-16 06:34:29.808366932 +0000
+@@ -27,7 +27,7 @@
+ // TRUNCATES SILENTLY, so a v1.2 scored line (base look + at=/am=/m= + the ae=/ac=/ad= accent)
+ // that overruns it is a real, invisible bug. run.sh asserts this has not drifted from the
+ // firmware's value — the wire-budget guard only means something if the two agree.
+-#define INPUTBUFFERLEN 96
++#define INPUTBUFFERLEN 128
+ 
+ // ---- Arduino core stubs ----
+ static unsigned long _mock_millis = 0;
 @@ -83,7 +83,12 @@
    int      showCount = 0;
    void setPixelColor(uint16_t i, uint32_t c) { if (i < NEO_JEWEL_LEDS) staged[i] = c; }

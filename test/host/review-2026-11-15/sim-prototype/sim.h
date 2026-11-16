@@ -22,6 +22,7 @@ static std::deque<bool> rxContract;                      // parallel to Serial.r
 static bool lineContract = false, lineOther = false;     // origin of the line being assembled
 static int failures = 0;
 static long ledOnlyViolations = 0;
+static long rxOverruns = 0;                              // bytes the 64-byte UART ring had no room for
 static bool ledOnlyChecked = true;                       // a scenario may switch the invariant off
 static long ledTwitchStarts[HPCOUNT] = {0, 0, 0};        // stock LED auto twitches begun, per jewel
 static byte prevFn[HPCOUNT] = {255, 255, 255};
@@ -74,7 +75,10 @@ inline void pass(uint64_t pass_us = PASS) {              // one loop() pass, the
     prevFn[i] = f;
   }
   us += pass_us; g_ms = (uint32_t)(us / 1000);
-  while (wi < wire.size() && wire[wi].at <= us) { Serial.rx.push_back(wire[wi].c); rxContract.push_back(wire[wi].contract); wi++; }
+  for (; wi < wire.size() && wire[wi].at <= us; wi++) {   // HardwareSerial's RX ring holds 63 bytes; the rest are lost
+    if (Serial.rx.size() >= 63) { rxOverruns++; continue; }
+    Serial.rx.push_back(wire[wi].c); rxContract.push_back(wire[wi].contract);
+  }
   size_t before = Serial.rx.size();
   if (Serial.available()) serialEvent();
   for (size_t n = before - Serial.rx.size(); n; n--) { (rxContract.front() ? lineContract : lineOther) = true; rxContract.pop_front(); }

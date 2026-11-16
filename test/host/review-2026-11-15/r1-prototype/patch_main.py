@@ -1,4 +1,5 @@
-# Level-aware prototype of the R1 hooks in src/main.cpp (CRLF).  patch_main.py <file> <levels>: 1 (F1), 2 (I2C + shadows), A (gates), D (owner brightness)
+# Level-aware prototype of the R1 hooks in src/main.cpp (CRLF).
+#   patch_main.py <file> <levels>: 1 (F1, line buffer 128), 2 (I2C + shadows), A (two twitch gates), D (owner brightness)
 import sys
 p, L = sys.argv[1], sys.argv[2]
 s = open(p, 'rb').read().decode('utf-8')
@@ -9,6 +10,8 @@ def rep(old, new, count=1):
     assert s.count(old) == count, (s.count(old), old[:70])
     s = s.replace(old, new)
 if '1' in L:
+    # section 11 and core-plan amendment 16: the longest v1.3 line is 102 characters
+    rep("#define INPUTBUFFERLEN 96", "#define INPUTBUFFERLEN 128")
     rep("""  while (Serial.available()) {                         // Loop through all incoming bytes
     char inChar = (char)Serial.read();                 // Receive each byte as a character        
     if (inChar == '\\r' || inChar == '\\n') {            // if the incoming character is a carriage return (\\r) or newline (\\n), it denotes end of command
@@ -110,7 +113,7 @@ String dnI2cLine = "";                         // DroidNet: loop()'s copy of it
 """)
 if 'A' in L:
     rep("LED_command[i].LEDFunction>99 && !gUnit[i].active) {   // DroidNet: never twitch over a live contract look",
-        "LED_command[i].LEDFunction>99 && !contractHolds(i)) {   // DroidNet: never twitch over a contract look or an armed show")
+        "LED_command[i].LEDFunction>99 && !contractHoldsLeds(i)) {   // DroidNet: never twitch over a contract look or a show that has begun")
     rep("HP_command[i].HPFunction>99 && !gUnit[i].active) {   // DroidNet: LED-only interlock, no servo twitch during a contract show",
         "HP_command[i].HPFunction>99 && !contractHolds(i)) {   // DroidNet: LED-only interlock, no servo twitch while the contract holds the unit")
 if 'D' in L:

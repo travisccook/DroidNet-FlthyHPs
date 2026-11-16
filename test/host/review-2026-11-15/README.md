@@ -66,13 +66,17 @@ The same harness reshaped into assertions, as plan Part 0 wants it: `sim.h` (the
 behavioural LED-only invariant, `SCENARIO` and `CHECK`), `sim_main.cpp`, four scenario files and `run_sim.sh`,
 which runs one process per scenario and treats the names in `xfail.txt` as expected failures.
 
-- On the firmware as reviewed: 10 pass, 34 fail (all 34 are in `xfail.txt`).
+- On the firmware as reviewed: 11 pass, 38 fail (all 38 are in `xfail.txt`).
+- The scenarios follow the v1.3 spec as amended on 2026-11-16: an armed show keeps the stock idle look until its
+  first `C`, live `A` or `P`; `d=` on `A` is ignored; `Q` is answered only with `r=`.
+- The wire model drops bytes when the UART's 63-byte ring is full and counts them (`rxOverruns`).
 - The LED-only invariant is behavioural: the pass that handles a line sent as `!...` (whole, spliced or
   beheaded) must call no `moveTo()` and write no `HP_command`. A stock servo twitch that was due in that pass
   anyway is excused.
 - `scenarios_v13.inc` holds v1.3 conformance scenarios that need the shared core's R1 (watchdog, verb `V`, the
-  `Q` line, the BPM range, the rate divisor, the live-look hold, saturating parameters, capacity 32). They have
-  only been seen to fail. Nothing has made them pass yet.
+  routed `Q` line, the BPM range, the rate divisor, the live-look hold, saturating parameters, capacity 32).
+  Eleven of them have only been seen to fail; nothing has made them pass yet. Two pass today and guard that
+  behaviour (`f5_no_wd_means_no_watchdog`, `c6_hold_keeps_the_look_and_the_section`).
 
 ## r1-prototype
 
@@ -81,7 +85,7 @@ A prototype of the Flthy-side R1 fixes, used to check the plan's code. It is not
 - `patch_main.py`, `patch_cf.py`: the changes to `src/main.cpp` and `src/contract/ContractFlthy.h` as exact
   text replacements, in levels that match the plan's tasks.
 - `try.sh "<main levels>" "<ContractFlthy levels>"`: applies the levels to a temporary copy and runs the
-  simulation. `./try.sh 12AD AGBCDE` is everything: 34 pass, and the 10 that need the core's R1 fail.
+  simulation. `./try.sh 12AD AGBCDE` is everything: 38 pass, and the 11 that need the core's R1 fail.
 - `r1-prototype.patch`: all levels as one diff against commit `f462a89` (`main.cpp` hunks carry CRLF).
 - `host-guards.patch`: what `test/host/mock_flthy.h` and `test/host/compile_contract.cpp` need so the existing
   mock guards pass against the prototype.
@@ -90,14 +94,17 @@ Scenarios that turn green at each level (cumulative, measured):
 
 | Level | Newly passing |
 | ----- | ------------- |
-| main `1` | `f1_back_to_back_lines`, `f1_beheaded_tail_cannot_reach_the_servos`, `f1_crlf_and_blank_lines` |
+| main `1` | `f1_back_to_back_lines`, `f1_beheaded_tail_cannot_reach_the_servos`, `f1_crlf_and_blank_lines`, `r11_burst_of_400_bytes_loses_no_line`, `r11_longest_v13_line_lands_whole` |
 | main `2` | `i2c_does_not_wipe_a_serial_line` |
-| main `A`, contract `A` | `f1_led_only_fuzz`, the five `f2_*`, `f4_show_cancels_a_stock_look_in_flight`, `f4_stale_halt_does_not_kill_a_look`, both `f7_*` |
-| contract `G` | `f4_a_stock_command_takes_the_jewel_back`, `f9_d_expiry_outside_a_show_gives_the_jewel_back` |
+| main `A`, contract `A` | `f1_led_only_fuzz`, the five `f2_*`, `f4_stale_halt_does_not_kill_a_look`, both `f7_*`, the three `l1_*` |
+| contract `G` | `f4_a_stock_command_takes_the_jewel_back` |
 | contract `B` | `f3_native_allow_list`, `f3_no_accent_replaces_a_native_look` |
 | contract `C` | `l3_pulse_over_the_stock_look` |
 | main `D`, contract `D` | `f8_verb_b`, `s6_full_brightness_is_the_owners_level`, `s6_owner_brightness_during_a_show_sticks` |
-| contract `E` | `f9_pulse_obeys_the_rate_floor`, `f9_d_is_not_inherited_by_a_new_look` |
+| contract `E` | `f9_pulse_obeys_the_rate_floor`, `l4_d_on_a_look_is_ignored` |
+
+The prototype patches the fork-local `FlthyUnit`. The core plan moves the per-unit show state into
+`ContractUnitState` in `contract_core.h`; the port onto it is the Flthy plan's Task 13 and is not prototyped here.
 
 ## Limits
 

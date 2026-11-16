@@ -29,6 +29,30 @@ SCENARIO(f1_crlf_and_blank_lines) {                  // \r\n and stray terminato
   say("!**M:v=show\r\n!HFA:i=solid,c=ff0000\r\n\r\n\n!HRA:i=comet,c=00ff00\r\n"); run(1.0, 3000);
   CHECK(gInterlocked[0]);  CHECK(gUnit[0].active && gUnit[0].effect == CE_SOLID);  CHECK(gUnit[1].active && gUnit[1].effect == CE_COMET);
 }
+SCENARIO(r11_burst_of_400_bytes_loses_no_line) {     // spec section 11: 408 bytes, no gap, at 9600 baud
+  const uint64_t passes[] = {300, 1000, 2000, 4000, 6000};
+  for (uint64_t p : passes) {
+    int bad = trial([=] {
+      run(1.0, p); say("!**M:v=show\r"); run(0.5, p);
+      std::string burst;
+      for (int i = 0; i < 4; i++) for (const char* u : {"F", "R", "T"}) {
+        char b[48]; snprintf(b, sizeof b, "!H%sA:i=solid,c=ff0000,at=%d,am=2\r", u, 100 + i * 8); burst += b;   // 34 bytes each
+      }
+      CHECK_EQ(burst.size(), 408);
+      say(burst.c_str()); run(1.5, p);
+      for (int hp = 0; hp < HPCOUNT; hp++) CHECK_EQ(gScoreCount[hp], 4);
+      CHECK_EQ(rxOverruns, 0);
+    });
+    printf("  loop pass %4llu us: %s\n", (unsigned long long)p, bad ? "LOST A LINE" : "all 12 lines landed");
+    CHECK_EQ(bad, 0);
+  }
+}
+SCENARIO(r11_longest_v13_line_lands_whole) {         // 102 characters (core plan, amendment 16)
+  const char* l = "!H*A:i=colorcycle,c=3b82f6,b=255,s=128,at=123456,am=2,an=16,ap=15,m=200,ae=colorcycle,ac=ffffff,ad=250";
+  CHECK_EQ(strlen(l), 102);
+  run(6); line("!**M:v=show\r"); say(l); say("\r"); run(0.5);
+  CHECK_EQ(gScoreCount[2], 1);  CHECK_EQ(gScore[2][0].atBeat, 123456);  CHECK_EQ(gScore[2][0].accentDur10, 25);
+}
 SCENARIO(f1_beheaded_tail_cannot_reach_the_servos) { // the hand-placed interleaving from the review
   ledOnlyChecked = false;                            // loop() is driven by hand here; the checks are explicit
   line("A105|5\r", 12.0);                            // the operator wagged all three HPs for 5 s, long finished
@@ -129,11 +153,29 @@ SCENARIO(f4_stale_halt_does_not_kill_a_look) {
   line("!HRA:i=solid,c=00ff00\r"); run(40);
   CHECK_EQ(LED_command[1].LEDFunction, 102);  CHECK(latched(1).g > 0);
 }
-SCENARIO(f4_show_cancels_a_stock_look_in_flight) {
+SCENARIO(l1_show_begin_takes_the_leds) {             // armed: the stock look stays. First C, live A or P: dark.
   untilTwitchInFlight(1);
-  line("!**M:v=show\r", 1.0);
-  long c = shows(1); run(2.0);
+  line("!**M:v=show\r", 0.5);
+  long c = shows(1); run(1.0);
+  CHECK(shows(1) - c > 0);  CHECK(LED_command[1].LEDFunction >= 1 && LED_command[1].LEDFunction <= 7);
+  line("!**C:bpm=120,ph=0,bpb=4\r", 0.5);             // Play
+  c = shows(1); run(2.0);
   CHECK_EQ(shows(1) - c, 0);  CHECK(dark(1));        // baseline dark means dark
+  run(40); CHECK(dark(1));                           // and the stock look's timer is gone with it
+}
+SCENARIO(l1_armed_show_keeps_the_native_idle_look) { // between Send and Play the dome is not dark
+  run(600); line("!**M:v=show\r");
+  long m = g_servoMoves, t = twitches(); run(900);
+  CHECK(twitches() - t >= 6);                        // the stock LED twitch carries on
+  CHECK_EQ(g_servoMoves - m, 0);                     // the servo twitch is off from the moment of arming
+}
+SCENARIO(l1_idle_after_an_armed_show_that_never_began) {
+  run(20); line("F0055\r"); line("!**M:v=show\r", 240.0);
+  CHECK_EQ(LED_command[0].LEDFunction, 5);  CHECK(latched(0) == (RGB3{0, 0, 100}));   // the operator's look is still there
+  long m = g_servoMoves; line("!**M:v=idle\r", 0.3);
+  CHECK_EQ(g_servoMoves - m, 0);                     // the overdue servo twitch does not fire in that pass
+  CHECK_EQ(LED_command[0].LEDFunction, 5);  CHECK(latched(0) == (RGB3{0, 0, 100}));
+  run(200); CHECK(g_servoMoves - m >= 4);            // and the stock servo twitch is back afterwards
 }
 SCENARIO(f4_a_stock_command_takes_the_jewel_back) {  // outside a show the operator's command wins, and the hold ends
   run(600); line("!HFA:i=solid,c=ff0000\r", 300.0);
@@ -153,7 +195,8 @@ SCENARIO(f7_operator_settings_survive_a_show) {
   for (int hp = 0; hp < HPCOUNT; hp++) { CHECK_EQ(enableTwitchLED[hp], 0); CHECK(offcoloroverride[hp]); CHECK(enableTwitchHP[hp]); }
 }
 SCENARIO(f7_no_twitch_of_either_kind_in_a_show) {
-  run(6); line("!**M:v=show\r"); line("A199\r");     // even with the operator's servo twitch switched on mid-show
+  run(6); line("!**M:v=show\r"); line("!**C:bpm=120,ph=0,bpb=4\r");
+  line("A199\r");                                    // even with the operator's servo twitch switched on mid-show
   long m = g_servoMoves, t = twitches(); run(900);
   CHECK_EQ(g_servoMoves - m, 0);  CHECK_EQ(twitches() - t, 0);
 }
@@ -183,7 +226,7 @@ SCENARIO(s6_owner_brightness_during_a_show_sticks) {
   line("!**M:v=idle\r"); CHECK_EQ(neoStrips[0].getBrightness(), 50);
 }
 
-// ---- F9: pulse rate, d=, and letting go ------------------------------------------------------
+// ---- F9 / S8 / L4: pulse rate, and d= on a look is retired -------------------------------------
 static double pulseHz(int s) {
   char b[64]; snprintf(b, sizeof b, "!HFA:i=pulse,c=ffffff,s=%d\r", s); line(b, 0.5);
   int peaks = 0, prev = -1, dir = 0; uint64_t t0 = us;
@@ -197,21 +240,12 @@ SCENARIO(f9_pulse_obeys_the_rate_floor) {
   printf("  pulse s=255: %.2f Hz, s=128: %.2f Hz\n", fast, mid);
   CHECK(fast <= 3.0);  CHECK(mid > 0.9 && mid < 1.1);   // only s >= 242 changed
 }
-SCENARIO(f9_d_is_not_inherited_by_a_new_look) {
+SCENARIO(l4_d_on_a_look_is_ignored) {                // v1.3 hosts never send it; a v1.3 board ignores it
   run(6); line("!**M:v=show\r");
-  line("!HFA:i=solid,c=ff0000,d=500\r", 1.5); CHECK(dark(0));
+  line("!HFA:i=solid,c=ff0000,d=500\r", 1.5);
+  CHECK(gUnit[0].active);  CHECK(latched(0).r > 0);
   line("!HFA:i=solid,c=00ff00\r", 1.5);
-  CHECK(gUnit[0].active);  CHECK(latched(0).g > 0);  // after a deadline that already ran out
-  line("!HFA:i=solid,c=ff0000,d=1000\r", 0.3);
-  line("!HFA:i=solid,c=0000ff\r", 1.5);              // and over one still running
-  CHECK(gUnit[0].active);  CHECK(latched(0).b > 0);
-}
-SCENARIO(f9_d_expiry_outside_a_show_gives_the_jewel_back) {
-  run(600); long m0 = g_servoMoves; line("!HFA:i=solid,c=ff0000,d=250000\r", 249.0);
-  long m = g_servoMoves; (void)m0; run(1.5);                        // the deadline passes in here
-  CHECK(!gUnit[0].active);  CHECK_EQ(LED_command[0].LEDFunction, 100);  CHECK(latched(0) == (RGB3{0, 100, 100}));
-  CHECK_EQ(g_servoMoves - m, 0);                     // letting go moved nothing
-  long t = ledTwitchStarts[0]; run(1800); CHECK(ledTwitchStarts[0] - t >= 5);
+  CHECK(gUnit[0].active);  CHECK(latched(0).g > 0);
 }
 
 // ---- L3: a pulse with no show armed overlays the stock look and returns to it ----------------

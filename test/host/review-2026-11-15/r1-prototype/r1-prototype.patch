@@ -1,6 +1,6 @@
 diff -ru a/src/contract/ContractFlthy.h b/src/contract/ContractFlthy.h
---- a/src/contract/ContractFlthy.h	2026-11-16 06:08:02.190176459 +0000
-+++ b/src/contract/ContractFlthy.h	2026-11-16 06:08:02.193849608 +0000
+--- a/src/contract/ContractFlthy.h	2026-11-16 06:34:29.803198485 +0000
++++ b/src/contract/ContractFlthy.h	2026-11-16 06:34:29.805801387 +0000
 @@ -48,9 +48,13 @@
  #include <stdio.h>          // snprintf (verb Q ack line)
  
@@ -25,7 +25,7 @@ diff -ru a/src/contract/ContractFlthy.h b/src/contract/ContractFlthy.h
    uint8_t        beatMod  = 0;            // m (envelope depth)
    uint8_t        accentMode = 0;          // am
    uint32_t       durMs    = 0;            // d (0 = hold until changed)
-@@ -92,37 +96,35 @@
+@@ -92,37 +96,38 @@
                                            // CE_NONE == the v1.1 wire shape (a verb P with no
                                            // i=) and still means a solid full-field fill.
    ContractRGB            pulseColor{255, 255, 255};
@@ -69,19 +69,22 @@ diff -ru a/src/contract/ContractFlthy.h b/src/contract/ContractFlthy.h
 -                                          startEnableTwitchHP[2]};
 -static boolean gSavedOffColor[HPCOUNT] = {false, false, false};   // main.cpp:619 default
 +// ------------------------------------------------------- show-mode interlock ---
-+// An armed show HOLDS a unit: main.cpp's two auto-twitch gates ask contractHolds(), so no
-+// LED twitch and no SERVO twitch starts while it does (this fork is LED-only). The layer
-+// never writes enableTwitchLED[], enableTwitchHP[] or offcoloroverride[]: they stay the
-+// operator's, so a native 96-99 / S command sent during a show is still in force after it.
++// An armed show HOLDS a unit: main.cpp's two auto-twitch gates ask contractHolds() and
++// contractHoldsLeds(). The layer never writes enableTwitchLED[], enableTwitchHP[] or
++// offcoloroverride[]: they stay the operator's, so a native 96-99 / S command sent during a
++// show is still in force after it.
 +static bool    gInterlocked[HPCOUNT] = {false, false, false};
++// v1.3 L1: an armed show keeps the stock idle look (and its LED twitch) until the show's first
++// C, live A or P. From then on the LED side is the show's too.
++static bool    gBegun[HPCOUNT]       = {false, false, false};
 +// v1.3 S6: the brightness ceiling is the strip's own level when the show arms (BRIGHT, or
-+// what H<unit>B<level> last set). Verb B rides below it and never outlives the show.
++// what H<unit>B<level> last set). b and verb B are fractions of it; B never outlives the show.
 +static uint8_t gCeil[HPCOUNT] = {0, 0, 0};
 +static uint8_t gRide[HPCOUNT] = {255, 255, 255};
  
  // Phase-2 score (per unit, sorted asc by atBeat via contract_core scoreInsert)
  static ScoreEntry gScore[HPCOUNT][FLTHY_SCORE_CAP];
-@@ -131,7 +133,45 @@
+@@ -131,7 +136,57 @@
  
  // ---------------------------------------------------------------- helpers ----
  static inline uint8_t _clampBright(int v) {
@@ -93,10 +96,13 @@ diff -ru a/src/contract/ContractFlthy.h b/src/contract/ContractFlthy.h
 +  byte f = LED_command[hp].LEDFunction;
 +  return f >= 101 && f <= (byte)(FLTHY_FX_BASE + (uint8_t)CE_TWINKLE);
 +}
-+// main.cpp's auto-twitch gates: true while this layer has the unit. LED twitch and servo
-+// twitch both wait.
++// main.cpp's two auto-twitch gates. The SERVO twitch waits from the moment a show is armed
++// (this fork is LED-only); the LED twitch waits once the show has begun or a look is up.
 +inline bool contractHolds(uint8_t hp) {
 +  return gInterlocked[hp] || gUnit[hp].active || gUnit[hp].pulseActive;
++}
++inline bool contractHoldsLeds(uint8_t hp) {
++  return (gInterlocked[hp] && gBegun[hp]) || gUnit[hp].active || gUnit[hp].pulseActive;
 +}
 +// Both auto-twitch timers a full interval from now. Whenever the layer lets go of a unit the
 +// timers are long overdue, and without this the stock loop twitches the LEDs AND THE SERVOS
@@ -116,6 +122,15 @@ diff -ru a/src/contract/ContractFlthy.h b/src/contract/ContractFlthy.h
 +  ledOFF(hp);
 +  _rearmTwitch(hp);
 +}
++// L1: the show's first C, live A or P takes the LED side: cancel a stock look still running
++// and the timer that would end it later, and start from dark.
++static inline void _showBegin(uint8_t hp) {
++  if (!gInterlocked[hp] || gBegun[hp]) return;
++  gBegun[hp] = true;
++  LED_command[hp].LEDFunction = 255;
++  LED_command[hp].LEDHalt     = -1;
++  ledOFF(hp);
++}
 +// v1.3 S7, R1: the native looks this layer may start. They need no option bytes and no
 +// counters: 1 = Leia (fixed blue colour projector), 6 = rainbow.
 +static inline bool flthyNativeAllowed(int code) { return code == 1 || code == 6; }
@@ -128,34 +143,21 @@ diff -ru a/src/contract/ContractFlthy.h b/src/contract/ContractFlthy.h
  }
  // pack an RGB scaled by a 0..255 brightness multiplier into 0xRRGGBB (NEO_GRB
  // ordering is handled inside the library; we always pass logical R,G,B).
-@@ -208,7 +248,9 @@
+@@ -208,7 +263,9 @@
  
      case CE_PULSE: {                                   // triangle breathe, peak = brightest
        uint32_t period = (uint32_t)map((long)u.speed, 0, 255, 2000, 240);
 -      if (period < 2) period = 2;
-+      // v1.3 S2: a full dark-bright-dark cycle is a beat-rate change like any other, so it
-+      // may not recur faster than 2 x the min state (340 ms). Only s >= 242 is affected.
++      // v1.3 S8: the pulse's full cycle is never shorter than 2 x the min state (340 ms).
++      // Only s >= 242 is affected.
 +      if (period < 2 * FLTHY_STROBE_MIN_MS) period = 2 * FLTHY_STROBE_MIN_MS;
        uint32_t ph = (now - startMs) % period;
        uint32_t tri = (ph < period / 2) ? (ph * 2 * 255 / period)
                                         : ((period - ph) * 2 * 255 / period);
-@@ -349,18 +391,43 @@
+@@ -349,18 +406,28 @@
    }
  }
  
-+// ms-duration revert (true sub-second holds; parallels the native seconds pipe). In a show the
-+// unit goes dark; outside one the jewel goes back to the stock firmware.
-+static inline void _expireDur(uint8_t hp, uint32_t now) {
-+  FlthyUnit& u = gUnit[hp];
-+  if (!(u.active && u.durMs > 0 && (uint32_t)(now - u.startMs) >= u.durMs)) return;
-+  u.active = false;
-+  u.durMs  = 0;                                          // a deadline never outlives its look
-+  u.effect = CE_OFF;
-+  u.lastEnvBright = -1;
-+  if (gInterlocked[hp]) LED_command[hp].LEDFunction = _fxCode(CE_OFF);
-+  else                  _nativeLedIdle(hp);
-+}
-+
 +// Overlay expiry. Over a contract look the base repaints; over the STOCK look (L3) the stock
 +// function and its frame come back exactly as they were.
 +static inline void _expireOverlay(uint8_t hp, uint32_t now) {
@@ -185,8 +187,6 @@ diff -ru a/src/contract/ContractFlthy.h b/src/contract/ContractFlthy.h
 -    LED_command[hp].LEDFunction = _fxCode(CE_OFF);
 -    u.lastEnvBright = -1;
 -  }
-+  _expireDur(hp, now);
-+  if (!_slotIsOurs(hp)) return;                          // the deadline just gave the jewel back
  
    // Accent overlay: LAYER it over the base look, auto-restore on ms-expiry.
    // v1.2: it now renders a full EFFECT (pulseFx), not only a solid fill. pulseFx == CE_NONE
@@ -219,8 +219,8 @@ diff -ru a/src/contract/ContractFlthy.h b/src/contract/ContractFlthy.h
    // that would have let the jewels strobe at up to 5.9 Hz, the one board of the three that
    // could exceed the guidance.
    if (!strobeCoolDownExpired(u.pulseLastMs, now, 2 * FLTHY_STROBE_MIN_MS)) return false;
-+  // v1.3 S7 / section 8: an accent never restarts or replaces a native sequence. In R1 a
-+  // native section simply has no accent (R2 adds ae=kick where the look can be scaled).
++  // v1.3 section 6: no accent on a native section in R1, so an accent can never restart or
++  // replace a native sequence (R2 adds ae=kick where the look can be scaled).
 +  if (u.nativeLook && LED_command[hp].LEDFunction == u.nativeFn) return false;
    if (durMs < FLTHY_STROBE_MIN_MS) durMs = FLTHY_STROBE_MIN_MS;   // a state shorter than the
    if (durMs > 2550u) durMs = 2550u;                               // min state IS a strobe
@@ -258,14 +258,14 @@ diff -ru a/src/contract/ContractFlthy.h b/src/contract/ContractFlthy.h
 +  u.nativeLook = false;
 +  if (eff == CE_NATIVE) {
 +    // escape hatch: hand off to an allow-listed native LED function; NOT a contract render.
-+    // Both callers have already refused any other code (flthyNativeAllowed).
++    // Both callers have already dropped any other code (flthyNativeAllowed).
 +    u.active     = false;
 +    u.nativeLook = true;
 +    u.nativeFn   = (byte)nativeCode;
      LED_command[hp].LEDFunction = (byte)nativeCode;
      return;
    }
-@@ -493,6 +575,32 @@
+@@ -493,6 +575,37 @@
               e.beatMod, e.accentMode, 0, /*freshEffect=*/true);
  }
  
@@ -284,42 +284,68 @@ diff -ru a/src/contract/ContractFlthy.h b/src/contract/ContractFlthy.h
 +  u.lastAccentBeat = BEAT_NONE;
 +  u.lastEnvBright  = -1;
 +}
-+// M:v=idle (and, later, the watchdog and a failed verb V) end here. A unit this layer is not
-+// holding is left alone, so a stray idle cannot flush a look the operator started.
++// Does this layer have the unit's LEDs (so a reset must hand them back)?
++static inline bool _heldLeds(uint8_t hp) {
++  return contractHoldsLeds(hp) || _slotIsOurs(hp) ||
++         (gUnit[hp].nativeLook && LED_command[hp].LEDFunction == gUnit[hp].nativeFn);
++}
++// M:v=idle (and, later, the watchdog and a failed verb V) end here. A unit whose LEDs this
++// layer does not have keeps its stock look, so a stray idle cannot flush what the operator started.
 +static inline void _idleUnit(uint8_t hp) {
-+  FlthyUnit& u = gUnit[hp];
-+  bool held = contractHolds(hp) || _slotIsOurs(hp) ||
-+              (u.nativeLook && LED_command[hp].LEDFunction == u.nativeFn);
++  bool heldLeds = _heldLeds(hp), armed = gInterlocked[hp];
 +  _unitReset(hp);
-+  gInterlocked[hp] = false;
-+  if (held) _nativeLedIdle(hp);                        // off colour, both twitch timers from now
++  gInterlocked[hp] = false;  gBegun[hp] = false;
++  if (heldLeds)   _nativeLedIdle(hp);                  // off colour, both twitch timers from now
++  else if (armed) resetHPtwitch(hp);                   // armed, never begun: the stock look stays, and
++                                                       // the overdue servo twitch must not fire now
 +}
 +
  // ------------------------------------------------------------- verb dispatch ---
  inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
    FlthyUnit& u = gUnit[hp];
-@@ -501,6 +609,9 @@
+@@ -501,6 +614,9 @@
  
    switch (p.verb) {
      case CV_ANIMATE: {
-+      // v1.3 S7: a native code off the allow-list is ignored, live or scored (a refused
-+      // scored line is not "accepted", so verb V reports the load bad).
++      // v1.3 S7: a line naming a native code off the allow-list is dropped whole, live or
++      // scored (a dropped scored line is not held, so verb V reports the load bad).
 +      if (pr.hasEffect && pr.effect == CE_NATIVE && !flthyNativeAllowed(pr.nativeCode)) return;
        if (pr.hasAt) {                                  // Phase-2: schedule, don't apply now
          ScoreEntry e = _entryFrom(pr);
          gScoreCount[hp] = scoreInsert(gScore[hp], gScoreCount[hp], FLTHY_SCORE_CAP, e);
-@@ -517,7 +628,9 @@
+@@ -511,13 +627,14 @@
+         return;
+       }
+       // Phase-1: apply now. Omitting i= patches params of the current look.
++      _showBegin(hp);
+       ContractEffect eff = pr.hasEffect ? pr.effect : u.effect;
+       ContractRGB   col   = pr.hasColor   ? pr.color   : u.color;
+       uint8_t spd = pr.hasSpeed   ? pr.speed   : u.speed;
        uint8_t bri = pr.hasBright  ? pr.bright  : u.brightBase;
        uint8_t bm  = pr.hasBeatMod ? pr.beatMod : u.beatMod;
        uint8_t am  = pr.hasAm      ? pr.accentMode : u.accentMode;
 -      uint32_t d  = pr.hasDur     ? pr.durMs   : u.durMs;
-+      // A line with i= starts a NEW look, which holds unless it brings its own d=. Only an
-+      // i-less patch keeps the running look's deadline.
-+      uint32_t d  = pr.hasDur     ? pr.durMs   : (pr.hasEffect ? 0 : u.durMs);
++      const uint32_t d = 0;                            // v1.3 L4: d= on A is retired; a look holds
        _applyLook(hp, eff, pr.nativeCode, col, spd, bri, bm, am, d,
                   /*freshEffect=*/pr.hasEffect);
        break;
-@@ -561,9 +674,13 @@
+@@ -543,6 +660,7 @@
+       // effect out of the overlay primitive, that one covers every other caller of it. Neither
+       // is redundant belt-and-braces — see the CV_PULSE gate check in test/host/run.sh.
+       ContractEffect fx = (pr.hasEffect && accentEffectAllowed(pr.effect)) ? pr.effect : CE_SOLID;
++      _showBegin(hp);
+       _fireAccent(hp,
+                   fx,
+                   pr.hasColor  ? pr.color  : ContractRGB{255, 255, 255},
+@@ -554,6 +672,7 @@
+     }
+ 
+     case CV_CLOCK:                                     // seed/re-anchor the beat-clock
++      _showBegin(hp);
+       beatClockSeed(gBeat, pr, now);
+       u.lastAccentBeat = BEAT_NONE;                    // the beat ORIGIN just moved (Studio
+                                                        // re-anchors on every Play/seek), so a
+@@ -561,9 +680,13 @@
                                                         // not gate the new one
        break;
  
@@ -336,7 +362,7 @@ diff -ru a/src/contract/ContractFlthy.h b/src/contract/ContractFlthy.h
        break;
      }
  
-@@ -572,45 +689,24 @@
+@@ -572,45 +695,25 @@
        u.lastEnvBright = -1;
        break;
  
@@ -352,7 +378,8 @@ diff -ru a/src/contract/ContractFlthy.h b/src/contract/ContractFlthy.h
 +      LED_command[hp].LEDFunction = 255;               // the stock "idle, dark" value, never 0:
 +      LED_command[hp].LEDHalt     = -1;                // 0 is "do nothing", which also blocks the
 +      ledOFF(hp);                                      // stock auto twitch for good
-+      if (!gInterlocked[hp]) _rearmTwitch(hp);         // stay dark for a full twitch interval
++      if (gInterlocked[hp]) gBegun[hp] = true;         // in a show: dark is the baseline now
++      else                  _rearmTwitch(hp);          // outside one: dark for a full twitch interval
        break;
  
      case CV_MODE:
@@ -385,31 +412,32 @@ diff -ru a/src/contract/ContractFlthy.h b/src/contract/ContractFlthy.h
 -        scoreClear(gScoreCount[hp], gScoreActive[hp]); // the show is over: forget its sections
 -        u.lastAccentBeat = BEAT_NONE;                  // ...and its beat edge
 -        LED_command[hp].LEDFunction = 0;
-+      if (pr.mode == 's') {                            // L1: reset, then arm the show
++      if (pr.mode == 's') {                            // L1: reset, then arm
++        bool heldLeds = _heldLeds(hp);
 +        _unitReset(hp);
-+        gInterlocked[hp] = true;                       // holds both auto twitches (LED-only)
++        gInterlocked[hp] = true;                       // the servo twitch waits from now (LED-only)
 +        gCeil[hp] = neoStrips[hp].getBrightness();     // S6: the owner's level is the ceiling
-+        LED_command[hp].LEDFunction = 255;             // cancel a stock look still running...
-+        LED_command[hp].LEDHalt     = -1;              // ...and the timer that would end it later
-+        ledOFF(hp);                                    // baseline dark
++        gBegun[hp] = false;                            // the stock idle look stays until the show begins
++        if (heldLeds) _nativeLedIdle(hp);              // a Resend over a running show: back to stock idle
 +      } else if (pr.mode == 'i') {                     // L1: reset, then give the board back
 +        _idleUnit(hp);
        }
        break;
  
-@@ -637,14 +733,35 @@
+@@ -637,14 +740,35 @@
    if (all || p.unit == 'F') applyContractToUnit(0, p);
    if (all || p.unit == 'R') applyContractToUnit(1, p);
    if (all || p.unit == 'T') applyContractToUnit(2, p);
 -  if (p.verb == CV_STOP && all) gBeat.running = false; // !**X also stops the clock
-+  // L1 "stop the beat clock": this board has ONE clock for three units, so a reset stops it
-+  // when it addressed all of them, or when no unit is left with a show, a look or a score.
++  // L1: this board has ONE clock for three units. A reset stops it when no unit still holds a
++  // score or a live look.
 +  if (p.verb == CV_STOP || (p.verb == CV_MODE && (p.params.mode == 's' || p.params.mode == 'i'))) {
 +    bool anyLeft = false;
 +    for (uint8_t hp = 0; hp < HPCOUNT; hp++)
-+      if (gInterlocked[hp] || gUnit[hp].active || gScoreCount[hp] > 0) anyLeft = true;
-+    if (all || !anyLeft) gBeat.running = false;
++      if (gUnit[hp].active || gScoreCount[hp] > 0) anyLeft = true;
++    if (!anyLeft) gBeat.running = false;
 +  }
++  (void)all;
  }
  
  // ------------------------------ beat tick + score switch + board-side accent ---
@@ -418,7 +446,6 @@ diff -ru a/src/contract/ContractFlthy.h b/src/contract/ContractFlthy.h
 +  uint32_t now = millis();
 +  for (uint8_t hp = 0; hp < HPCOUNT; hp++) {
 +    FlthyUnit& u = gUnit[hp];
-+    _expireDur(hp, now);
 +    _expireOverlay(hp, now);
 +    // A stock command, or its |<n> timer, took the render slot: the jewel is the stock
 +    // firmware's again. Stop holding the unit (outside a show its auto twitch would never
@@ -436,9 +463,15 @@ diff -ru a/src/contract/ContractFlthy.h b/src/contract/ContractFlthy.h
      int idx = scoreActiveIndex(gScore[hp], gScoreCount[hp], bp.beatIndex);
      if (idx >= 0 && idx != gScoreActive[hp]) {
 diff -ru a/src/main.cpp b/src/main.cpp
---- a/src/main.cpp	2026-11-16 06:08:02.187912371 +0000
-+++ b/src/main.cpp	2026-11-16 06:08:02.192014993 +0000
-@@ -603,6 +603,9 @@
+--- a/src/main.cpp	2026-11-16 06:34:29.801756430 +0000
++++ b/src/main.cpp	2026-11-16 06:34:29.804516506 +0000
+@@ -598,11 +598,14 @@
+ // is not an error, it just loses its tail and the board plays a mangled cue. 96 B of the
+ // ATmega2560's 8 KB, and at 9600 baud (~1.04 ms/byte) a 96-char line is nowhere near the
+ // 64-byte hardware RX ring, which loop() drains every pass.
+-#define INPUTBUFFERLEN 96
++#define INPUTBUFFERLEN 128
+ #define MAXCOMMANDLENGTH 12
  char inputBuffer[INPUTBUFFERLEN];  
  String inputString = "";                       // a string to hold incoming data
  volatile boolean stringComplete = false;       // whether the serial string is complete
@@ -529,7 +562,7 @@ diff -ru a/src/main.cpp b/src/main.cpp
    
    for (int i=0; i<HPCOUNT; i++)
 -    if (millis() > twitchLEDTime[i] && enableTwitchLED[i]>=1 && LED_command[i].LEDFunction>99 && !gUnit[i].active) {   // DroidNet: never twitch over a live contract look
-+    if (millis() > twitchLEDTime[i] && enableTwitchLED[i]>=1 && LED_command[i].LEDFunction>99 && !contractHolds(i)) {   // DroidNet: never twitch over a contract look or an armed show
++    if (millis() > twitchLEDTime[i] && enableTwitchLED[i]>=1 && LED_command[i].LEDFunction>99 && !contractHoldsLeds(i)) {   // DroidNet: never twitch over a contract look or a show that has begun
        twitchLEDTime[i] = (1000L*random(LEDTwitchInterval[i][0],LEDTwitchInterval[i][1]))+millis();
        twitchLEDRunTime[i] = random(LEDTwitchRunInterval[i][0],LEDTwitchRunInterval[i][1]);
        flushCommandArray(i, 0);
