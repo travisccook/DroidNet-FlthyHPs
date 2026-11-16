@@ -206,7 +206,11 @@ struct FlthyLatch {
 static FlthyLatch gLatch[HPCOUNT];
 static inline void _touch(uint8_t hp) { gLatch[hp].touchMs = millis(); gLatch[hp].touched = true; }
 // Has this layer the jewel's LEDs right now? (base == CB_NATIVE counts before the reconcile in the tick.)
-static inline bool _hasLeds(uint8_t hp) { return _heldLeds(hp) || gUnit[hp].s.base == CB_NATIVE; }
+// A verb-B ride counts too. An armed show that has not begun keeps the STOCK look on the jewel, and
+// B dims and relights that light through the strip's level: the pixels are the stock firmware's, the
+// flash is the contract's. So while a ride is on, and for 340 ms after any B, every frame of that
+// jewel goes through the gate, stock ones included.
+static inline bool _hasLeds(uint8_t hp) { return _heldLeds(hp) || gUnit[hp].s.base == CB_NATIVE || gUnit[hp].ride != 255; }
 inline void DnStrip::show() {
   const uint8_t hp = (uint8_t)(this - neoStrips);
   if (hp >= HPCOUNT) { Adafruit_NeoPixel::show(); return; }
@@ -287,7 +291,7 @@ static inline void _dark(uint8_t hp) {
 // Verb B rides the strip below the ceiling and never outlives the show.
 static inline void _restoreRide(uint8_t hp) {
   FlthyUnit& u = gUnit[hp];
-  if (u.ride != 255) neoStrips[hp].setBrightness(u.s.ceil);
+  if (u.ride != 255) { neoStrips[hp].setBrightness(u.s.ceil); _touch(hp); }   // what relights now is this layer's doing (S9)
   u.ride = 255;
 }
 // The native brightness command (H<unit>B<level>) calls this: the owner's new level is the
@@ -805,6 +809,7 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p, uint16_t li
       // once and lossily, so every look is made to repaint from its own colour.
       neoStrips[hp].setBrightness(contractLevel(s.ceil, u.ride));
       u.lastEnvBright = -1;
+      _touch(hp);                                      // S9: a B that ends a ride still relit the jewel (see _hasLeds)
       break;
     }
 
