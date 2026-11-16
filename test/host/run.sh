@@ -299,6 +299,8 @@ PIO="${PIO:-$HOME/.platformio/penv/bin/pio}"
 if [ -n "$PIO" ] && [ -x "$PIO" ]; then
   echo "using $PIO"
   ( cd ../.. && "$PIO" run -e FlthyHPs )
+  ( cd ../.. && "$PIO" run -e FlthyHPs_probe ) > "$OUT/probe.log" 2>&1 || { cat "$OUT/probe.log"; echo "FAIL: the bench build (FlthyHPs_probe, -DDN_LOOP_PROBE) does not build"; exit 1; }
+  echo "the loop-pass probe build (FlthyHPs_probe) links too"
   echo "cross-compiles for the real MCU (ATmega2560 (Arduino Mega ADK)) OK"
   echo "    (a successful LINK is not a bench test: this firmware has never been flashed.)"
   RAN="$RAN 7"

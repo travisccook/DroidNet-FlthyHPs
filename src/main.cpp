@@ -1096,6 +1096,19 @@ void loop(){
               digitalWrite(OUTPUT_ENABLED_PIN, HIGH);       
               OEFlag = false;                               
   }
+
+#ifdef DN_LOOP_PROBE   // DroidNet bench build only (pio run -e FlthyHPs_probe): the loop-pass time, once a second, on Serial
+  {                    // "#lp n=<passes in the last second> max_us=<the longest pass>"; the mean pass is 1000000 / n us
+    static unsigned long dnLpLast = 0, dnLpMark = 0, dnLpMax = 0; static unsigned int dnLpN = 0;
+    unsigned long dnLpNow = micros();
+    if (dnLpLast && (dnLpNow - dnLpLast) > dnLpMax) dnLpMax = dnLpNow - dnLpLast;
+    dnLpLast = dnLpNow; dnLpN++;
+    if (millis() - dnLpMark >= 1000) {
+      wdpFinish(); Serial.print(F("#lp n=")); Serial.print(dnLpN); Serial.print(F(" max_us=")); Serial.println(dnLpMax);
+      dnLpMark = millis(); dnLpN = 0; dnLpMax = 0;
+    }
+  }
+#endif
      
 } // Close of Main Loop
 

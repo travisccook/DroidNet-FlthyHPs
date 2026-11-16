@@ -43,3 +43,11 @@ SCENARIO(native_brightness_command) {
   run(0.1); CHECK(latched(0) == (RGB3{200, 200, 200}));
   line("HFB0\r");   CHECK_EQ(neoStrips[0].getBrightness(), 200);                                      // 0 is refused
 }
+
+#ifdef DN_LOOP_PROBE
+// The bench build (pio run -e FlthyHPs_probe): SIM_DEFS=-DDN_LOOP_PROBE ./run_sim.sh builds it into the simulation.
+SCENARIO(probe_reports_the_loop_pass_time) {         // the simulation's passes are a fixed 2 ms
+  run(6); Serial.tx.clear(); run(2.5);
+  CHECK(Serial.tx.find("#lp n=500 max_us=2000\r\n") != std::string::npos);
+}
+#endif
