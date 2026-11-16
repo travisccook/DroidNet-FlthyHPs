@@ -23,6 +23,11 @@ inline bool simHasLeds(int hp) {
   const ContractUnitState& s = gUnit[hp].s; byte f = LED_command[hp].LEDFunction;
   return (s.inShow && s.base != CB_NONE) || s.base == CB_LOOK || s.base == CB_NATIVE || s.pulseActive || (f >= 101 && f <= 115);
 }
+// S10: a native look the contract started that RUNS AS STOCK is up (its own frames are the stock look's).
+inline bool simStockNativeUp(int hp) {
+  const ContractUnitState& s = gUnit[hp].s;
+  return s.base == CB_NATIVE && !gUnit[hp].nativeWait && !nativeGatedFlthy(s.nativeCode) && LED_command[hp].LEDFunction == (byte)s.nativeCode;
+}
 inline int  scoreLen(int hp)         { return gUnit[hp].s.scoreLen; }
 inline bool clockRunning()           { return gBeat.running; }
 inline int  clockBpm()               { return gBeat.bpm; }

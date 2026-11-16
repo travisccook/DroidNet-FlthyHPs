@@ -334,7 +334,8 @@ SCENARIO(c6_hold_shows_a_pumped_look_at_its_own_level) {
 //   * STRICT (the path table, and every second hostile stream): every onset counts, whoever drew the
 //     pixels. One thing is set aside: the relight a stock COMMAND causes by itself, for 400 ms after
 //     the board handles the line (the owner's button may light a jewel when the owner likes); the
-//     observers start counting afresh there. These streams send no stock look that strobes by itself.
+//     observers start counting afresh there. For that to be the only stock light there is, these
+//     streams run with the stock LED auto twitch off and send only stock looks that hold still.
 //   * ATTRIBUTED (the other streams, which do send the strobing stock looks: stock function 2, Short
 //     Circuit, random twitch sequences): an onset counts while the layer has the jewel's LEDs or let
 //     go of them in the last 300 ms, and light the stock firmware adds starts the count afresh.
@@ -342,22 +343,50 @@ static int fullScale(int level) { return level >= 255 ? 255 : (255 * (level + 1)
 struct Observer {
   int darkPct, litPct; bool lit = false; std::vector<uint64_t> onsets, recent; int worst = 0;
   int minGap = 0;                                    // 7 * (step + 1 level), set with the ceiling
+  uint64_t closestUs = ~0ULL;                        // the closest two counted onsets
   bool isLit(int S, int FS) const { return S * 100 >= FS * litPct && S * 100 >= FS * darkPct + minGap * 100; }
   void see(int S, int FS, bool counts, uint64_t now) {
     if (!lit && isLit(S, FS)) {
       lit = true;
-      if (counts) { onsets.push_back(now); recent.push_back(now); int n = 0; for (uint64_t x : recent) if (x + 1000000ULL > now) n++; worst = std::max(worst, n); }
+      if (counts) { if (!recent.empty() && now - recent.back() < closestUs) closestUs = now - recent.back();
+                    onsets.push_back(now); recent.push_back(now); int n = 0; for (uint64_t x : recent) if (x + 1000000ULL > now) n++; worst = std::max(worst, n); }
     } else if (lit && S * 100 <= FS * darkPct) lit = false;
   }
   void reread(int S, int FS) { if (isLit(S, FS)) lit = true; else if (S * 100 <= FS * darkPct) lit = false; }
   void afresh() { recent.clear(); }
   int maxPerSecond() const { return worst; }
 };
+// (g) the field's COLOUR while it is lit, as one observer sees it: the mean colour, normalised to its
+// brightest channel. A jump of more than 96 in any channel against the frame before is a change of
+// look. S4: such changes are at least 170 ms apart, whichever path asked.
+struct ColourObs {
+  int darkPct, litPct; bool lit = false, known = false, any = false; int chroma[3] = {0, 0, 0}; uint64_t at = 0;
+  void see(int S, int FS, long sr, long sg, long sb, bool counts, uint64_t now, uint64_t& closest, long& changes) {
+    if (!lit && S * 100 >= FS * litPct) lit = true; else if (lit && S * 100 <= FS * darkPct) lit = false;
+    const long top = std::max(sr, std::max(sg, sb));
+    if (!lit || top < 28) return;                    // too dim to have a colour: under 4 levels a channel it is rounding
+    const int c[3] = {(int)(sr * 255 / top), (int)(sg * 255 / top), (int)(sb * 255 / top)};
+    int far = 0; for (int i = 0; i < 3; i++) far = std::max(far, abs(c[i] - chroma[i]));
+    if (known && far > 96) {
+      if (counts) { if (any && now - at < closest) closest = now - at; at = now; any = true; changes++; }
+      else any = false;
+    }
+    for (int i = 0; i < 3; i++) chroma[i] = c[i];
+    known = true;
+  }
+  void afresh() { any = false; }
+};
 struct Photo {
   int hp, ceil; bool started = false; uint64_t lastHad = 0; bool everHad = false;
-  Observer obs[3] = {{10, 50}, {19, 75}, {4, 31}};
+  Observer obs[3] = {{10, 50}, {19, 75}, {4, 31}};   // (a) brightest channel, wide bands
+  Observer narrow[4] = {{3, 15}, {40, 52}, {45, 60}, {80, 95}};   // ...and bands about a step wide (S9's tenth of the ceiling)
+  Observer lum[3] = {{10, 50}, {19, 75}, {4, 31}};   // (f) Rec.709 luminance, the gate's own integer formula per LED
+  ColourObs colour[5] = {{10, 50}, {19, 75}, {4, 31}, {3, 15}, {45, 60}};
+  uint64_t colourClosestUs = ~0ULL; long colourChanges = 0;
   int peak = 0, overCeiling = 0, prevS = 0;
   bool strict = false; uint64_t stockLineAt = 0; bool stockLineSeen = false;   // STRICT mode, and when the board last handled a stock command
+  bool stockNativeWas = false, edgeOnset = false, edgeColour = false;   // S10: a runs-as-stock native look the contract started is up
+  bool hadWas = false, tailOnset = false, tailColour = false;            // ATTRIBUTED: the first change after the layer let go is its hand-back
   bool paused = false;                               // while the owner's brightness command is on its way (see newCeiling)
   explicit Photo(int h, int c = 100) : hp(h), ceil(c) {}
   // The owner changed the strip level: every frame is rescaled, and "dark" and "lit" are fractions of
@@ -365,26 +394,58 @@ struct Photo {
   // each observer's state (lit, dark, or in between and so unchanged).
   bool reread = false;
   void newCeiling(int c) { ceil = c; reread = true; paused = false; }
+  template <class F> void every(F f) { for (auto& o : obs) f(o); for (auto& o : narrow) f(o); for (auto& o : lum) f(o); }
   void sample() {
     if (paused) return;
-    const uint8_t* p = neoStrips[hp].shown; int S = 0, FS = 7 * fullScale(ceil);
-    for (auto& o : obs) o.minGap = 7 * (ceil / 4 + 2);
-    for (int i = 0; i < 7; i++) { int m = std::max(p[i * 3], std::max(p[i * 3 + 1], p[i * 3 + 2])); S += m; peak = std::max(peak, m); if (m > fullScale(ceil)) overCeiling++; }
+    const uint8_t* p = neoStrips[hp].shown; int S = 0, FS = 7 * fullScale(ceil); long sr = 0, sg = 0, sb = 0, sy = 0;
+    const int step = ceil < 10 ? 2 : ceil / 10 + 1;
+    every([&](Observer& o) { o.minGap = 7 * (step + 1); });
+    for (int i = 0; i < 7; i++) { const int g = p[i * 3], r = p[i * 3 + 1], b = p[i * 3 + 2];      // the strip keeps G,R,B
+      const int m = std::max(r, std::max(g, b)); S += m; peak = std::max(peak, m); if (m > fullScale(ceil)) overCeiling++;
+      sr += r; sg += g; sb += b; sy += (54 * r + 183 * g + 19 * b) >> 8; }
     if (neoStrips[hp].getBrightness() > ceil) overCeiling++;
     if (simHasLeds(hp)) { lastHad = us; everHad = true; }
-    if (!started || reread) { started = true; reread = false; prevS = S; for (auto& o : obs) o.reread(S, FS); return; }
+    if (!started || reread) { started = true; reread = false; prevS = S; for (auto& o : obs) o.reread(S, FS); for (auto& o : narrow) o.reread(S, FS); for (auto& o : lum) o.reread((int)sy, FS); return; }
     const bool afterStockLine = stockLineSeen && us - stockLineAt <= 400000ULL;
-    const bool counts = strict ? !afterStockLine : (everHad && us - lastHad <= 300000ULL);
-    if (strict ? afterStockLine : (!counts && S > prevS)) for (auto& o : obs) o.afresh();   // the owner's own light
+    // S10: the own frames of a runs-as-stock native look the contract started are the stock look's, like
+    // a stock command's own relight. Its START is the contract's edge: the first onset after it counts.
+    const bool stockNative = simStockNativeUp(hp), has = simHasLeds(hp);
+    if (stockNative && !stockNativeWas) edgeOnset = edgeColour = true;
+    stockNativeWas = stockNative;
+    if (hadWas && !has) tailOnset = tailColour = true;               // the layer has just let go
+    hadWas = has;
+    bool counts = strict ? true : (everHad && us - lastHad <= 300000ULL);
+    bool cOnset = counts, cColour = counts;
+    // ATTRIBUTED: after the layer let go, the FIRST onset and the first change of colour are its
+    // hand-back; what the stock look does after that is its own.
+    if (!strict && !has) { cOnset = cOnset && tailOnset; cColour = cColour && tailColour; }
+    // S10: the own frames of a runs-as-stock native look are the stock look's; its start is the contract's edge.
+    if (stockNative) { cOnset = cOnset && edgeOnset; cColour = cColour && edgeColour; }
+    if (afterStockLine) cOnset = cColour = false;                    // a stock command's own relight, in both modes
+    const bool fresh = afterStockLine || (stockNative && !edgeOnset) || (!strict && !counts && S > prevS);
+    if (fresh) { every([](Observer& o) { o.afresh(); }); for (auto& c : colour) c.afresh(); }   // the owner's own light
     prevS = S;
-    for (auto& o : obs) o.see(S, FS, counts, us);
+    size_t n0 = 0; every([&](Observer& o) { n0 += o.onsets.size(); }); const long c0 = colourChanges;
+    for (auto& o : obs) o.see(S, FS, cOnset, us);
+    for (auto& o : narrow) o.see(S, FS, cOnset, us);
+    for (auto& o : lum) o.see((int)sy, FS, cOnset, us);
+    for (auto& c : colour) c.see(S, FS, sr, sg, sb, cColour, us, colourClosestUs, colourChanges);
+    size_t n1 = 0; every([&](Observer& o) { n1 += o.onsets.size(); });
+    if (n1 != n0) { edgeOnset = false; tailOnset = false; }
+    if (colourChanges != c0) { edgeColour = false; tailColour = false; }
   }
-  int maxPerSecond() const { return std::max(obs[0].maxPerSecond(), std::max(obs[1].maxPerSecond(), obs[2].maxPerSecond())); }
+  int maxPerSecond() const { int w = 0; for (auto& o : obs) w = std::max(w, o.worst); for (auto& o : narrow) w = std::max(w, o.worst); for (auto& o : lum) w = std::max(w, o.worst); return w; }
+  uint64_t closestOnsetsUs() const { uint64_t c = ~0ULL; for (auto& o : obs) c = std::min(c, o.closestUs); for (auto& o : narrow) c = std::min(c, o.closestUs); for (auto& o : lum) c = std::min(c, o.closestUs); return c; }
+  // Broken: more than three onsets in a second for any observer, two onsets under 334 ms apart (340 less
+  // the photometer's own pass), or two changes of colour under 165 ms apart (170 likewise).
+  bool broken() const { return maxPerSecond() > 3 || closestOnsetsUs() < 334000ULL || colourClosestUs < 165000ULL; }
 };
 // lines on a timetable (tick = ms), sampled every 1 ms pass
 static int onsetsPerSecond(int hp, double secs, const std::function<void(int)>& everyMs) {
   Photo p(hp); p.strict = true; uint64_t end = us + (uint64_t)(secs * 1e6); int tick = 0;
   while (us < end) { everyMs(tick++); pass(1000); p.sample(); }
+  if (p.closestOnsetsUs() < 334000ULL) { printf("    two onsets %.0f ms apart\n", p.closestOnsetsUs() / 1000.0); return 99; }
+  if (p.colourClosestUs < 165000ULL) { printf("    two changes of colour %.0f ms apart\n", p.colourClosestUs / 1000.0); return 98; }
   return p.maxPerSecond();
 }
 #define S9_CASE(name, hp, secs, setup, body) do { int r_ = 0; int bad_ = trial([&] { run(6); setup; int n = onsetsPerSecond(hp, secs, [](int t) { (void)t; body; }); \
@@ -445,6 +506,21 @@ SCENARIO(s9_no_path_relights_a_jewel_more_than_three_times_a_second) {
   S9_CASE("B 0 / 255 over a native look (rainbow)", 0, 8, { line("!**M:v=show\r"); line("!HFA:i=native:6\r"); }, if (t % 50 == 0) say((t / 50) % 2 ? "!HFB:b=0\r" : "!HFB:b=255\r"));
   S9_CASE("the owner's level coming back at idle: show + look + B:b=0, then idle (rear)", 1, 8, ,
           { int k = t % 120; if (k == 0) say("!HRM:v=show\r!HRA:i=solid,c=ffffff\r"); if (k == 40) say("!HRB:b=0\r"); if (k == 80) say("!HRM:v=idle\r"); });
+  // S4 for every path: colour flips, and luminance onsets that the brightest channel does not see
+  S9_CASE("live A red / A blue every 60 ms", 0, 8, line("!**M:v=show\r"), if (t % 60 == 0) say((t / 60) % 2 ? "!HFA:i=solid,c=ff0000\r" : "!HFA:i=solid,c=0000ff\r"));
+  S9_CASE("live A blue / A white every 60 ms (a luminance onset, no brightness onset)", 0, 8, line("!**M:v=show\r"), if (t % 60 == 0) say((t / 60) % 2 ? "!HFA:i=solid,c=0000ff\r" : "!HFA:i=solid,c=ffffff\r"));
+  S9_CASE("P red / P blue every 180 ms over a green look", 0, 8, { line("!**M:v=show\r"); line("!HFA:i=solid,c=00ff00\r"); }, if (t % 180 == 0) say((t / 180) % 2 ? "!HFP:c=ff0000,d=170\r" : "!HFP:c=0000ff,d=170\r"));
+  S9_CASE("a white accent between two colours of a live look", 0, 8, { line("!**M:v=show\r"); line("!HFA:i=solid,c=ff0000\r"); },
+          { int k = t % 680; if (k == 0) say("!HFP:c=ffffff,d=170\r"); if (k == 20) say("!HFA:i=solid,c=0000ff\r"); if (k == 340) say("!HFP:c=ffffff,d=300\r"); if (k == 360) say("!HFA:i=solid,c=ff0000\r"); });
+  S9_CASE("C seek across a red / green seam every 40 ms", 0, 8, { line("!**M:v=show\r"); line("!HFA:i=solid,c=ff0000,at=0\r"); line("!HFA:i=solid,c=00ff00,at=100\r"); line("!**C:bpm=120,beat=0\r"); },
+          if (t % 40 == 0) say((t / 40) % 2 ? "!**C:bpm=120,beat=0\r" : "!**C:bpm=120,beat=100\r"));
+  S9_CASE("32 one-beat sections at 300 BPM, red and blue in turn", 0, 6.3, { line("!**M:v=show\r"); sayScore32("!HFA:i=solid,c=%s,at=%d\r", "ff0000", "0000ff"); line("!**C:bpm=300,beat=0\r"); }, );
+  S9_CASE("idle and a red look in turn every 60 ms (rear: the white off colour and red)", 1, 8, line("R0055|1\r", 3.0), { if (t % 120 == 0) say("!HRA:i=solid,c=ff0000\r"); if (t % 120 == 60) say("!HRM:v=idle\r"); });
+  S9_CASE("B 0 / 62 over solid white every 25 ms (a quarter of the ceiling: under the first gate's step)", 0, 8, { line("!**M:v=show\r"); line("!HFA:i=solid,c=ffffff\r"); }, if (t % 25 == 0) say((t / 25) % 2 ? "!HFB:b=0\r" : "!HFB:b=62\r"));
+  S9_CASE("L 0 / 62 on a meter every 25 ms", 0, 8, { line("!**M:v=show\r"); line("!HFA:i=meter,c=ffffff\r"); }, if (t % 25 == 0) say((t / 25) % 2 ? "!HFL:v=0\r" : "!HFL:v=62\r"));
+  S9_CASE("L 0 / 255 while a native look is up (L feeds the meter look only)", 0, 8, { line("!**M:v=show\r"); line("!HFA:i=native:6\r", 1.0); }, if (t % 25 == 0) say((t / 25) % 2 ? "!HFL:v=0\r" : "!HFL:v=255\r"));
+  S9_CASE("a native look that clears the jewel, started again and again over a lit look", 0, 8, { line("!**M:v=show\r"); },
+          { int k = t % 200; if (k == 0) say("!HFA:i=solid,c=ffffff\r"); if (k == 100) say("!HFA:i=native:1\r"); });
   // round 2 of the review: verb B over light the contract did not draw (a show armed and not begun keeps the stock look)
   S9_CASE("B 0 / 255 over the stock off colour, show armed and not begun (rear), every 25 ms", 1, 8, { line("R0055|1\r", 3.0); line("!**M:v=show\r"); }, if (t % 25 == 0) say((t / 25) % 2 ? "!HRB:b=0\r" : "!HRB:b=255\r"));
   S9_CASE("the same at one B every 100 ms", 1, 8, { line("R0055|1\r", 3.0); line("!**M:v=show\r"); }, if (t % 100 == 0) say((t / 100) % 2 ? "!HRB:b=0\r" : "!HRB:b=255\r"));
@@ -500,15 +576,16 @@ static std::string mutate(std::string l) {           // one wire fault
 // sequences, servo commands and the brightness command. Returns the owner's new level, or -1.
 static const char* G_STOCK[] = {"F0055", "A0059|3", "R0071", "A006", "T001", "A0022|2", "F0034|4", "A0075", "A096", "A0971", "A098", "A0992",
                                 "S1|4", "S4", "S5", "S7", "S8", "S9", "F1013", "A104", "A105|2", "A198", "A199", "T1042"};
-// The stock commands that do not strobe by themselves and do not switch the LED twitch to random looks.
-static const char* G_CALM[] = {"F0055", "A0059|3", "A006", "T001", "A0055|1", "A096", "A0971", "A098", "S1|4", "S4", "S5", "S7", "S8",
+// The stock commands whose look holds still (no flicker, no strobe) and that leave the LED auto twitch off.
+static const char* G_CALM[] = {"F0055", "A0059|3", "A0055|1", "R006|2", "A096", "A098", "S4", "S7",
                                "F1013", "A104", "A105|2", "A198", "A199", "T1042", "X0045|1"};
 struct Stream {                                      // drives the wire and measures the three jewels
   Photo ph[3] = {Photo(0), Photo(1), Photo(2)};
   uint64_t lo = 1000, hi = 4000; bool strict = false;
-  void setStrict() { strict = true; for (auto& p : ph) p.strict = true; }
+  void setStrict() { strict = true; for (auto& p : ph) p.strict = true; for (int i = 0; i < HPCOUNT; i++) enableTwitchLED[i] = 0; }
   void step() {
-    const bool stockLine = stringComplete && !inputString.s.empty() && inputString.s[0] != '!' && inputString.s[0] != 'H';
+    // a stock command is being handled (the owner's brightness command H<unit>B<level> is one: it rescales the field)
+    const bool stockLine = stringComplete && !inputString.s.empty() && inputString.s[0] != '!';
     pass(rnd(lo, hi));
     if (stockLine) for (auto& p : ph) { p.stockLineAt = us; p.stockLineSeen = true; }
     for (auto& p : ph) p.sample();
@@ -530,7 +607,12 @@ struct Stream {                                      // drives the wire and meas
     static const char* PAIR[][2] = {
       {"B:b=0", "B:b=255"}, {"L:v=0", "L:v=255"}, {"X", "A:i=solid,c=ffffff"}, {"A:i=off", "A:i=solid,c=ffffff"},
       {"P:c=ffffff,b=0,d=400", "P:c=ffffff,b=255,d=400"}, {"C:bpm=120,beat=0", "C:bpm=120,beat=20"}, {"M:v=idle", "M:v=show,wd=5"},
-      {"M:v=show,wd=5", "B:b=0"}, {"A:i=meter,c=ffffff", "L:v=0"}, {"A:i=native:6", "X"}, {"B:b=0", "M:v=idle"}, {"A:i=flash,c=ffffff,s=255", "A:i=flash,c=fffffe,s=255"}};
+      {"M:v=show,wd=5", "B:b=0"}, {"A:i=meter,c=ffffff", "L:v=0"}, {"A:i=native:6", "X"}, {"B:b=0", "M:v=idle"}, {"A:i=flash,c=ffffff,s=255", "A:i=flash,c=fffffe,s=255"},
+      // colour flips (S4 for every path) and sub-quarter swings (S9's tenth)
+      {"A:i=solid,c=ff0000", "A:i=solid,c=0000ff"}, {"A:i=solid,c=0000ff", "A:i=solid,c=ffffff"}, {"P:c=ff0000,d=170", "P:c=0000ff,d=170"},
+      {"A:i=solid,c=00ff00", "P:c=ff00ff,d=170"}, {"A:i=solid,c=ff0000,at=0", "C:bpm=120,beat=0"}, {"A:i=solid,c=00ff00,at=20", "C:bpm=120,beat=20"},
+      {"C:bpm=120,beat=0", "C:bpm=120,beat=20"}, {"A:i=native:1", "A:i=solid,c=ffffff"}, {"A:i=native:6", "A:i=native:1"}, {"A:i=solid,c=ff0000", "M:v=idle"},
+      {"B:b=0", "B:b=62"}, {"L:v=0", "L:v=62"}, {"A:i=solid,c=ffffff,b=0", "A:i=solid,c=ffffff,b=40"}};
     const int k = R(sizeof PAIR / sizeof *PAIR); const std::string u = std::string("!") + G_UNIT[R(4)];   // H*, HF, HR or HT
     (void)watched;
     for (int n = 6 + R(16); n > 0; n--) for (int half = 0; half < 2; half++) { sayAs(u + PAIR[k][half] + "\r", true); until(us + 20000 + (uint64_t)R(60000)); }
@@ -545,6 +627,9 @@ struct Stream {                                      // drives the wire and meas
     settle();
   }
   int worstOnsets() const { return std::max(ph[0].maxPerSecond(), std::max(ph[1].maxPerSecond(), ph[2].maxPerSecond())); }
+  bool broken() const { return ph[0].broken() || ph[1].broken() || ph[2].broken(); }
+  double closestOnsetsMs() const { return std::min(ph[0].closestOnsetsUs(), std::min(ph[1].closestOnsetsUs(), ph[2].closestOnsetsUs())) / 1000.0; }
+  double closestColourMs() const { return std::min(ph[0].colourClosestUs, std::min(ph[1].colourClosestUs, ph[2].colourClosestUs)) / 1000.0; }
   int overCeiling() const { return ph[0].overCeiling + ph[1].overCeiling + ph[2].overCeiling; }
 };
 // After the show is over the board is the stock firmware's again, and stays that way.
@@ -562,6 +647,12 @@ static bool backOnStock(Stream& st, double watch, std::string& why) {
   return why.empty();
 }
 // A longer soak: SIM_DEFS="-DS9_SEEDS=5000 -DS9_SEED0=90000" ./run_sim.sh
+// OPEN after the CA1.5 round: a soak of 4,000 streams at seed base 800000 breaks on 6 (the 150 here pass).
+//   494, 1785, 2315: two onsets 288 to 291 ms apart for a narrow observer (45/60); in 494 the look is sparkle.
+//   1296, 2625, 3799: two changes of colour 63 to 78 ms apart: a fast colorcycle whose frames were held,
+//     a look made visible to a 3/15 observer by a rise smaller than the gate's step and then changed, and
+//     an overlay over stock light in an attributed stream.
+// None is understood well enough to call it the layer's or the oracle's. Run one again as described below.
 // Two streams of the soak at seed base 500000 are kept in mind here because no hand-made scenario
 // reproduces what they found: 643 (ending 1) and 3597 (ending 0). A verb-P overlay over the stock look
 // saved that look's frame, the owner lowered the strip level while the overlay was up, and the frame
@@ -593,13 +684,16 @@ SCENARIO(s9_property_hostile_streams) {
       else { say("!**M:v=idle\r"); st.settle(); st.until(us + 500000); }
       std::string why; bool stock = backOnStock(st, 400.0, why);
       int n = st.worstOnsets();
-      if (n > 3 && getenv("S9_TRACE")) for (auto& p : st.ph) for (auto& o : p.obs) if (o.maxPerSecond() > 3) {
-        printf("  hp%d observer %d/%d onsets (ms):", p.hp, o.darkPct, o.litPct); for (auto x : o.onsets) printf(" %.0f", x / 1000.0); printf("\n"); }
-      if (n > 3 || st.overCeiling() || !stock || ledOnlyViolations || holdViolations)
+      if (brk && getenv("S9_TRACE")) for (auto& p : st.ph) p.every([&](Observer& o) { if (o.maxPerSecond() > 3 || o.closestUs < 334000ULL) {
+        printf("  hp%d observer %s%d/%d onsets (ms):", p.hp, (&o >= p.lum && &o < p.lum + 3) ? "lum " : "", o.darkPct, o.litPct); for (auto x : o.onsets) printf(" %.0f", x / 1000.0); printf("\n"); } });
+      const bool brk = st.broken();
+      if (brk || st.overCeiling() || !stock || ledOnlyViolations || holdViolations)
         printf("  seed %2d (%s, %s): %d onsets/s, %d frames over the ceiling, LED-only %ld, hold %ld%s%s\n", seed, ending == 0 ? "idle" : ending == 1 ? "host dies" : "button", st.strict ? "strict" : "attributed",
                n, st.overCeiling(), ledOnlyViolations, holdViolations, stock ? "" : ", NOT back on stock: ", why.c_str());
       fflush(stdout);
-      _exit((n > 3 || st.overCeiling() || !stock || ledOnlyViolations || holdViolations) ? std::min(n > 3 ? n : 99, 120) : 0);
+      if (brk) printf("      closest two onsets %.0f ms, closest two changes of colour %.0f ms\n", st.closestOnsetsMs() > 1e9 ? -1.0 : st.closestOnsetsMs(), st.closestColourMs() > 1e9 ? -1.0 : st.closestColourMs());
+      fflush(stdout);
+      _exit((brk || st.overCeiling() || !stock || ledOnlyViolations || holdViolations) ? std::min(n > 3 ? n : 99, 120) : 0);
     }
     int stt = 0; waitpid(pid, &stt, 0); int code = WIFEXITED(stt) ? WEXITSTATUS(stt) : 99;
     if (code) { bad++; if (code < 99) worst = std::max(worst, code); }
@@ -617,10 +711,19 @@ SCENARIO(s9_property_hostile_streams) {
 // kind with the table below. A code added to the list with no row here fails; so does a row whose
 // look no longer measures as its kind. The list cannot drift from what the looks do.
 enum NativeKind { RUNS_AS_STOCK, GATED };
-static const struct { int code; NativeKind kind; const char* name; } S10_NATIVE[] = {
-  {1, GATED, "Leia"},                                // all seven pixels re-roll together, several times a second
-  {6, RUNS_AS_STOCK, "rainbow"},                     // the colours move, the field level does not
+static const struct { int code; const char* name; } S10_NATIVE[] = {
+  {1, "Leia"},                                       // all seven pixels re-roll together, several times a second: GATED
+  {6, "rainbow"},                                    // the colours move, the field level does not: RUNS AS STOCK
 };
+// How the layer treats a native look the contract started: how many passes of 20 s left a frame held back.
+static long contractNativeHeld(int code) {
+  char cmd[40]; snprintf(cmd, sizeof cmd, "!HFA:i=native:%d\r", code);
+  run(8); for (int i = 0; i < HPCOUNT; i++) enableTwitchLED[i] = 0;
+  line("!**M:v=show\r"); line(cmd, 1.5);
+  if (LED_command[0].LEDFunction != code) { printf("  native:%d did not start\n", code); failures++; }
+  long held = 0; for (int k = 0; k < 20000; k++) { pass(1000); held += gLatch[0].pending; }
+  return held;
+}
 struct FieldSwing { int lo = 100000, hi = 0, rises = 0; double closestMs = 1e9; int trough = 100000; uint64_t last = 0;
   void see(int v, int tenth, uint64_t now) {         // v and tenth in the same unit; trough-following, as the gate does
     lo = std::min(lo, v); hi = std::max(hi, v);
@@ -645,8 +748,9 @@ SCENARIO(s10_native_looks_are_classified_by_their_stock_field_swing) {
   int bad = 0, onList = 0;
   for (int code = 0; code < 100; code++) {
     if (!nativeAllowedFlthy(code)) continue;
-    onList++; const char* name = 0; NativeKind kind = RUNS_AS_STOCK;
-    for (auto& row : S10_NATIVE) if (row.code == code) { name = row.name; kind = row.kind; }
+    onList++; const char* name = 0;
+    const NativeKind kind = nativeGatedFlthy(code) ? GATED : RUNS_AS_STOCK;   // the core's list, the one the layer follows
+    for (auto& row : S10_NATIVE) if (row.code == code) name = row.name;
     if (!name) { printf("  native:%d is on the allow-list and has no row in S10_NATIVE\n", code); bad++; continue; }
     bad += trial([=] {
       FieldSwing chan, lum; measureStockLook(code, chan, lum);
@@ -656,7 +760,14 @@ SCENARIO(s10_native_looks_are_classified_by_their_stock_field_swing) {
              chan.lo * 10 / fullScale(100), chan.hi * 10 / fullScale(100), chan.rises, chan.rises > 1 ? std::to_string((int)chan.closestMs).c_str() : "-",
              lum.lo * 10 / fullScale(100), lum.hi * 10 / fullScale(100), lum.rises, lum.rises > 1 ? std::to_string((int)lum.closestMs).c_str() : "-",
              fast ? "its whole field swings faster than every 340 ms: GATED" : "RUNS AS STOCK");
-      if (fast != (kind == GATED)) { printf("  FAIL: the table says %s\n", kind == GATED ? "GATED" : "RUNS AS STOCK"); failures++; }
+      if (fast != (kind == GATED)) { printf("  FAIL: nativeGatedFlthy() says %s\n", kind == GATED ? "GATED" : "RUNS AS STOCK"); failures++; }
+    });
+    // ...and the layer does what the kind says: a RUNS-AS-STOCK look started by the contract has no
+    // frame held back, a GATED one has (its flicker goes through the gate).
+    bad += trial([=] {
+      const long held = contractNativeHeld(code);
+      printf("  native:%d %-8s through the contract, 20 s: a frame was waiting in %ld of 20000 passes\n", code, name, held);
+      if (kind == RUNS_AS_STOCK ? held != 0 : held == 0) failures++;
     });
   }
   CHECK_EQ(onList, (int)(sizeof S10_NATIVE / sizeof *S10_NATIVE));
@@ -667,4 +778,59 @@ SCENARIO(s10_native_looks_are_classified_by_their_stock_field_swing) {
     printf("  (off the list) Short Circuit as stock: %d rises of a tenth or more by brightest channel, closest %d ms\n", chan.rises, (int)chan.closestMs);
     if (!chan.swingsFast()) failures++; });
   CHECK_EQ(sc, 0);
+}
+
+// ===== What the gates cost a look on a seven-pixel jewel: the held-frames table =====================
+// Each contract look, alone, 30 s at three speeds, loop passes of 1 to 4 ms and of 10 to 15 ms: in how
+// many passes was a frame waiting at the latch (held back by the field gate or the look gate)? A look
+// the gates never touch reads 0. This is a measurement first; the asserts at the end pin what it found.
+static double heldPct(const char* setup, uint64_t lo, uint64_t hi, double secs = 30.0) {
+  int fd[2]; if (pipe(fd)) return -1;
+  fflush(stdout); pid_t pid = fork();
+  if (pid == 0) {
+    close(fd[0]); srand(77); for (int i = 0; i < HPCOUNT; i++) enableTwitchLED[i] = 0;
+    run(6); line("!**M:v=show\r"); say(setup); runRand(2.0, lo, hi);
+    long held = 0, n = 0; uint64_t end = us + (uint64_t)(secs * 1e6);
+    while (us < end) { pass(rnd(lo, hi)); held += gLatch[0].pending; n++; }
+    double pct = 100.0 * held / n; (void)!write(fd[1], &pct, sizeof pct); _exit(0);
+  }
+  close(fd[1]); double pct = -1; (void)!read(fd[0], &pct, sizeof pct); close(fd[0]); int st; waitpid(pid, &st, 0);
+  return pct;
+}
+SCENARIO(gate_held_frames_table) {
+  const char* LOOKS[] = {"solid", "flash", "pulse", "rainbow", "scan", "sparkle", "meter", "comet", "chase", "wipe", "gradient", "colorcycle", "twinkle"};
+  const int SPEEDS[] = {0, 128, 255};
+  double worstQuiet = 0, worstSparkle = 0, worstTwinkle = 0;
+  printf("  %% of passes with a frame waiting at the latch (passes 1-4 ms | passes 10-15 ms), white, at s=0 / s=128 / s=255\n");
+  for (const char* look : LOOKS) {
+    printf("  %-11s", look);
+    for (int pass = 0; pass < 2; pass++) {
+      for (int s : SPEEDS) {
+        char l[80]; snprintf(l, sizeof l, "!HFA:i=%s,c=ffffff,s=%d\r", look, s);
+        std::string setup = l; if (!strcmp(look, "meter")) setup += "!HFL:v=200\r";
+        const double p = pass ? heldPct(setup.c_str(), 10000, 15000) : heldPct(setup.c_str(), 1000, 4000);
+        printf(" %5.1f", p);
+        if (!strcmp(look, "sparkle")) worstSparkle = std::max(worstSparkle, p);
+        else if (!strcmp(look, "twinkle")) worstTwinkle = std::max(worstTwinkle, p);
+        else worstQuiet = std::max(worstQuiet, p);
+      }
+      printf(pass ? "\n" : "  |");
+    }
+  }
+  double worstPump = 0;
+  for (int m : {64, 255}) for (int bpm : {60, 120, 240}) {
+    char l[96]; snprintf(l, sizeof l, "!HFA:i=solid,c=ffffff,m=%d,am=1\r!**C:bpm=%d,ph=0,bpb=4\r", m, bpm);
+    const double a = heldPct(l, 1000, 4000), b = heldPct(l, 10000, 15000);
+    printf("  beat pump on solid, am=1, m=%3d, %3d BPM: %5.1f | %5.1f\n", m, bpm, a, b); worstPump = std::max(worstPump, std::max(a, b));
+  }
+  const double leia = heldPct("!HFA:i=native:1\r", 1000, 4000), bow = heldPct("!HFA:i=native:6\r", 1000, 4000);
+  printf("  native:1 Leia (gated): %5.1f     native:6 rainbow (runs as stock): %5.1f\n", leia, bow);
+  printf("  worst of the eleven other looks: %.1f %%; twinkle: %.1f %%; sparkle: %.1f %%; the beat pump: %.1f %%\n", worstQuiet, worstTwinkle, worstSparkle, worstPump);
+  CHECK(worstQuiet == 0.0);  CHECK(worstPump == 0.0);  CHECK(bow == 0.0);   // never touched
+  CHECK(worstTwinkle <= 2.0);                        // at s=255 only, under 1 %
+  // KNOWN, and not hidden: on seven pixels SPARKLE re-rolls enough of the field at once that the gate
+  // holds it often (about 1 % of passes at s=0, a sixth at s=128, over a third at s=255): it runs
+  // visibly calmer than drawn. The bound only keeps it from getting worse unnoticed.
+  CHECK(worstSparkle <= 45.0);
+  CHECK(leia > 5.0);                                 // a GATED native look is held, by design (S10)
 }

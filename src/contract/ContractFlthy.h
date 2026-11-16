@@ -217,6 +217,8 @@ struct FlthyLatch {
   uint16_t peakSumY  = 0;                 // ...and the same for the luminance
   uint8_t  latchedAt = 0;                 // the strip level the frame on the jewel was latched at
   uint8_t  nativeFull = 0;                // S10: the level a runs-as-stock look has at the ceiling (for verb B)
+  uint8_t  chroma[3]  = {0, 0, 0};        // S10, a GATED native look: the mean colour of the frame on the jewel
+  byte     pendingFn  = 255;              // the LED function that drew the frame being held back
   bool     touched   = false;             // touchMs is meaningful
   bool     pending   = false;             // a frame was held back and waits in the pixel buffer
 };
@@ -227,6 +229,7 @@ static FlthyLatch gLatch[HPCOUNT];
 static inline void _holdFrame(uint8_t hp) {
   FlthyLatch& g = gLatch[hp];
   g.pending = true;
+  g.pendingFn = LED_command[hp].LEDFunction;
   if (neoStrips[hp].getBrightness() >= g.latchedAt) return;
   uint8_t keep[NEO_JEWEL_LEDS * 4]; uint8_t* raw = neoStrips[hp].getPixels();
   const size_t n = (size_t)NEO_JEWEL_LEDS * FLTHY_PX_BYTES;
@@ -246,7 +249,7 @@ inline void DnStrip::show() {
   FlthyUnit& u = gUnit[hp];
   ContractUnitState& s = u.s;
   const uint8_t* px = getPixels();
-  uint16_t sum = 0, sumY = 0;
+  uint16_t sum = 0, sumY = 0, sumC[3] = {0, 0, 0};
   for (uint8_t i = 0; i < NEO_JEWEL_LEDS; i++) {
     const uint8_t* p = px + i * FLTHY_PX_BYTES;
     uint8_t r = p[FLTHY_OFF_R], gr = p[FLTHY_OFF_G], b = p[FLTHY_OFF_B];
@@ -256,6 +259,7 @@ inline void DnStrip::show() {
     uint8_t m = r > gr ? r : gr; if (b > m) m = b;
     sum += m;
     sumY += contractLuminance(r, gr, b);
+    sumC[0] += r; sumC[1] += gr; sumC[2] += b;
   }
   const uint8_t level = (uint8_t)(sum / NEO_JEWEL_LEDS), lum = (uint8_t)(sumY / NEO_JEWEL_LEDS);
   if (u.ride == 255) s.ceil = getBrightness();          // the ceiling is the owner's strip level; a verb-B ride sits below it
@@ -278,11 +282,25 @@ inline void DnStrip::show() {
     if (drawn || (g.touched && (uint32_t)(now - g.touchMs) < FLTHY_ONSET_GAP_MS)) {
       const uint32_t sig = nativeUp ? contractLookSigNative(s.nativeCode)
                                     : (drawn ? g.frameSig : contractLookSigNative(0x4000 | fn));   // the board's own look
-      if ((level != 0 && !contractLookAllowed(s, sig, now)) || contractFieldAsk(s, level, lum, now) != 255) {
+      // S10, a GATED native look (Leia) is ONE look to the look gate, but it re-rolls the colour of
+      // the whole field by itself. A frame whose mean colour is far from the one on the jewel is a
+      // change of colour like any other (S4): it waits 170 ms after the field's last change.
+      uint8_t chroma[3] = {0, 0, 0}; bool recolour = false;
+      if (nativeUp && level != 0) {
+        uint16_t top = sumC[0] > sumC[1] ? sumC[0] : sumC[1]; if (sumC[2] > top) top = sumC[2];
+        for (uint8_t k = 0; k < 3; k++) {
+          chroma[k] = top ? (uint8_t)(((uint32_t)sumC[k] * 255u) / top) : 0;
+          const uint8_t d = chroma[k] > g.chroma[k] ? (uint8_t)(chroma[k] - g.chroma[k]) : (uint8_t)(g.chroma[k] - chroma[k]);
+          if (d > 64) recolour = true;
+        }
+      }
+      if ((level != 0 && (!contractLookAllowed(s, sig, now) || (recolour && !strobeCoolDownExpired(s.lookMs, now, STROBE_MIN_STATE_MS)))) ||
+          contractFieldAsk(s, level, lum, now) != 255) {
         _holdFrame(hp);                                 // too soon: keep what is on the jewel
         return;
       }
       if (level != 0) contractLookGate(s, sig, now);    // the change of look is shown now
+      if (nativeUp && level != 0) { if (recolour) s.lookMs = now; memcpy(g.chroma, chroma, 3); }
     } else if (level != 0) {
       contractLookForced(s, contractLookSigNative(0x4000 | fn), now);   // stock light: recorded, never held back
     }
@@ -404,7 +422,8 @@ static inline void _showBase(uint8_t hp) {
     u.nativeWait = false;  u.nativeTold = false;
     LED_command[hp].LEDFunction = (byte)s.nativeCode;   // allow-listed: needs no option bytes
     LED_command[hp].LEDHalt     = -1;
-    if (nativeGatedFlthy(s.nativeCode)) contractLookForced(u.s, contractLookSigNative(s.nativeCode), now);   // its frames are asked at the latch
+    // (A GATED native look's frames are asked at the latch, the first one as the change of look it
+    // is: the look gate hears of it when it is on the LEDs, not here, where it is only selected.)
   } else if (s.base == CB_DARK) {
     _dark(hp);
   } else {
@@ -996,6 +1015,10 @@ inline void contractBeatTick() {
     // it again every pass (a look that paints once would otherwise stay dark).
     if (_hasLeds(hp)) _touch(hp);
     if (u.nativeWait) { if (s.base == CB_NATIVE) _showBase(hp); else u.nativeWait = false; }   // S10: ask again
+    // A held frame is offered again only as what it was. When the LED function has changed since
+    // (an overlay took the slot, a stock look started), the frame in the buffer is not the new
+    // owner's, and offering it under the new owner's look would show it as that look.
+    if (gLatch[hp].pending && LED_command[hp].LEDFunction != gLatch[hp].pendingFn) gLatch[hp].pending = false;
     if (gLatch[hp].pending && !u.nativeWait) neoStrips[hp].show();
     if (u.rideWant != u.ride) _rideTry(hp);              // a verb-B raise the gate is holding
     // L2: the host armed a watchdog (M:v=show,wd=<s>) and has been silent that long: the unit
