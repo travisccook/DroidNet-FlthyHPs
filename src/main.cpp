@@ -887,6 +887,13 @@ void loop(){
         if(dnU=='R' || dnU=='X' || dnU=='Z' || dnU=='A') contractNativeTakeover(1);
         if(dnU=='T' || dnU=='Y' || dnU=='Z' || dnU=='A') contractNativeTakeover(2);
       }
+      if(typeState == 1 && (functionState == 98 || functionState == 99))   // DroidNet: "servo twitch off / on" is the owner's word in a show too
+      {
+        const char dnU = inputBuffer[0];
+        if(dnU=='F' || dnU=='X' || dnU=='Y' || dnU=='A') contractOwnerServoTwitch(0, functionState == 99);
+        if(dnU=='R' || dnU=='X' || dnU=='Z' || dnU=='A') contractOwnerServoTwitch(1, functionState == 99);
+        if(dnU=='T' || dnU=='Y' || dnU=='Z' || dnU=='A') contractOwnerServoTwitch(2, functionState == 99);
+      }
       if(inputBuffer[0]=='F' || inputBuffer[0]=='X' || inputBuffer[0]=='Y' || inputBuffer[0]=='A')
         processCommands(0,typeState);
       if(inputBuffer[0]=='R' || inputBuffer[0]=='X' || inputBuffer[0]=='Z' || inputBuffer[0]=='A')

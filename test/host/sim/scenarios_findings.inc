@@ -234,8 +234,8 @@ SCENARIO(f7_operator_settings_survive_a_show) {
   for (int hp = 0; hp < HPCOUNT; hp++) { CHECK_EQ(enableTwitchLED[hp], 0); CHECK(offcoloroverride[hp]); CHECK(enableTwitchHP[hp]); }
 }
 SCENARIO(f7_no_twitch_of_either_kind_in_a_show) {
-  run(6); line("!**M:v=show\r"); line("!**C:bpm=120,ph=0,bpb=4\r");
-  line("A199\r");                                    // even with the operator's servo twitch switched on mid-show
+  run(6); line("A199\r");                            // the operator's servo twitch is on, as at boot: the show still holds it
+  line("!**M:v=show\r"); line("!**C:bpm=120,ph=0,bpb=4\r");   // (A199 sent DURING a show lifts the hold: r7_a199_in_a_show_*)
   long m = g_servoMoves, t = twitches(); run(900);
   CHECK_EQ(g_servoMoves - m, 0);  CHECK_EQ(twitches() - t, 0);
 }

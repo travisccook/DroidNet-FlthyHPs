@@ -91,6 +91,7 @@ struct FlthyUnit {
   int      lastEnvBright = -1;            // memo for the looks that repaint only on a change
   uint32_t frameMs     = 0;               // scan/sparkle self-throttle
   uint8_t  frame       = 0;
+  bool     twitchFreed  = false;          // the owner sent A199 while the unit was held (see contractOwnerServoTwitch)
   bool     servoWasHeld = false;          // the two twitch gates' view of the hold on their last pass
   bool     ledWasHeld   = false;
   // L3: a verb P with no show armed overlays the STOCK look and gives it back afterwards.
@@ -133,7 +134,17 @@ static inline bool _nativeIsUp(uint8_t hp) {
 // or P: until then the stock idle look stays) or while a contract look or overlay is up.
 inline bool contractHolds(uint8_t hp) {
   const ContractUnitState& s = gUnit[hp].s;
-  return s.inShow || s.base == CB_LOOK || s.pulseActive;
+  return (s.inShow || s.base == CB_LOOK || s.pulseActive) && !gUnit[hp].twitchFreed;
+}
+// "Enable servo twitch" (stock A199, or F/R/T/X/Y/Z199) is the owner's word, in a show too: given
+// while the contract holds a unit, it lifts the hold on that unit's SERVO twitch until the next
+// M:v=show or M:v=idle. The lights stay the show's. A show armed with no watchdog whose host has
+// died would otherwise keep the holoprojectors still for good, with no button to bring them back.
+// A198 puts the hold back (and the stock code has switched the twitch off anyway). main.cpp calls
+// this for each unit such a command addresses; the stock handler re-arms the timer itself.
+inline void contractOwnerServoTwitch(uint8_t hp, bool on) {
+  const ContractUnitState& s = gUnit[hp].s;
+  gUnit[hp].twitchFreed = on && (s.inShow || s.base == CB_LOOK || s.pulseActive);
 }
 inline bool contractHoldsLeds(uint8_t hp) {
   const ContractUnitState& s = gUnit[hp].s;
@@ -615,6 +626,7 @@ static inline void _boundary(uint8_t hp, char kind, uint8_t wdSec) {
   else if (kind == 'x') contractOnStop(s, ceiling);
   else                  contractOnIdle(s, ceiling);
   u.overNative = false;  u.level = 0;  u.pulseBright = 255;  u.lastEnvBright = -1;
+  if (kind != 'x') u.twitchFreed = false;               // a new show holds again; X stays in its mode
   _stopClockIfUnused();
   if (kind == 'x') {
     _dark(hp);
