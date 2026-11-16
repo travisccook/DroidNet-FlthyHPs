@@ -16,11 +16,14 @@ beat-locked accents, a host-seeded beat clock, and autonomous board-side section
 
 **LED effects only.** The `!` path never writes `HP_command[]` and never calls
 `positionHP` / `twitchHP` / `wagHP` / `RCHP`. An armed show HOLDS a unit: `main.cpp`'s two auto-twitch
-gates ask `contractHolds(i)` (servo) and `contractHoldsLeds(i)` (LED). The layer never writes
-`enableTwitchHP[]`, `enableTwitchLED[]` or `offcoloroverride[]`, and whenever it lets go of a unit it
-re-arms both twitch timers first, so the pass that handles a `!` line never starts a servo twitch.
-No servo motion, ever. `test/host/sim` checks both on the real `src/main.cpp`, on every simulated
-pass that handles a `!` line.
+gates ask `contractServoTwitchHeld(i)` and `contractLedTwitchHeld(i)`, first in their tests. The layer
+never writes `enableTwitchHP[]`, `enableTwitchLED[]` or `offcoloroverride[]`. When a hold ends,
+whichever way, the gate itself puts the twitch timer a full interval ahead before the stock test
+reads it, so no pass that handles a `!` line, ends an overlay or reaches a score section starts a
+servo twitch. A stock line too short to carry a type or function has none (`255`), so a bare `X` or
+`A` left over from a corrupted contract line cannot replay the last stock servo command.
+No servo motion, ever. `test/host/sim` checks all of it on the real `src/main.cpp`, on every
+simulated pass.
 
 Every native command (`DT##` LED, `DT1##` servo, `S#` sequences, the auto-twitch system, the
 I2C intake) still behaves exactly as it did before.
@@ -33,25 +36,36 @@ announce" below.
 
 ## Status
 
-- **Contract v1.3, release 1: built.** The shared core at revision CA1.1, and this board's layer on
+- **Contract v1.3, release 1: built.** The shared core at revision CA1.2, and this board's layer on
   the core's `ContractUnitState`: show lifecycle (arm, begin, stop, idle), the watchdog, a 32-section
   score with a load check (verb `V`), the routed query reply (verb `Q:r=`), brightness as a fraction
   of the strip's level, the native allow-list (1 and 6), native take-over, and `flash`, `pulse` and
   `scan` on the core's shared timing. See "Contract v1.3, release 1" below.
 - **Six parametric effects: built.** comet, chase, wipe, gradient, colorcycle, twinkle —
   rendered around the jewel ring.
-- **Host verification: green.** `bash test/host/run.sh` → 341/341 parser checks, 122,910 v1.3 core
+- **Host verification: green.** `bash test/host/run.sh` → 341/341 parser checks, 1,895,037 v1.3 core
   checks (run twice: plain, and with stand-ins for the AVR flash-string hooks), a type-check of
-  `ContractFlthy.h` against `test/host/mock_flthy.h`, 1,561,274 contract fuzz checks, 77/77 native
+  `ContractFlthy.h` against `test/host/mock_flthy.h`, 1,581,274 contract fuzz checks, 77/77 native
   brightness parser checks and 2,965,122 native brightness fuzz checks, 37,506 WDP announce core
   checks and 19 adapter checks (run twice).
-- **Whole-firmware simulation: 52 scenarios pass.** Stage 2b of `run.sh` (`test/host/sim`) runs the
-  real `src/main.cpp` on a fake Arduino core, with the 9600-baud wire and the UART receive ring
-  modelled. `test/host/sim/xfail.txt` names scenarios that record a known defect and must fail; it is
-  empty. The findings of the 2026-11-15 review and the v1.3 R1 rules each have a scenario.
-- **Build:** flash 37,474 B of 253,952; SRAM 4,472 B of 8,192 (the score tables are 2,112 B).
-  `stack_report.py`: worst-case stack 430 B of the 3,720 B left, 3,290 B spare. The heap (Arduino
-  `String`) shares that space.
+- **Whole-firmware simulation: 72 scenarios pass.** Stage 2b of `run.sh`
+  (`test/host/sim`) runs the real `src/main.cpp` on a fake Arduino core: the 9600-baud wire with its
+  receive ring (bytes are lost when it is full) and its transmit ring (a write blocks when it is
+  full), `pulseIn()` blocking as it does in RC mode, and loop passes of random length. Origin is
+  what the host sent: a corrupted `!` line stays contract traffic for every byte.
+  `test/host/sim/xfail.txt` names scenarios that record a known defect and must fail; it is empty.
+- **Independent review of release 1 (2026-11-16): seven findings, all closed.** A bare `X`/`A`
+  replaying a servo command; a hold ending without re-arming the twitch; S9; the watchdog lost by a
+  unit that left the show; four spec sentences in the shared core (closed by CA1.2); the blocking `Q`
+  reply; `A199` in a show. `test/host/sim/scenarios_review.inc` holds a scenario for each, the
+  single-fault sweep (45,786 corruptions) and the S9 property test (150 hostile streams, the latched
+  frames measured by three observers).
+- **Build:** flash 39,138 B of 253,952; SRAM 4,576 B of 8,192 (the score tables are 2,112 B).
+  `stack_report.py`: worst-case stack 484 B of the 3,616 B left. The tool marks this build's bound
+  "not sound" over one edge that is not real: two bytes of the string "Flthy HP Controller" in
+  `.data` equal the address of `RCHP()`, which it then takes for a function the I2C interrupt could
+  call. Counted anyway, with one level of nesting: 593 B, 3,023 B spare. The heap (Arduino `String`)
+  shares that space.
 - **Prebuilt image: older than this code.** `firmware/` holds the image built from `9d28c52`. No
   image has been built from contract v1.3; `firmware/build-image.sh` does that at release.
 - **Hardware verification: NONE.** This has never been flashed to a board. Not once. Nothing
@@ -76,8 +90,8 @@ announce" below.
 
 `src/contract/contract_core.h` is **byte-identical** across the three DroidNet forks
 (RSeries / PSI / Flthy). It is owned by DroidNet-RSeriesLogics and never edited here:
-`src/contract/CORE_PIN` names the RSeries commit the shared files were copied from (`4dbb04b`, core
-revision CA1.1), the list of shared files is that commit's `test/host/core-files.txt`, and `run.sh`
+`src/contract/CORE_PIN` names the RSeries commit the shared files were copied from (`5cf7793`, core
+revision CA1.2), the list of shared files is that commit's `test/host/core-files.txt`, and `run.sh`
 stage 0 compares every one of them with the pinned commit when an RSeries checkout is at hand (CI
 always has one). A change to the core is made there and re-copied here with a new pin. It is pure
 C++ with no Arduino dependency, which is why it can be unit-tested on a host.
@@ -124,7 +138,15 @@ What `ContractFlthy.h` does on top of the shared core. The spec's rule numbers a
   dark with the override set) with both twitch timers a full interval ahead. An idle on a unit whose
   LEDs the layer does not have leaves the stock look alone.
 - **Watchdog (L2).** `M:v=show,wd=<s>`; any well-formed line for the board feeds it; expiry is the
-  idle path. `X` leaves it armed.
+  idle path. `X` leaves it armed. Board-wide as well: the board keeps the `wd=` of the last watched
+  show, and when it expires every unit holding anything of the contract's is idled, in a show or not
+  (a unit that left the show by L6 or a failed `V` and was lit again by the same host). A unit in a
+  show armed with no `wd=` is left alone. The memory is cleared by the expiry, by `M:v=idle` once no
+  unit is in a show, and by an `M:v=show` with no `wd=` for the whole board.
+- **`A199` in a show.** "Enable servo twitch" sent while the contract holds a unit lifts the hold on
+  that unit's servo twitch until the next `M:v=show` or `M:v=idle` (`contractOwnerServoTwitch()`).
+  `A198` puts it back. Without this a show armed with no `wd=` whose host died held the servos for
+  good.
 - **Pulse with no show (L3).** The overlay saves the stock function and its frame, and puts both
   back when it ends.
 - **`d=` on `A` (L4)** is ignored. **First live `A` with no `i=` (L5)** is a solid fill.
@@ -140,12 +162,26 @@ What `ContractFlthy.h` does on top of the shared core. The spec's rule numbers a
   mode only, and every reset puts the strip back.
 - **Native looks (S7).** `nativeAllowedFlthy()`: 1 (Leia) and 6 (rainbow). No accent on a native
   section.
+- **One limit for every path (S9).** The rule is the core's `contractFieldGate()`; this board asks it
+  where every frame is latched. The jewels are `DnStrip` (`src/droidnet/dn_strip.h`), whose `show()`
+  (in `ContractFlthy.h`) measures the field level (the mean over the seven pixels of each pixel's
+  brightest channel, as latched; `s.ceil` is kept at the owner's strip level) and passes it through
+  the gate when the layer has the jewel or let go of it in the last 340 ms. A frame the gate allows
+  less than is not latched: what is on the jewel already passed the gate, and the tick offers the
+  frame again every pass. Any other frame is stock light: never held back, and told to the gate
+  with `contractFieldForced()`. Native looks the contract starts need no ask-then-tell here, because
+  the stock code draws them through the same latch. Known limit, the core's: a swing of less than a
+  quarter of the ceiling is a look's texture and is not rate-limited.
 - **Clock (C1, C2, C6).** One clock for the three units, seeded once per line; a mid-beat re-anchor
-  does not fire that beat's accent again; a nudge never moves a section back; `bpm=0` holds.
+  does not fire that beat's accent again; a nudge never moves a section back; `bpm=0` holds. While
+  held, a pumped look is shown still at its own `b=` level (the pump needs the clock), not frozen in
+  whatever dip it was in; that step up is under the S9 gate like any other.
 - **Score (section 6), load check (section 7), query (section 10).** 32 entries a unit with `b=` and
   every-N accents; overflow is a bad load; `V:n=,k=` idles a unit whose load is wrong and `ok=2`
-  stays until the next `M:v=show`; `Q:r=<route>` to one unit gets the routed reply, after
-  `wdpFinish()`.
+  stays until the next `M:v=show`, and until then the unit drops every scored line; `Q:r=<route>` to
+  one unit gets the routed reply. The reply waits in one slot (the newest `Q` wins) and the tick
+  sends it whole, in one write, when no WDP announce is partly sent and the TX ring has room for all
+  of it: the line handler never writes to `Serial`, so a `Q` cannot stall `loop()`.
 - **Shared timing (section 12).** `flash`, `pulse` and `scan` use `fxFlashOn`, `fxPulseBright` and
   `fxScanPos`. A pulse the beat pump drives is a steady fill at the pumped level.
 
@@ -165,8 +201,11 @@ unplugged and a USB serial monitor at 9600.
 1. **Loop-pass time (probe build, USB serial).** Record `n` and `max_us` for ten seconds in each
    state: stock idle on the off-colour hold; show armed; show begun and dark; three solids; three
    solids with `m=200,am=2` at 120 BPM; three comets; three twinkles; a stock servo twitch in
-   progress. A burst of five-byte lines survives a pass of up to about 15 ms with the 256-byte ring.
-   If `max_us` in a show is above 10000, stop and report it.
+   progress; one HP in RC mode (`F102`). **Section 11 is not shown to hold until this is known.** One
+   line is handled per pass. In simulation a 400-byte gapless burst arrives whole with random passes
+   of up to 10 ms; with passes of 10 to 20 ms 80 five-byte lines lose bytes in 19 runs of 20; in RC
+   mode a pass is about 23 ms and lines are lost. If `max_us` in a show is above 10000, stop and
+   report it: the next step is handling several lines a pass.
 2. **Native regression (release build from here on, WCB lead back on).** `F0055`, `A006`, `R003C5`,
    `F002C`, `A007|25`, `S1`, `S4`, `S9`; `F1013`, `A104`, `A105|5`, `A198`, `A199`; one I2C command at
    `0x19`; `HAB128` then `HAB100`. Then ten minutes untouched: LED twitches and servo twitches on all
@@ -197,8 +236,19 @@ unplugged and a USB serial monitor at 9600.
    section) and its servo twitch comes back, and the other two carry on. Send a stock servo command
    to an HP mid-show: it moves and its lights stay in the show.
 
-**Conformance record.** For each of S1, S2, S4, S6, S7, S8, C1, C6, L1 to L6, capacity, `V`, `Q` and
-section 11: the line sent, what was seen, pass or fail, and the `fw` from the WDP announce.
+10. **S9, by eye and by camera.** Solid white on one HP, then `!HFB:b=0` and `!HFB:b=255` alternating
+    as fast as the WCB will send them; the same with `i=meter` and `!HFL:v=0` / `!HFL:v=255`; then
+    `!**M:v=show`, `!**C:bpm=120` and `!**M:v=idle` in a loop on the rear HP (white off colour). In
+    each the HP relights at most three times a second and goes dark at once. Film at 240 fps if a
+    phone allows and count.
+11. **A199 in a show.** Arm with no `wd=`, start a look, unplug the host. After 15 minutes no HP has
+    moved. Send `A199`: within three minutes each HP twitches, the look still showing. `A198`: they
+    stop.
+12. **Q under load.** During a show send `!HFQ:r=<n>` ten times a second for ten seconds: the show
+    does not stutter and every reply the Pi receives is a whole line.
+
+**Conformance record.** For each of S1, S2, S4, S6, S7, S8, S9, C1, C6, L1 to L6, capacity, `V`, `Q`
+and section 11: the line sent, what was seen, pass or fail, and the `fw` from the WDP announce.
 
 ## Native brightness
 
@@ -233,10 +283,11 @@ section 11: the line sent, what was seen, pass or fail, and the `fw` from the WD
   `setup()` after the boot banner), `wdpForkTick()` (every loop pass, next to `contractBeatTick()`;
   writes at most `Serial.availableForWrite()` bytes, so it never blocks) and `wdpFinish()` (writes the
   rest of a line in flight; blocking is fine there).
-- **Other writers:** every other `Serial` write once `loop()` runs calls `wdpFinish()` first: RCHP's
-  `No RC Input Detected!` (`src/main.cpp`) and the verb-Q reply (`ContractFlthy.h`). The `DEBUG`
-  prints do not; `DEBUG` is commented out. `run.sh` stage 3 fails on an unguarded non-`DEBUG`
-  write, and `compile_contract.cpp` checks the verb-Q reply after a part-sent announce.
+- **Other writers:** the verb-Q reply (`ContractFlthy.h`) waits while `wdpInFlight()` and is then
+  written whole; RCHP's `No RC Input Detected!` (`src/main.cpp`) calls `wdpFinish()` first. The
+  `DEBUG` prints do neither; `DEBUG` is commented out. `run.sh` stage 3 fails on a non-`DEBUG` write
+  guarded by neither, `compile_contract.cpp` checks that the reply is held back during a part-sent
+  announce and then goes out in one write, and the simulation checks both lines stay whole on TX.
 - **Seed:** 16 `analogRead(3)` samples (A3: unused by the sketch, already its `randomSeed()` source)
   folded FNV-1a style over `micros()`; the core's own xorshift generator then jitters 0.5-3 s for the
   first line and 25-30 s after.
