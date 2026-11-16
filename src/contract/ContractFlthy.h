@@ -99,6 +99,7 @@ struct FlthyUnit {
 
 static FlthyUnit  gUnit[HPCOUNT];
 static BeatClock  gBeat;                  // ONE clock for the three units
+static uint32_t   gLastLineMs = 0;        // L2: millis() of the last well-formed line for this board
 // The score table is the fork's (sized by its cap); the cursor and the count are in s.
 static ScoreEntry gScore[HPCOUNT][FLTHY_SCORE_CAP];
 
@@ -558,7 +559,7 @@ static inline void _stopClockIfUnused() {
   for (uint8_t hp = 0; hp < HPCOUNT; hp++) if (contractUnitNeedsClock(gUnit[hp].s)) return;
   gBeat = BeatClock();
 }
-// The three show boundaries: 's' M:v=show, 'x' X, 'i' M:v=idle (and, later, the watchdog and
+// The three show boundaries: 's' M:v=show, 'x' X, 'i' M:v=idle (also the watchdog, and later
 // a failed verb V). Each runs the core's ONE reset, then puts the result on the jewel:
 //   show  arms. The servo twitch waits from now. The stock idle look stays until the show's
 //         first C, live A or P (contractShowBegin); a Resend over a running show goes back
@@ -668,7 +669,7 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p, uint16_t li
       break;
 
     case CV_MODE:
-      if (pr.mode == 's')      _boundary(hp, 's', 0);
+      if (pr.mode == 's')      _boundary(hp, 's', pr.hasWd ? pr.wd : 0);   // L2: wd= arms the watchdog
       else if (pr.mode == 'i') _boundary(hp, 'i', 0);
       break;
 
@@ -689,6 +690,8 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p, uint16_t li
 // Fan a parsed command to the addressed jewel(s) per class/unit.
 inline void applyContract(const ParsedContract& p, uint16_t lineCrc = 0) {
   if (p.cls != 'H' && p.cls != '*') return;            // not a Holoprojector board
+  gLastLineMs = millis();                              // L2: any well-formed line for this board is the
+                                                       // host's keepalive (any unit, any verb, a Q nobody answers)
   const bool all = (p.unit == '*');
   const bool to[HPCOUNT] = {all || p.unit == 'F', all || p.unit == 'R', all || p.unit == 'T'};
   if (p.verb == CV_CLOCK) {                            // ONE shared clock: seed it once, then every unit follows
@@ -715,6 +718,9 @@ inline void contractBeatTick() {
   for (uint8_t hp = 0; hp < HPCOUNT; hp++) {
     FlthyUnit& u = gUnit[hp];
     ContractUnitState& s = u.s;
+    // L2: the host armed a watchdog (M:v=show,wd=<s>) and has been silent that long: the unit
+    // idles itself, exactly as M:v=idle would. X does not disarm it; idle and a new show do.
+    if (contractWatchdogExpired(s, gLastLineMs, now)) _boundary(hp, 'i', 0);
     _expireOverlay(hp, now);
     // A stock command, or its |<n> timer, took the render slot: the jewel is the stock
     // firmware's again. Stop holding the unit (outside a show its auto twitch would never
