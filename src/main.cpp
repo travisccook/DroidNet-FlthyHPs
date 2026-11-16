@@ -876,6 +876,13 @@ void loop(){
       
       if(commandLength >= 6) {optionState2 = inputBuffer[5]-'0';}
 
+      if(typeState == 0)   // DroidNet contract L6: a stock LED command ends a show on each unit it addresses, then runs
+      {
+        const char dnU = inputBuffer[0];
+        if(dnU=='F' || dnU=='X' || dnU=='Y' || dnU=='A') contractNativeTakeover(0);
+        if(dnU=='R' || dnU=='X' || dnU=='Z' || dnU=='A') contractNativeTakeover(1);
+        if(dnU=='T' || dnU=='Y' || dnU=='Z' || dnU=='A') contractNativeTakeover(2);
+      }
       if(inputBuffer[0]=='F' || inputBuffer[0]=='X' || inputBuffer[0]=='Y' || inputBuffer[0]=='A')
         processCommands(0,typeState);
       if(inputBuffer[0]=='R' || inputBuffer[0]=='X' || inputBuffer[0]=='Z' || inputBuffer[0]=='A')
@@ -888,6 +895,8 @@ void loop(){
       if(commandLength >= 2)
       {
         functionState = (inputBuffer[1]-'0');
+        if(functionState == 1 || (functionState >= 4 && functionState <= 9))   // DroidNet contract L6: a stock sequence
+          for(uint8_t dnHp = 0; dnHp < HPCOUNT; dnHp++) contractNativeTakeover(dnHp);   // addresses all three units
 
         switch (functionState)
         { 

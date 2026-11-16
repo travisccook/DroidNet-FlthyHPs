@@ -590,6 +590,19 @@ static inline void _boundary(uint8_t hp, char kind, uint8_t wdSec) {
   }
 }
 
+// v1.3 L6, native take-over: a button on the controller always works. main.cpp calls this for
+// each unit a stock LED command or a stock sequence (S<n>) addresses, BEFORE the command runs.
+// If the contract has anything on that unit (an armed show, a score, a look, an overlay), the show
+// ends there exactly as M:v=idle ends it: score cleared, hold released, both twitch timers a
+// full interval ahead. The other units play on. A stock SERVO command and H<unit>B<level> are
+// not take-overs here: this layer never has the servos, and the brightness command moves the
+// show's ceiling (S6) instead.
+inline void contractNativeTakeover(uint8_t hp) {
+  const ContractUnitState& s = gUnit[hp].s;
+  if (s.inShow || s.scoreLen != 0 || s.base == CB_LOOK || s.base == CB_NATIVE || s.pulseActive)
+    _boundary(hp, 'i', 0);
+}
+
 // ------------------------------------------------------------- verb dispatch ---
 inline void applyContractToUnit(uint8_t hp, const ParsedContract& p, uint16_t lineCrc = 0) {
   FlthyUnit& u = gUnit[hp];

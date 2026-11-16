@@ -186,3 +186,29 @@ SCENARIO(t12_flash_pulse_scan_use_the_core_timing) {
   int low = 255; for (int i = 0; i < 400; i++) { pass(1000); if (latched(0).r < low) low = latched(0).r; }
   CHECK(low >= full * (255 - 200) / 255 - 3);         // and between beats never under the pump's own dip (m=200)
 }
+
+// ---- L6: a native command addressed to a unit in a show ends the show on that unit, then runs ----
+SCENARIO(l6_native_command_ends_the_show_on_that_unit) {
+  run(6); line("!**M:v=show\r");
+  line("!H*A:i=solid,c=ff0000,at=0\r"); line("!H*A:i=solid,c=00ff00,at=8\r");
+  line("!**C:bpm=120,ph=0,bpb=4,beat=0\r", 1.0);
+  CHECK(lookUp(0) && lookUp(1) && lookUp(2));        // section 1, red, on all three
+  long m = g_servoMoves;
+  line("F006\r");                                    // the operator's button: rainbow on the front HP
+  CHECK(!armed(0));  CHECK_EQ(scoreLen(0), 0);  CHECK(!lookUp(0));   // the show is over on F, as M:v=idle would end it
+  CHECK(!SIM_HELD(0));                               // ... so its servo twitch is no longer held
+  CHECK_EQ(LED_command[0].LEDFunction, 6);           // ... and then the command ran
+  CHECK_EQ(g_servoMoves - m, 0);                     // letting go moved nothing in that pass
+  CHECK(armed(1) && armed(2));  CHECK_EQ(scoreLen(1), 2);  CHECK(lookUp(1) && lookUp(2));   // R and T play on
+  run(4.5);                                          // past beat 8: the second section
+  CHECK(latched(1).g > 0 && latched(1).r == 0);      // R switched to green on the beat
+  CHECK_EQ(LED_command[0].LEDFunction, 6);  CHECK(!lookUp(0));       // F was NOT retaken: the button still has it
+  // A servo command is not a take-over on this LED-only layer: it runs (it always did) and the show's lights stay.
+  m = g_servoMoves; line("R1013\r", 0.5);
+  CHECK(g_servoMoves - m > 0);  CHECK(armed(1));  CHECK_EQ(scoreLen(1), 2);  CHECK(lookUp(1));
+  // A stock sequence addresses every unit: the show ends on all of them.
+  line("S1\r");                                      // Leia
+  CHECK(!armed(1) && !armed(2));  CHECK_EQ(scoreLen(1), 0);  CHECK_EQ(scoreLen(2), 0);
+  CHECK_EQ(LED_command[0].LEDFunction, 1);
+  run(3.0); CHECK_EQ(LED_command[0].LEDFunction, 1);  CHECK(!lookUp(1) && !lookUp(2));   // nothing of the show comes back
+}
