@@ -22,7 +22,7 @@
 // INCLUDE ORDER (see main.cpp): include this AFTER the board globals + effect
 // primitives it references are declared, and BEFORE loop(). It relies on these
 // being already declared in src/main.cpp (named, not numbered: line numbers there move):
-//   Adafruit_NeoPixel neoStrips[HPCOUNT];
+//   DnStrip neoStrips[HPCOUNT];        (src/droidnet/dn_strip.h: Adafruit_NeoPixel, show() gated below)
 //     .setPixelColor(uint16_t,uint32_t)  .show()  .setBrightness(uint8_t)  .getBrightness()  .getPixels()
 //   LEDCmd  LED_command[HPCOUNT];  (.LEDFunction byte)
 //   (.LEDOption1, .LEDOption2, .LEDHalt: written only to hand the LED side back, as the stock flush does)
@@ -173,6 +173,68 @@ inline bool contractLedTwitchHeld(uint8_t hp) {
 }
 // Does this layer have the unit's LEDs (so a reset must hand them back)?
 static inline bool _heldLeds(uint8_t hp) { return contractHoldsLeds(hp) || _slotIsOurs(hp) || _nativeIsUp(hp); }
+
+// ------------------------------------------------- S9: the onset gate, at the latch ---
+// v1.3 S9: whatever lines arrive, in whatever order, a jewel goes from dark to lit across its
+// whole field at most three times a second. Rules per path (S2, S4, S8) cannot promise that: verb
+// B, a meter following L, X between looks, a reset that hands back to a lit off colour, a C seek
+// across a seam and a tempo re-seed each relight a jewel on their own. So the limit is kept in ONE
+// place, where every frame is latched: DnStrip::show() (src/droidnet/dn_strip.h), which the stock
+// firmware and this layer both go through.
+//   * The field is measured as the eye sees it: the sum, over the seven pixels, of each pixel's
+//     brightest channel, against seven pixels at the ceiling (the owner's strip level).
+//     DARK is 5 % or less, LIT is 25 % or more; a frame in between changes nothing.
+//   * A LIT frame after a DARK one is an ONSET. If the last onset, of any origin, was under 340 ms
+//     ago (2 * STROBE_MIN_STATE_MS), the frame is NOT latched: the jewel stays as it is (dark, or
+//     dim on the way up) and the frame waits in the pixel buffer; the tick latches it as soon as
+//     the 340 ms are over. Four onsets 340 ms apart do not fit in one second.
+//   * A blackout is never delayed: a frame that is not an onset always passes.
+//   * Only this layer's relights are held back: a jewel it has now, or let go of in the last 340 ms
+//     (so the off colour coming back after a reset counts). The stock firmware's own looks run as
+//     Ryan wrote them, strobing ones included.
+// The gate is this fork's own. The shared core has no latch to hang it on; when the core gains a
+// per-unit onset anchor (revision CA1.2), FlthyLatch::lastOnsetMs is the field it replaces.
+static const uint16_t FLTHY_ONSET_GAP_MS = 2 * STROBE_MIN_STATE_MS;   // 340
+struct FlthyLatch {
+  uint32_t lastOnsetMs = 0;               // the last dark-to-lit latch, whoever asked for it
+  uint32_t touchMs     = 0;               // the last pass this layer had the jewel, or handed it back
+  bool     dark        = true;            // the latched frame is DARK (hysteresis: see above)
+  bool     touched     = false;           // touchMs is meaningful
+  bool     pending     = false;           // a frame was held back and waits in the pixel buffer
+};
+static FlthyLatch gLatch[HPCOUNT];
+static inline void _touch(uint8_t hp) { gLatch[hp].touchMs = millis(); gLatch[hp].touched = true; }
+// Has this layer the jewel's LEDs right now? (base == CB_NATIVE counts before the reconcile in the tick.)
+static inline bool _hasLeds(uint8_t hp) { return _heldLeds(hp) || gUnit[hp].s.base == CB_NATIVE; }
+inline void DnStrip::show() {
+  const uint8_t hp = (uint8_t)(this - neoStrips);
+  if (hp >= HPCOUNT) { Adafruit_NeoPixel::show(); return; }
+  FlthyLatch& g = gLatch[hp];
+  const uint8_t* px = getPixels();
+  uint16_t sum = 0;
+  for (uint8_t i = 0; i < NEO_JEWEL_LEDS; i++) {
+    uint8_t m = 0;
+    for (uint8_t k = 0; k < FLTHY_PX_BYTES; k++) { const uint8_t v = px[i * FLTHY_PX_BYTES + k]; if (v > m) m = v; }
+    sum += m;
+  }
+  // the ceiling: the owner's level. A verb-B ride lowers the strip below it; the ceiling stays.
+  const uint8_t level = (gUnit[hp].ride != 255) ? gUnit[hp].s.ceil : getBrightness();
+  const uint16_t full = (uint16_t)NEO_JEWEL_LEDS * ((level == 255) ? 255u : (uint16_t)((255u * (level + 1u)) >> 8));
+  const bool lit = sum != 0 && (uint32_t)sum * 4u >= full, dark = (uint32_t)sum * 20u <= full;
+  const uint32_t now = millis();
+  if (g.dark && lit) {                                  // an onset
+    const bool ours = _hasLeds(hp) || (g.touched && (uint32_t)(now - g.touchMs) < FLTHY_ONSET_GAP_MS);
+    if (ours && (uint32_t)(now - g.lastOnsetMs) < FLTHY_ONSET_GAP_MS) {
+      g.pending = true;                                 // too soon: latch nothing; what is on the jewel is below LIT
+      return;
+    }
+    g.lastOnsetMs = now; g.dark = false;
+  } else if (dark) {
+    g.dark = true;
+  }
+  g.pending = false;
+  Adafruit_NeoPixel::show();
+}
 // Both auto-twitch timers a full interval from now. Whenever the layer lets go of a unit the
 // timers are long overdue, and without this the stock loop twitches the LEDs AND THE SERVOS
 // in the same pass. resetHPtwitch() only sets twitchHPTime[hp]; it moves nothing.
@@ -190,6 +252,7 @@ static inline void _nativeLedIdle(uint8_t hp) {
   LED_command[hp].LEDHalt     = -1;
   ledOFF(hp);
   _rearmTwitch(hp);
+  _touch(hp);                                           // the off colour that follows is this layer's relight (S9)
 }
 // Dark, with nothing of the stock firmware's left running: 255 is its "idle, dark" value
 // (never 0: that is "do nothing", which also blocks the stock auto twitch for good), and the
@@ -198,6 +261,7 @@ static inline void _dark(uint8_t hp) {
   LED_command[hp].LEDFunction = 255;
   LED_command[hp].LEDHalt     = -1;
   ledOFF(hp);
+  _touch(hp);
 }
 // v1.3 S7: the native looks this layer may start are the core's nativeAllowedFlthy() list. They
 // need no option bytes and no counters: 1 = Leia (fixed blue colour projector), 6 = rainbow.
@@ -216,6 +280,17 @@ inline void contractOwnerBrightness(uint8_t hp, uint8_t level) {
   gUnit[hp].s.ceil = level;
   gUnit[hp].ride = 255;
   gUnit[hp].lastEnvBright = -1;                         // memoised looks repaint at the new level
+  // A frame the onset gate is holding back means the jewel still shows an older, dim frame scaled
+  // for the OLD level, and it cannot be rescaled. Black it out (a blackout is always allowed); the
+  // held frame follows at the new level when its 340 ms are over.
+  if (gLatch[hp].pending) {
+    uint8_t keep[NEO_JEWEL_LEDS * 4]; uint8_t* px = neoStrips[hp].getPixels();
+    const size_t n = (size_t)NEO_JEWEL_LEDS * FLTHY_PX_BYTES;
+    memcpy(keep, px, n); memset(px, 0, n);
+    neoStrips[hp].Adafruit_NeoPixel::show();
+    memcpy(px, keep, n);
+    gLatch[hp].dark = true;
+  }
 }
 // Put the unit's base on its jewel (no overlay up).
 static inline void _showBase(uint8_t hp) {
@@ -785,6 +860,10 @@ inline void contractBeatTick() {
   for (uint8_t hp = 0; hp < HPCOUNT; hp++) {
     FlthyUnit& u = gUnit[hp];
     ContractUnitState& s = u.s;
+    // S9: this pass the layer has the jewel; and a frame the onset gate held back is latched as
+    // soon as its 340 ms are over (a look that paints once would otherwise stay dark).
+    if (_hasLeds(hp)) _touch(hp);
+    if (gLatch[hp].pending && (uint32_t)(now - gLatch[hp].lastOnsetMs) >= FLTHY_ONSET_GAP_MS) neoStrips[hp].show();
     // L2: the host armed a watchdog (M:v=show,wd=<s>) and has been silent that long: the unit
     // idles itself, exactly as M:v=idle would. X does not disarm it; idle and a new show do.
     if (contractWatchdogExpired(s, gLastLineMs, now)) _boundary(hp, 'i', 0);

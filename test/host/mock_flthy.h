@@ -90,7 +90,11 @@ struct Adafruit_NeoPixel {
   uint8_t  raw[NEO_JEWEL_LEDS * 4] = {0};    // getPixels(): the L3 overlay saves and restores the raw frame
   uint8_t* getPixels() { return raw; }
 };
-static Adafruit_NeoPixel neoStrips[HPCOUNT];
+// The fork's strip type (show() is defined in ContractFlthy.h: the S9 onset gate). This mock's raw
+// buffer stays zero, so the gate sees every frame as dark and holds nothing back here: the gate is
+// tested on the real firmware in test/host/sim, on latched frames.
+#include "../../src/droidnet/dn_strip.h"
+static DnStrip neoStrips[HPCOUNT];
 
 // ---- board globals the fork references (main.cpp) ----
 struct LEDCmd {

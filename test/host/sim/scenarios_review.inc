@@ -265,14 +265,22 @@ static int fullScale(int level) { return level >= 255 ? 255 : (255 * (level + 1)
 struct Photo {
   int hp, ceil; bool isDark = true, started = false; std::vector<uint64_t> onsets; uint64_t lastHad = 0; bool everHad = false;
   int peak = 0, overCeiling = 0;
+  bool paused = false;                               // while the owner's brightness command is on its way (see newCeiling)
   explicit Photo(int h, int c = 100) : hp(h), ceil(c) {}
+  // The owner changed the strip level: every frame is rescaled, and "dark" and "lit" are fractions of
+  // the NEW ceiling from here. That step is the owner's, not an onset: the next frame only re-reads
+  // the state (lit, dark, or in between and so unchanged).
+  bool reread = false;
+  void newCeiling(int c) { ceil = c; reread = true; paused = false; }
   void sample() {
+    if (paused) return;
     const uint8_t* p = neoStrips[hp].shown; int S = 0, FS = 7 * fullScale(ceil);
     for (int i = 0; i < 7; i++) { int m = std::max(p[i * 3], std::max(p[i * 3 + 1], p[i * 3 + 2])); S += m; peak = std::max(peak, m); if (m > fullScale(ceil)) overCeiling++; }
     if (neoStrips[hp].getBrightness() > ceil) overCeiling++;
     if (simHasLeds(hp)) { lastHad = us; everHad = true; }
     const bool lit = S * 4 >= FS, dark = S * 20 <= FS;
     if (!started) { started = true; isDark = !lit; return; }
+    if (reread) { reread = false; if (lit) isDark = false; else if (dark) isDark = true; return; }
     if (isDark && lit) { isDark = false; if (everHad && us - lastHad <= 300000ULL) onsets.push_back(us); }
     else if (!isDark && dark) isDark = true;
   }
@@ -388,8 +396,8 @@ struct Stream {                                      // drives the wire and meas
   void one(bool watched, int faultPct, int stockPct) {
     if (R(100) < stockPct) {
       if (R(6) == 0) { int lv = 20 + R(236); char b[16]; snprintf(b, sizeof b, "HAB%03d\r", lv);
-        settle(); for (auto& p : ph) p.ceil = std::max(p.ceil, lv);     // the owner's level may rise the moment the line lands
-        say(b); settle(); until(us + 20000); for (auto& p : ph) p.ceil = lv; }
+        settle(); for (auto& p : ph) p.paused = true;                   // not measured while the level changes under it
+        say(b); settle(); until(us + 20000); for (auto& p : ph) p.newCeiling(lv); }
       else say((std::string(G_STOCK[R(sizeof G_STOCK / sizeof *G_STOCK)]) + "\r").c_str());
     } else { std::string l = genLine(watched); if (R(100) < faultPct) l = mutate(l); sayAs(l + "\r", true); }
   }
@@ -415,15 +423,22 @@ static bool backOnStock(Stream& st, double watch, std::string& why) {
   }
   return why.empty();
 }
+// A longer soak: SIM_DEFS="-DS9_SEEDS=5000 -DS9_SEED0=90000" ./run_sim.sh
+#ifndef S9_SEEDS
+#define S9_SEEDS 150
+#endif
+#ifndef S9_SEED0
+#define S9_SEED0 4000
+#endif
 // THE PROPERTY (S9, and the lifecycle's promise): whatever arrives, at most three onsets a second on
 // any jewel, nothing above the ceiling, no servo moved by '!' traffic or by a hold ending, and once
 // the show ends (M:v=idle, the watchdog, or the operator's button) the board is stock again.
 SCENARIO(s9_property_hostile_streams) {
-  const int SEEDS = 150; int bad = 0, worst = 0;
+  const int SEEDS = S9_SEEDS; int bad = 0, worst = 0;
   for (int seed = 0; seed < SEEDS; seed++) {
     fflush(stdout); pid_t pid = fork();
     if (pid == 0) {
-      failures = 0; ledOnlyViolations = 0; holdViolations = 0; srand(4000 + seed);
+      failures = 0; ledOnlyViolations = 0; holdViolations = 0; srand(S9_SEED0 + seed);
       Stream st; st.until(us + 6000000);
       const int ending = seed % 3;                   // 0: M:v=idle   1: the host dies (watchdog)   2: the operator's button (L6)
       st.traffic(40.0, ending == 1, 10, 12);
@@ -432,6 +447,7 @@ SCENARIO(s9_property_hostile_streams) {
       else { say("!**M:v=idle\r"); st.settle(); st.until(us + 500000); }
       std::string why; bool stock = backOnStock(st, 400.0, why);
       int n = st.worstOnsets();
+      if (n > 3 && getenv("S9_TRACE")) for (auto& p : st.ph) if (p.maxPerSecond() > 3) { printf("  hp%d onsets (ms):", p.hp); for (auto o : p.onsets) printf(" %.0f", o / 1000.0); printf("\n"); }
       if (n > 3 || st.overCeiling() || !stock || ledOnlyViolations || holdViolations)
         printf("  seed %2d (%s): %d onsets/s, %d frames over the ceiling, LED-only %ld, hold %ld%s%s\n", seed, ending == 0 ? "idle" : ending == 1 ? "host dies" : "button",
                n, st.overCeiling(), ledOnlyViolations, holdViolations, stock ? "" : ", NOT back on stock: ", why.c_str());

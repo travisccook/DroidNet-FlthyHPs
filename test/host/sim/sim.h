@@ -94,14 +94,22 @@ inline void pass(uint64_t pass_us = PASS) {              // one loop() pass, the
     stockMove[i] = (millis() > twitchHPTime[i] && enableTwitchHP[i] && fn0[i] > 99 && !held0[i]) || (fn0[i] >= 1 && fn0[i] <= 99);
   }
   long moves0 = g_servoMoves; HPCmd hp0[HPCOUNT]; memcpy(hp0, HP_command, sizeof hp0);
+  std::string handled = stringComplete ? inputString.s : std::string();
   if (stringComplete) { lineContract = lineOther = false; linesHandled++; }
   loop();
   // THE LED-ONLY INVARIANT, behavioural: the pass that handles a contract-origin line (whole,
   // spliced, beheaded or corrupted) starts no servo move and writes no HP_command.
-  bool moved = false; for (int i = 0; i < HPCOUNT; i++) if (hpMoves(i) != pm0[i] && !stockMove[i]) moved = true;
-  if (ledOnlyChecked && contractLine && (moved || memcmp(hp0, HP_command, sizeof hp0) != 0)) {
-    if (!ledOnlyViolations) printf("  LED-ONLY VIOLATION at t=%.3f s: moveTo calls %+ld, HP_command %s\n", us / 1e6,
-                                   g_servoMoves - moves0, memcmp(hp0, HP_command, sizeof hp0) ? "WRITTEN" : "untouched");
+  // (A stock servo function that was running, or a stock |<n> halt timer that was pending, may also
+  // end in this pass and flush that unit's HP_command. That is the stock firmware's write, not the line's.)
+  bool moved = false, written = false;
+  for (int i = 0; i < HPCOUNT; i++) {
+    if (hpMoves(i) != pm0[i] && !stockMove[i]) moved = true;
+    if (memcmp(&hp0[i], &HP_command[i], sizeof hp0[i]) != 0 && !(fn0[i] >= 1 && fn0[i] <= 99) && !(hp0[i].HPHalt > 0)) written = true;
+  }
+  if (ledOnlyChecked && contractLine && (moved || written)) {
+    if (!ledOnlyViolations) { printf("  LED-ONLY VIOLATION at t=%.3f s: moveTo calls %+ld, HP_command %s, line \"", us / 1e6,
+                                     g_servoMoves - moves0, written ? "WRITTEN" : "untouched");
+                              for (unsigned char c : handled) { if (c < 32 || c > 126) printf("<%02X>", c); else putchar(c); } printf("\"\n"); }
     ledOnlyViolations++;
   }
   // THE HOLD INVARIANT: a unit the contract held when the pass began does not move in that pass

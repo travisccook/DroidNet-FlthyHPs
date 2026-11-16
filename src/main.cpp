@@ -674,7 +674,8 @@ const uint32_t basicColors[10][10] = {{     C_RED,  C_YELLOW,   C_GREEN,   C_CYA
  #define HP_NEO_TYPE (NEO_GRB + NEO_KHZ800)
 #endif
 
-Adafruit_NeoPixel neoStrips[HPCOUNT];
+#include "droidnet/dn_strip.h"   // DroidNet: Adafruit_NeoPixel whose show() passes the contract's S9 onset gate (stock looks are never held back)
+DnStrip neoStrips[HPCOUNT];
 
 //////////////////////////////////////////////////////////////////////
 ///*****   DroidNet Driveable-Animation Contract (LED-ONLY)    *****///
