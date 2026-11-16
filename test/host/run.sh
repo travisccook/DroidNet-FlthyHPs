@@ -4,7 +4,10 @@
 # SPDX-License-Identifier: MIT
 #
 # Host checks for the Flthy HPs fork (stages 1-6 need no hardware and no AVR toolchain; stage 7 is the real cross-compile):
+#   0.  the shared core files are the ones src/contract/CORE_PIN names (needs the RSeries checkout)
 #   1.  contract_core.h parser unit tests
+#   1f. contract_core.h v1.3 unit tests (safety limits, clock rules, lifecycle, score, query)
+#   1g. the same, built with stand-ins for this fork's flash-string hooks (ContractFlthy.h defines them on the AVR)
 #   1b. wdp_announce_core.h (WDP device announce) unit tests, shared with the other two forks
 #   1c. wdp_fork.h, this fork's announce adapter and identity
 #   2.  ContractFlthy.h firmware-layer type-check against a mock of the board API
@@ -63,7 +66,32 @@ stage() {
   RAN="$RAN $id"
 }
 
+# The six shared files (contract_core.h, its tests, the WDP announce core and its test) are copied
+# from the RSeries fork, never edited here. src/contract/CORE_PIN names the RSeries commit they came
+# from, and the list is that commit's test/host/core-files.txt. With an RSeries checkout that holds
+# the commit next to this one (or at $RSERIES_DIR), every file is compared; CI always has it
+# (REQUIRE_CORE_PIN=1 turns "no checkout" into a failure).
+if want 0; then
+  STAGE="0"; echo "[0] the shared core files match CORE_PIN"
+  PINNED="$(tr -d ' \r\n' < ../../src/contract/CORE_PIN)"
+  RS="${RSERIES_DIR:-../../../DroidNet-RSeriesLogics}"
+  if git -C "$RS" cat-file -e "$PINNED^{commit}" 2>/dev/null; then
+    for f in $(git -C "$RS" show "$PINNED:test/host/core-files.txt"); do
+      git -C "$RS" show "$PINNED:$f" | cmp -s - "../../$f" || { echo "FAIL: $f is not RSeries $PINNED's. The shared files are edited in the RSeries fork only (docs/CHANGING_THE_CORE.md there)."; exit 1; }
+    done
+    echo "OK  every shared file is byte-identical to RSeries $PINNED"
+    RAN="$RAN 0"
+  elif [ "${REQUIRE_CORE_PIN:-0}" = 1 ]; then
+    echo "FAIL: REQUIRE_CORE_PIN=1 and no RSeries checkout holding $PINNED was found at $RS"; exit 1
+  else
+    echo "SKIP: no RSeries checkout holding $PINNED at $RS, so the shared files were not compared."
+    SKIPPED="$SKIPPED 0(no-RSeries-checkout)"
+  fi
+fi
 stage 1  "contract_core parser unit tests" "$CXX" -std=c++17 -Wall -Wextra -O0 test_contract_core.cpp
+# Shared with the RSeries and PSI forks, like stage 1. -std=c++11: avr-gcc builds the core as gnu++11 here.
+stage 1f "contract_core v1.3 unit tests" "$CXX" -std=c++11 -Wall -Wextra -O0 test_contract_v13.cpp
+stage 1g "contract_core v1.3 unit tests, flash-string hooks on" "$CXX" -std=c++11 -Wall -Wextra -O0 -DCONTRACT_TEST_FLASH_HOOKS test_contract_v13.cpp
 # Shared byte-identically with the RSeries and PSI forks (src/wdp/wdp_announce_core.h and this test).
 # -std=c++11: avr-gcc builds the same header as gnu++11 here.
 stage 1b "wdp_announce_core WDP device announce unit tests" "$CXX" -std=c++11 -Wall -Wextra -Werror -O0 test_wdp_announce_core.cpp
@@ -290,5 +318,6 @@ echo
 echo "stages run:$RAN"
 echo "stages skipped:${SKIPPED:- none}"
 if [ -n "$SKIPPED" ]; then
-  echo "NOTE: a skipped stage proved nothing. Stage 7 is the only real cross-compile."
+  echo "NOTE: a skipped stage proved nothing. Stage 7 is the only real cross-compile; stage 0 is the"
+  echo "      only check that the shared core files were not edited here."
 fi

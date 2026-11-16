@@ -48,12 +48,19 @@
 // fire the same effect-swap accent on top of the same brightness pump. A score entry
 // with no ae= can never arm the overlay: it behaves exactly as it did in v1.1.
 #pragma once
+// The core's name tables and reply text stay in flash on the AVR (contract_core.h, "name tables,
+// and where they live"). test/host/run.sh stage 1g runs the core's tests with stand-ins that make
+// a direct read of such a string fault.
+#if defined(__AVR__)
+#include <avr/pgmspace.h>
+#define CONTRACT_PSTR(s)      PSTR(s)
+#define CONTRACT_READ_BYTE(p) pgm_read_byte(p)
+#endif
 #include "contract_core.h"
 #include "../wdp/wdp_fork.h" // wdpFinish() (verb Q ack line)
 #include <stdio.h>          // snprintf (verb Q ack line)
 
 // -------------------------------------------------------------- constants ----
-static const uint32_t FLTHY_STROBE_MIN_MS   = 170;   // >=170 ms/state => <= ~3 Hz (fork spec §11)
 static const uint8_t  FLTHY_FX_BASE         = 100;   // LEDFunction = 100 + effectId (101..115)
 #ifdef NEO_JEWEL_RGBW
 static const uint8_t  FLTHY_PX_BYTES        = 4;     // raw bytes a pixel
@@ -183,9 +190,8 @@ static inline void _showBegin(uint8_t hp) {
   LED_command[hp].LEDHalt     = -1;
   ledOFF(hp);
 }
-// v1.3 S7, R1: the native looks this layer may start. They need no option bytes and no
-// counters: 1 = Leia (fixed blue colour projector), 6 = rainbow.
-static inline bool flthyNativeAllowed(int code) { return code == 1 || code == 6; }
+// v1.3 S7: the native looks this layer may start are the core's nativeAllowedFlthy() list. They
+// need no option bytes and no counters: 1 = Leia (fixed blue colour projector), 6 = rainbow.
 // The native brightness command (H<unit>B<level>) calls this: the owner's new level is the
 // ceiling from now on, and any verb-B ride is over.
 inline void contractOwnerBrightness(uint8_t hp, uint8_t level) {
@@ -230,7 +236,7 @@ static inline uint8_t _envBright(uint8_t hp) {
   float prog = 0.0f;
   if (gScoreActive[hp] >= 0 && u.sectionEnd > u.sectionStart)
     prog = (float)(bp.beatIndex - u.sectionStart) / (float)(u.sectionEnd - u.sectionStart);
-  uint8_t accent = beatAccentAmount(u.accentMode, bp, u.beatMod, prog);
+  uint8_t accent = beatAccentAmount(u.accentMode, bp, u.beatMod, prog, gBeat);   // gBeat: the S2 rate floor
   return envBright(u.brightBase, u.beatMod, accent);
 }
 
@@ -257,8 +263,8 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB
       break;
 
     case CE_FLASH: {                                   // strobe-capped toggle
-      uint32_t half = (uint32_t)map((long)u.speed, 0, 255, 700, (long)FLTHY_STROBE_MIN_MS);
-      if (half < FLTHY_STROBE_MIN_MS) half = FLTHY_STROBE_MIN_MS;
+      uint32_t half = (uint32_t)map((long)u.speed, 0, 255, 700, (long)STROBE_MIN_STATE_MS);
+      if (half < STROBE_MIN_STATE_MS) half = STROBE_MIN_STATE_MS;
       bool on = ((now - startMs) % (2 * half)) < half;
       // envB (NOT the raw ceiling): CE_FLASH beat-pumps like every other sustained look.
       // The Logics' CE_FLASH was aligned TO this line.
@@ -270,7 +276,7 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB
       uint32_t period = (uint32_t)map((long)u.speed, 0, 255, 2000, 240);
       // v1.3 S8: the pulse's full cycle is never shorter than 2 x the min state (340 ms).
       // Only s >= 242 is affected.
-      if (period < 2 * FLTHY_STROBE_MIN_MS) period = 2 * FLTHY_STROBE_MIN_MS;
+      if (period < 2 * STROBE_MIN_STATE_MS) period = 2 * STROBE_MIN_STATE_MS;
       uint32_t ph = (now - startMs) % period;
       uint32_t tri = (ph < period / 2) ? (ph * 2 * 255 / period)
                                        : ((period - ph) * 2 * 255 / period);
@@ -473,11 +479,11 @@ static inline bool _fireAccent(uint8_t hp, ContractEffect fx, const ContractRGB&
   // v1.1 gated on 1x the min state here — with a Phase-2 every-beat accent above ~176 BPM
   // that would have let the jewels strobe at up to 5.9 Hz, the one board of the three that
   // could exceed the guidance.
-  if (!strobeCoolDownExpired(u.pulseLastMs, now, 2 * FLTHY_STROBE_MIN_MS)) return false;
+  if (!strobeCoolDownExpired(u.pulseLastMs, now, 2 * STROBE_MIN_STATE_MS)) return false;
   // v1.3 section 6: no accent on a native section in R1, so an accent can never restart or
   // replace a native sequence (R2 adds ae=kick where the look can be scaled).
   if (u.nativeLook && LED_command[hp].LEDFunction == u.nativeFn) return false;
-  if (durMs < FLTHY_STROBE_MIN_MS) durMs = FLTHY_STROBE_MIN_MS;   // a state shorter than the
+  if (durMs < STROBE_MIN_STATE_MS) durMs = STROBE_MIN_STATE_MS;   // a state shorter than the
   if (durMs > 2550u) durMs = 2550u;                               // min state IS a strobe
   // A stateful/native effect can never become an overlay: it would corrupt the base look's
   // state machine on restore (scan/sparkle/meter), or hand the frame to a renderer we do not
@@ -527,7 +533,7 @@ static inline void _applyLook(uint8_t hp, ContractEffect eff, int nativeCode,
   u.nativeLook = false;
   if (eff == CE_NATIVE) {
     // escape hatch: hand off to an allow-listed native LED function; NOT a contract render.
-    // Both callers have already dropped any other code (flthyNativeAllowed).
+    // Both callers have already dropped any other code (nativeAllowedFlthy).
     u.active     = false;
     u.nativeLook = true;
     u.nativeFn   = (byte)nativeCode;
@@ -618,7 +624,7 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
     case CV_ANIMATE: {
       // v1.3 S7: a line naming a native code off the allow-list is dropped whole, live or
       // scored (a dropped scored line is not held, so verb V reports the load bad).
-      if (pr.hasEffect && pr.effect == CE_NATIVE && !flthyNativeAllowed(pr.nativeCode)) return;
+      if (pr.hasEffect && pr.effect == CE_NATIVE && !nativeAllowedFlthy(pr.nativeCode)) return;
       if (pr.hasAt) {                                  // Phase-2: schedule, don't apply now
         ScoreEntry e = _entryFrom(pr);
         gScoreCount[hp] = scoreInsert(gScore[hp], gScoreCount[hp], FLTHY_SCORE_CAP, e);
@@ -803,7 +809,7 @@ inline void contractBeatTick() {
     // The SAME predicate the brightness pump gates on (contract_core's beatAccentFires, which
     // beatAccentAmount() also calls) — so the pump and the effect accent can NEVER disagree
     // about which beats carry an accent.
-    if (!beatAccentFires(e.accentMode, bp.barPos)) continue;
+    if (!beatAccentFires(e.accentMode, bp, gBeat)) continue;
     _fireAccent(hp, e.accentFx, e.accentColor, gUnit[hp].brightBase,
                 (uint32_t)e.accentDur10 * 10u);
   }

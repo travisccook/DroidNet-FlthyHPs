@@ -1,7 +1,8 @@
 # The host suite on every push, and the real ATmega2560 cross-compile.
 #
 # `host` runs every stage of test/host/run.sh that needs no microcontroller toolchain, including
-# stage 2b, which runs the real src/main.cpp on a fake Arduino core. The runner fails (it does not
+# stage 0 (the shared core files are byte-identical to the RSeries commit in src/contract/CORE_PIN)
+# and stage 2b, which runs the real src/main.cpp on a fake Arduino core. The runner fails (it does not
 # skip) when no compiler can link ASan/UBSan, so a green run means the fuzz stages ran sanitized.
 #
 # `firmware` is stage 7: `pio run -e FlthyHPs`. REQUIRE_PIO=1 turns "PlatformIO is missing" into
@@ -14,10 +15,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: The RSeries fork, where the shared core files are edited (for stage 0)
+        uses: actions/checkout@v4
+        with:
+          repository: travisccook/DroidNet-RSeriesLogics
+          path: rseries
+          fetch-depth: 0
       - name: Compilers
         run: sudo apt-get update && sudo apt-get install -y clang g++
       - name: Host stages
-        run: ONLY="1 1b 1c 2 2b 3 4 5 6" bash test/host/run.sh
+        run: RSERIES_DIR="$PWD/rseries" REQUIRE_CORE_PIN=1 ONLY="0 1 1f 1g 1b 1c 2 2b 3 4 5 6" bash test/host/run.sh
   firmware:
     runs-on: ubuntu-latest
     steps:
