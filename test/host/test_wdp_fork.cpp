@@ -24,7 +24,7 @@ static int g_fail = 0, g_total = 0;
 
 static const std::string WANT =
     std::string("@WDP1 {\"type\":\"Flthy HP Controller\",\"fw\":\"") + WDP_FW_EXPECT +
-    "\",\"caps\":[\"droidnet.contract\",\"hp.servo\",\"hp.led\"]}\n";
+    "\",\"caps\":[\"droidnet.contract\",\"contract.1.3\",\"hp.servo\",\"hp.led\"]}\n";
 
 // Boots the adapter at `now` and runs loop() passes 1 ms apart until the first byte goes out.
 // Returns the time of that pass (0 if none came within 3.5 s).
@@ -54,11 +54,11 @@ static void test_the_longest_fw_fits_wdp_line_max() {
   // scripts/wdp_fw.py makes, and the real type and caps must still fit the core's buffer.
   char line[WDP_LINE_MAX];
   uint8_t n = wdpBuildLine(line, sizeof(line), WDP_FORK_TYPE, "abcdef0-dirty", WDP_FORK_CAPS);
-  CHECK(n == 107);
+  CHECK(n == 122);
   CHECK(n + 1 <= WDP_LINE_MAX);
   CHECK(std::string(line, n) ==
         "@WDP1 {\"type\":\"Flthy HP Controller\",\"fw\":\"abcdef0-dirty\","
-        "\"caps\":[\"droidnet.contract\",\"hp.servo\",\"hp.led\"]}\n");
+        "\"caps\":[\"droidnet.contract\",\"contract.1.3\",\"hp.servo\",\"hp.led\"]}\n");
 }
 
 static void test_the_line_goes_out_whole_in_pieces_no_bigger_than_the_tx_room() {

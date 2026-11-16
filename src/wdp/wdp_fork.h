@@ -2,13 +2,13 @@
 // (wdp_announce_core.h, byte-identical across the RSeries, PSI Pro and FlthyHPs forks).
 // Every 25-30 s the board tells the WCB on its serial port what it is:
 //
-//     @WDP1 {"type":"Flthy HP Controller","fw":"<commit>","caps":["droidnet.contract","hp.servo","hp.led"]}
+//     @WDP1 {"type":"Flthy HP Controller","fw":"<commit>","caps":["droidnet.contract","contract.1.3","hp.servo","hp.led"]}
 //
 // It goes out on Serial (UART0, D0/D1, 9600 baud), the WCB's port, which is also the Mega's USB
 // serial. The line leaves in pieces no bigger than the room in Serial's TX buffer (63 bytes when
 // empty, and the line is longer), so loop() never waits on it. Every other write to Serial after
 // setup() calls wdpFinish() first, so no other text lands inside an announce: RCHP's "No RC Input
-// Detected!" in main.cpp and the verb-Q ack in ContractFlthy.h. main.cpp's DEBUG prints do not;
+// Detected!" in main.cpp and the verb-Q reply in ContractFlthy.h. main.cpp's DEBUG prints do not;
 // DEBUG is off (commented out) in this build.
 //
 // Part of the DroidNet board forks. Copyright (c) 2026 Travis Cook.
@@ -22,7 +22,8 @@
 #endif
 
 #define WDP_FORK_TYPE     "Flthy HP Controller"                 // the WCB's shared device name
-#define WDP_FORK_CAPS     "droidnet.contract hp.servo hp.led"   // space-separated tags
+#define WDP_FORK_CAPS     "droidnet.contract contract.1.3 hp.servo hp.led"   // space-separated tags; contract.<version>
+                                                                             // is spec section 12 (the line is 122 bytes at most)
 #define WDP_FORK_SEED_PIN 3   // A3: nothing in this sketch uses it (main.cpp seeds random() from it too)
 
 static WdpAnnouncer gWdp;

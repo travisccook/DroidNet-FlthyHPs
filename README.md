@@ -51,7 +51,7 @@ copyright (c) 2013, GPL-3.0-or-later.
 
 ## Status
 
-**Work in progress.** This DroidNet build is provided as is, without warranty of any kind. Use it at your own risk. It has never been flashed to a board; see [`firmware/README.md`](firmware/README.md). To go back, flash the upstream firmware (Ryan's original firmware, linked at the top of this page).
+**Work in progress.** This DroidNet build is provided as is, without warranty of any kind. Use it at your own risk. It has never been flashed to a board; see [`firmware/README.md`](firmware/README.md). The prebuilt image there was built from commit `9d28c52`, before contract v1.3: no image has been built from the code described on this page. To go back, flash the upstream firmware (Ryan's original firmware, linked at the top of this page).
 
 **Testing.** It cross-compiles for the real microcontroller. `pio run` builds a complete
 firmware image with the real avr-gcc for the real ATmega2560, and the real linker signs off on it.
@@ -60,7 +60,15 @@ hand-written mock, and mocks lie (on the sister PSI fork, one hid a critical bug
 non-latching render primitive a no-op). Verified here:
 
 - `test/host/test_contract_core.cpp` — 341 checks against the wire parser, beat clock, effect math
-  and score table, compiled and run on a normal computer.
+  and score table, and `test/host/test_contract_v13.cpp` — 122,910 checks of the v1.3 rules in the
+  shared core (safety limits, clock, show lifecycle, score, load check, query reply), run a second
+  time with stand-ins for the flash-string hooks this board uses. Both run on a normal computer.
+- `test/host/sim` — the **real `src/main.cpp`** on a fake Arduino core, with a 9600-baud wire and the
+  UART's receive ring modelled: 52 scenarios, from the stock commands and the auto twitch to a
+  400-byte burst, a pushed score, the watchdog and the load check. Every simulated pass that handles
+  a `!` line is checked for the LED-only rule (no servo move starts, `HP_command[]` is not written).
+  A scenario named in `test/host/sim/xfail.txt` records a known defect and must fail; the file is
+  empty.
 - `test/host/compile_contract.cpp` — a type-check of the firmware layer against a **mock** of the
   board's API (`test/host/mock_flthy.h`), plus the LED-only invariant (this layer must never move a
   holoprojector servo), the serial wire budget, and that a verb-Q reply never lands inside a WDP
@@ -74,15 +82,16 @@ non-latching render primitive a no-op). Verified here:
   identity and its `Serial` adapter, with a 13-character `-dirty` fw and with none.
 - `bash test/host/run.sh` now finishes by cross-compiling the firmware for real.
 
-Flash is comfortable on this board, unlike its PSI sibling: **34,510 B of 253,952 B (13.6%)**, with
-SRAM at 2,578 B of 8,192 B (31.5%). Nowhere near either ceiling.
+Flash is comfortable on this board, unlike its PSI sibling: **37,474 B of 253,952 B (14.8%)**, with
+SRAM at 4,472 B of 8,192 B (54.6%); 2,112 B of that is the three 32-section score tables.
 
-The stack has been bounded statically too (`test/host/stack_report.py`): **394 B of the 5,614 B
-available (7%)**, with no recursion, no `alloca`/VLA, and — unlike the PSI — **no interrupt-nesting
+The stack has been bounded statically too (`test/host/stack_report.py`): **430 B of the 3,720 B
+available (12%)**, with no recursion, no `alloca`/VLA, and — unlike the PSI — **no interrupt-nesting
 hazard**: no interrupt handler reaches a `sei`, so interrupts cannot nest. (The I2C handler does not
-render LEDs. It builds the command `String` that `loop()` also uses, which is a race of its own.) (One caveat: this board
+render LEDs and does not touch a `String`: it copies the bytes into its own fixed buffer, and `loop()`
+takes the line from there with interrupts off.) (One caveat: this board
 *does* link the heap — Arduino `String` pulls in `malloc`/`free` — and the heap grows up toward the
-stack. With 5.2 KB free that is not an overflow risk, but long-run fragmentation is not something a
+stack. With 3.7 KB free that is not an overflow risk, but long-run fragmentation is not something a
 static analysis can rule out.)
 
 ---
@@ -110,6 +119,7 @@ The wire grammar is a single new command prefix:
          C = beat-clock seed                  B = brightness
          L = level                            X = stop
          M = mode (show / idle)               Q = query
+         V = verify a pushed score
 ```
 
 Example: `!HFA:i=comet,c=ff8800,s=200,m=64,am=1` — run a comet around the Front HP's jewel in
@@ -136,12 +146,48 @@ Six new parametric effects render along a 1-D "strand" mapped onto the jewel: **
 wipe, gradient, colorcycle, twinkle**. (On this board the strand is the six-LED ring; the center
 pixel is handled separately per effect.)
 
+### Contract v1.3 on this board
+
+This build implements release 1 of contract v1.3 (`ver=1.3,rel=1` in the query reply, `contract.1.3`
+in the WDP announce). What that means on the holoprojectors:
+
+- **A show holds a unit; it does not change your settings.** `!H*M:v=show` arms a show. From then the
+  auto servo twitch waits, and the stock LED look (off colour, LED twitch) stays until the show
+  begins: its first `C`, live `A` or `P`. `M:v=idle` gives the jewel back at its off colour with both
+  twitch timers a full interval ahead. `enableTwitchLED[]`, `enableTwitchHP[]` and the off-colour
+  override are never written, so `A198`/`A199` sent mid-show still mean what they say afterwards.
+- **`X`** blacks the unit out and keeps it in its mode. Outside a show the jewel is the stock
+  firmware's again after one twitch interval.
+- **Watchdog.** `M:v=show,wd=<seconds>` idles each unit by itself when no contract line for this
+  board has arrived for that long. No `wd=`, no watchdog.
+- **Score.** 32 sections a unit, each with its own `b=` and accent. `V:n=<count>,k=<checksum>`
+  checks what a unit holds; a bad load idles that unit instead of playing a partial show.
+- **Query.** `Q:r=<route>` addressed to one unit is answered with a routed line,
+  `;S0!H<u>q:ver=1.3,rel=1,cap=32,n=<held>,ok=<0|1|2>,bpm=<n>` (or behind `;W<n>,`), so the WCB does
+  not broadcast it. Any other `Q` gets no reply.
+- **Brightness.** `b=` is a fraction of the jewel's own level (`BRIGHT 100`, or what `H<unit>B<level>`
+  last set): `b=255` is exactly as bright as a stock command. Verb `B` rides below that level inside
+  a show only, and never outlives it.
+- **Native looks.** `i=native:<n>` runs `1` (Leia) and `6` (rainbow). A line naming any other code is
+  dropped whole. An accent never restarts or replaces a native look.
+- **A button always works.** A stock LED command or `S<n>` sequence addressed to a unit in a show
+  ends the show on that unit, as `M:v=idle` would, and then runs; the other units play on. A stock
+  servo command runs as it always did and leaves the show's lights alone. A `P` with no show armed
+  overlays the stock look and gives it back afterwards.
+- **Limits.** Tempo 30 to 300 BPM (a `C` outside it is ignored); no light state shorter than 170 ms
+  (live looks, accents, flash, pulse); `flash`, `pulse` and `scan` run at the same rates as on the
+  Logics and the PSIs; `d=` on `A` is ignored.
+- **Lines and bursts.** A line may be 128 bytes. A PlatformIO build has a 256-byte UART receive ring,
+  which is what lets a 400-byte burst with no gaps arrive whole; an Arduino IDE build keeps the
+  core's 64 bytes and needs paced lines.
+
 ### Every native command still works
 
 This is additive and backward-compatible. It is **not** a rewrite. Every `DT##` LED command, every
 servo command, every `S#` sequence, the auto-twitch system, and the I2C intake all behave exactly
-as they did before. The contract path is entered only when the first byte of a command is `!`, and
-the brightness command only when it is `H`.
+as they did before, with one addition: a stock LED command or sequence sent mid-show ends the show
+on the units it addresses (above). The contract path is entered only when the first byte of a
+command is `!`, and the brightness command only when it is `H`.
 
 ### LED effects only. The contract never moves a servo. Ever.
 
@@ -149,11 +195,14 @@ This is a deliberate safety invariant, and builders should know about it:
 
 - The `!` path **never writes `HP_command[]`** and never calls `positionHP` / `twitchHP` / `wagHP`
   / `RCHP`. It cannot command holoprojector motion, because it has no code path to.
-- Entering show mode (`!H*M:v=show`) explicitly *disables* the auto servo twitch, so a light show
-  cannot cause the HPs to start moving on their own mid-song.
-- Leaving show mode (`v=idle`) restores **exactly** the operator's previous auto-twitch setting —
-  never a hardcoded `true`. If you had HP twitch off, it stays off. A stray `idle` that never
-  followed a `show` touches nothing.
+- An armed show (`!H*M:v=show`) makes the auto servo twitch *wait*, so a light show cannot cause the
+  HPs to start moving on their own mid-song. It does this without writing your twitch setting.
+- Whenever the contract lets go of a unit (`v=idle`, the watchdog, a bad load, a stock command taking
+  over), it first puts both twitch timers a full interval ahead. The timers are long overdue by
+  then, and without that the stock loop would twitch the servo in the very pass that handled the
+  line. A stray `idle` that never followed a `show` touches nothing.
+- The simulation checks this on the real `src/main.cpp`, on every pass that handles a `!` line,
+  whole or cut short.
 
 Ryan's servo code is entirely his and is untouched.
 
@@ -177,9 +226,9 @@ H <unit> B <level>        e.g. HAB128 (all), HFB255 (front), HTB1 (top)
   power-on is still `BRIGHT 100`. Adafruit stores `brightness + 1` and scales by `>> 8`, so
   `BRIGHT 100` is 101/256, about 39.5% of this command's scale; 255 is the unscaled hardware maximum,
   about 2.53× today's look.
-- **Up to 255 on purpose.** The native command goes above the contract's
-  `FLTHY_SAFE_MAX_BRIGHT = 200` jewel clamp. That is a deliberate choice (1-255), not a regression.
-  The contract's own `B` verb is unchanged, and whichever of the two ran last sets the level.
+- **Up to 255 on purpose, and the contract follows it.** The level this command sets is the ceiling
+  the contract's `b=` is a fraction of. Sent during a show it moves that ceiling and ends any
+  verb-`B` ride; the contract never writes the level back.
 - **Repaints at once.** For each addressed jewel the handler calls `setBrightness(level)` (which
   rescales the RAM buffer immediately), marks the contract's memoised looks for a repaint, and calls
   `show()`, so held frames change too.
@@ -198,7 +247,7 @@ WCB firmware (7.0.1; `docs/WDP_DEVICE_ANNOUNCE.md` in his repo). 0.5-3 s after b
 25-30 s, it sends one line:
 
 ```text
-@WDP1 {"type":"Flthy HP Controller","fw":"<commit>","caps":["droidnet.contract","hp.servo","hp.led"]}
+@WDP1 {"type":"Flthy HP Controller","fw":"<commit>","caps":["droidnet.contract","contract.1.3","hp.servo","hp.led"]}
 ```
 
 - **Where:** `Serial` (UART0, D0/D1) at 9600 baud, the WCB's port. The Mega's USB-serial chip shares
@@ -257,11 +306,16 @@ purpose:
   banner, one `wdpForkTick()` call in the loop next to `contractBeatTick()`, and one `wdpFinish();`
   in front of the stock `No RC Input Detected!` print, for the WDP device announce,
 - a contiguous block of render slots (`case 101..115`) added to the existing LED switch,
-- `INPUTBUFFERLEN` grown from 10 to 96, with a flood guard added in `serialEvent()` so a long line
-  drops its tail instead of overrunning,
-- two `&& !gUnit[i].active` guards so the native auto-twitch does not stomp a live contract look,
-- one boot-time snapshot (`startEnableTwitchHP[]`) mirroring the existing `startEnableTwitchLED[]`,
-  so show mode can restore what it found.
+- `INPUTBUFFERLEN` grown from 10 to 128, with a flood guard added in `serialEvent()` so a long line
+  drops its tail instead of overrunning, and `serialEvent()` stops at a line's terminator so the next
+  line cannot be appended to one `loop()` has not handled yet,
+- the I2C receive handler copies into its own buffer instead of the serial line's `String`, and
+  `loop()` takes an I2C line first,
+- two guards on the native auto twitch, `&& !contractHoldsLeds(i)` and `&& !contractHolds(i)`, so it
+  does not stomp a contract look or twitch a servo during a show,
+- one `contractOwnerBrightness()` call in the brightness branch, and `contractNativeTakeover()` calls
+  in front of the stock LED command and `S<n>` dispatch (a button ends the show on its unit),
+- a `#ifdef DN_LOOP_PROBE` block at the end of `loop()`, compiled only into the bench build.
 
 Of everything `git diff 5385a7c..HEAD --stat` lists, only the files marked **ours** above and our
 hooks in `src/main.cpp` are code we wrote; the rest is the GPL-3.0 license text we added for
@@ -276,18 +330,22 @@ The host suite needs nothing but a C++ compiler:
 
 ```bash
 bash test/host/run.sh
+# [0]  the shared core files are the ones src/contract/CORE_PIN names (needs an RSeries checkout)
 # [1]  contract_core parser unit tests             -> 341/341 checks
+# [1f] contract_core v1.3 unit tests               -> 122,910/122,910 checks
+# [1g] the same, with flash-string hook stand-ins  -> 122,910/122,910 checks
 # [1b] wdp_announce_core unit tests                -> 37,506/37,506 checks
 # [1c] wdp_fork.h announce adapter + identity      -> 19/19 checks, with fw "abcdef0-dirty" and "unknown"
 # [2]  ContractFlthy.h firmware type-check, against a mock
-# [2b] whole-firmware simulation                   -> the real src/main.cpp on a fake Arduino core;
-#      scenarios in test/host/sim/xfail.txt record known defects and must fail until they are fixed
+# [2b] whole-firmware simulation                   -> 52 scenarios: the real src/main.cpp on a fake
+#      Arduino core; a scenario named in test/host/sim/xfail.txt must fail (the file is empty)
 # [3]  static source guards (LED-only invariant for the contract and the brightness branch,
 #      wire budget, no Serial write that could land inside a WDP announce)
-# [4]  contract parser fuzz + differential         -> 1,554,686 checks (ASan/UBSan)
+# [4]  contract parser fuzz + differential         -> 1,561,274 checks (ASan/UBSan)
 # [5]  native_ext brightness parser unit tests     -> 77/77 checks
 # [6]  native_ext fuzz + differential              -> 2,965,122 checks (ASan/UBSan)
-# [7]  REAL cross-compile (ATmega2560)             <- needs PlatformIO; skipped (and reported) without it
+# [7]  REAL cross-compile (ATmega2560), firmware and the bench probe build
+#                                                  <- needs PlatformIO; skipped (and reported) without it
 # ONLY="1 4" runs just those stages. The fuzz stages need a compiler that can link ASan/UBSan.
 ```
 
@@ -299,6 +357,7 @@ To build the firmware:
 ```bash
 pio run                 # build (ATmega2560 / Mega ADK)
 pio run -t upload       # flash it (add --upload-port /dev/cu.usbmodemXXXX)
+pio run -e FlthyHPs_probe   # bench build: adds "#lp n=<passes> max_us=<longest pass>" once a second on Serial
 bash test/host/run.sh   # host checks + the same cross-compile
 ```
 
