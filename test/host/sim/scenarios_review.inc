@@ -730,7 +730,7 @@ static bool backOnStock(Stream& st, double watch, std::string& why) {
 //   494, 1785, 2315 (two onsets 288 to 291 ms apart, observer 45/60; all three on the old sparkle):
 //     ORACLE. The gate held a frame, released it, and the look drew its next frame in the same loop
 //     pass; the photometer looked once a pass and never saw the first, so it dated that onset at a
-//     later, smaller rise. Replayed with every frame: 340, 341 and 389 ms. The photometer now measures
+//     later, smaller rise. Replayed with every frame: 340, 342 and 389 ms. The photometer now measures
 //     every latched frame (the strip keeps the last sixteen). It counts more, and leaves nothing out.
 //   1296, 2625 (two changes of colour 77 and 78 ms apart): LAYER. A look that came up through 3 and 6
 //     levels was timed from its first frame; its colour shows from the 6. Scenario (6) below.
@@ -740,6 +740,9 @@ static bool backOnStock(Stream& st, double watch, std::string& why) {
 //     frame; 800000 + 220, 1140, 1302 and 1600000 + 1512: a verb-B relight of stock light opened no
 //     window; 1200000 + 131: the gate was told a rainbow's level for its luminance; 1600000 + 1324:
 //     Leia's colour drifting in two half-steps.
+// Three fresh seed bases (2000000, 2400000, 2800000) then broke on six streams, one fault, scenario (7):
+//   a native look the contract started stayed up while another waited, and a boundary left it as stock.
+// After that: 4,000 streams at each of nine seed bases (those six and 3200000, 3600000, 4000000), none broken.
 // Two streams of the soak at seed base 500000 are kept in mind here because no hand-made scenario
 // reproduces what they found: 643 (ending 1) and 3597 (ending 0). A verb-P overlay over the stock look
 // saved that look's frame, the owner lowered the strip level while the overlay was up, and the frame

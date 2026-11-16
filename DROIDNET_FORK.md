@@ -48,7 +48,7 @@ announce" below.
   `ContractFlthy.h` against `test/host/mock_flthy.h`, 1,617,274 contract fuzz checks, 77/77 native
   brightness parser checks and 2,965,122 native brightness fuzz checks, 37,506 WDP announce core
   checks and 19 adapter checks (run twice).
-- **Whole-firmware simulation: 78 scenarios pass.** Stage 2b of `run.sh`
+- **Whole-firmware simulation: 87 scenarios pass.** Stage 2b of `run.sh`
   (`test/host/sim`) runs the real `src/main.cpp` on a fake Arduino core: the 9600-baud wire with its
   receive ring (bytes are lost when it is full) and its transmit ring (a write blocks when it is
   full), `pulseIn()` blocking as it does in RC mode, and loop passes of random length. Origin is
@@ -70,14 +70,23 @@ announce" below.
   of look or colour, native looks are of two kinds (S10), the same look again does not restart (S11),
   and a verb-`B` raise waits instead of the frames. The property test measures luminance and colour
   as well, with observers a step apart, and the held-frames table below is a scenario.
-- **Open: the long soak is not clean.** The property test's 150 streams pass, and so did 600 others;
-  a soak of 4,000 streams at another seed base breaks on 6 (0.15 %): three with two onsets 288 to
-  291 ms apart for one narrow observer (one of them on sparkle), three with two changes of colour 63
-  to 78 ms apart. The stream numbers and what is known of each are in
-  `test/host/sim/scenarios_review.inc`. Nothing in them is brighter than the ceiling and none touches
-  a servo.
-- **Build:** flash 43,140 B of 253,952; SRAM 4,606 B of 8,192 (the score tables are 2,112 B).
-  `stack_report.py`: worst-case stack 451 B of the 3,586 B left, 3,135 B spare. The heap (Arduino
+- **The soak round.** The six streams of seed base 800000 that broke after the CA1.5 round were
+  replayed (`S9_REPLAY=1`: the core's two gates asked afresh about every frame a jewel latched, at
+  the board's own clock). Three were the oracle's: the photometer looked once a loop pass and missed
+  a frame that was up for under a pass; it now measures every latched frame. Three were the layer's,
+  and the soaks that followed named four more faults of the layer; each has its smallest case as a
+  scenario and is fixed (the hand-back window, verb `B` over stock light, the stock light's own
+  colours, a colour that arrives dim, the rainbow's luminance, Leia's drifting colour). Sparkle is
+  redrawn. Soak after that, 4,000 streams at each of three seed bases (800000, 1200000, 1600000):
+  none of the 12,000 broke. Three fresh seed bases then broke on 6 of 12,000, all one more fault of
+  the layer, older than this round: a native look the contract had started stayed up while another
+  native look waited for its window, and a boundary in that wait left it running as stock light
+  (`s10_idle_while_a_native_look_waits_takes_down_the_look_that_stayed_up`). With that fixed: 4,000
+  streams at each of nine seed bases (the six above and 3200000, 3600000, 4000000, which nothing
+  was written against), and none of the 36,000 breaks the property. That is a simulation result,
+  on an oracle whose colour test starts at 4 levels; it says nothing of a board.
+- **Build:** flash 43,978 B of 253,952; SRAM 4,619 B of 8,192 (the score tables are 2,112 B).
+  `stack_report.py`: worst-case stack 453 B of the 3,573 B left, 3,120 B spare. The heap (Arduino
   `String`) shares that space. (The tool takes any two bytes of `.data` equal to a function's address
   for a function pointer; on one build of the fix round two letters of "Flthy HP Controller" matched
   `RCHP()` and it called the bound "not sound" over an interrupt path that does not exist.)
@@ -192,16 +201,38 @@ What `ContractFlthy.h` does on top of the shared core. The spec's rule numbers a
   in sevenths, so a lit peak creeping up inside one level still moves the gate's clocks; the gate's
   references are rescaled when the owner changes the strip level; a frame held across a lowered
   level is blacked out instead of left at the old scale.
+- **The hand-back window.** Stock light is asked for 340 ms after the layer lets go of a jewel
+  (`_touch()`), and after a verb-`B` step (`_rideApply()`): that step is the layer's light change even
+  when the stock code draws the frame. While a stock frame is being held the window stays open
+  (`owed`), and when that frame is shown the 340 ms run once more from it (`extended`, once for each
+  hand-back): the stock look's next change keeps its distance from the light the hand-back put up,
+  not from the moment the layer let go. After that the stock look runs as written, strobes included.
+- **Colour on the jewel (S4).** The latch takes every frame's mean colour (its three channels summed
+  over the LEDs, over the strongest; from 4 levels up, below that it is rounding). A look that
+  draws its own colours under one name, which is Leia and all stock light, changes colour when a
+  frame is more than 48 of 255 from the colour of the LAST CHANGE in any channel (`FLTHY_RECOLOUR`:
+  half of what the test's observers call a change, and measured from the last change so that no two
+  frames between changes are a change apart): where the frame is asked it waits its 170 ms, and where
+  it is shown the look gate's time moves. A contract look's colour is in its signature; the look
+  gate's time also moves when a frame first SHOWS that colour (more than 64 from the frame before,
+  `FLTHY_ARRIVED`), because a look that comes up through 3 and 6 levels is not on the field at its
+  first frame.
+- **A runs-as-stock look's luminance.** `contractNativeStarted()` and `contractNativeLevel()` take one
+  figure and record it for both measures. The rainbow stands at 75 % by its brightest channel and
+  33 % by luminance, so the latch follows each with `contractFieldTell()` and the luminance it
+  measured (`nativeFullY` for a verb-`B` step).
 - **Native looks (S10).** `nativeGatedFlthy()` says which kind. `native:6` (rainbow) RUNS AS STOCK:
   `contractNativeMayStart()` before the LEDs are handed over, `contractNativeStarted()` at the first
   lit frame with the level it runs at, `contractNativeLevel()` when a verb-`B` ride moves it,
   `contractNativeEnded()` when a contract look replaces it; its frames are not asked. `native:1`
   (Leia) is GATED: `contractNativeMayStart()` too, then every frame is asked like a contract frame,
   and because Leia re-rolls the colour of the whole field by itself, a frame whose mean colour is far
-  from the one on the jewel also waits 170 ms after the last change. While a native start waits,
-  nothing lit is latched. As stock, Leia makes about four whole-field swings of a tenth or more a
-  second (an open question for the owner); `s10_native_looks_are_classified_by_their_stock_field_swing`
-  measures both looks and fails if the core's list and the measurement drift apart.
+  from the colour of the last change also waits 170 ms after it. While a native start waits,
+  nothing lit is latched, and the look that stays up meanwhile is still the layer's when the layer
+  put it there (`keptFn`): a boundary in the wait takes it down. As stock, Leia makes about four
+  whole-field swings of a tenth or more a second (an open question for the owner);
+  `s10_native_looks_are_classified_by_their_stock_field_swing` measures both looks and fails if the
+  core's list and the measurement drift apart.
 - **Verb `B`: the step is held.** A fall applies at once; a raise, and the owner's level coming back
   at a boundary, waits until `contractFieldAsk()` allows a white field at the new strip level
   (`_rideTry()`). A ride no longer makes stock frames the layer's.
@@ -213,16 +244,18 @@ What `ContractFlthy.h` does on top of the shared core. The spec's rule numbers a
 
   | Look | Held |
   | ---- | ---- |
-  | solid, flash, pulse, rainbow, scan, meter, comet, chase, wipe, gradient, colorcycle | never |
+  | solid, flash, pulse, rainbow, scan, sparkle, meter, comet, chase, wipe, gradient, colorcycle | never |
   | the beat pump on solid (`am=1`, `m=` 64 and 255, 60 to 240 BPM) | never |
   | twinkle | 0.9 % at `s=255`, never slower |
-  | **sparkle** | **1.1 % at `s=0`, 16.4 % at `s=128`, 37.5 % at `s=255`** (3.3, 18.2, 35.9 with slow passes) |
   | `native:6` rainbow (runs as stock) | never |
-  | `native:1` Leia (gated) | 39.8 % |
+  | `native:1` Leia (gated) | 45.0 % |
 
-  Sparkle is a finding, not a pass: on seven pixels it re-rolls enough of the field at once to swing
-  the whole-field level by a tenth most frames, so it runs visibly calmer than drawn. Redrawing it
-  (fewer pixels a frame, or a steadier total) is the fix; it is not done.
+  Sparkle was held on 16 to 37 % of passes as first drawn (random pixels at random levels swing a
+  seven-pixel field by a tenth most frames). It is redrawn for the jewel: a fixed number of pixels
+  lit at the look's level (2 at `s=0` to 5 at `s=255`), and one of them moves every 150 to 40 ms, so
+  the field's level and luminance do not change at all while it runs
+  (`sparkle_keeps_a_constant_number_of_pixels_lit`). The pixels come from the board's `random()`,
+  like every stock look's.
 - **Clock (C1, C2, C6).** One clock for the three units, seeded once per line; a mid-beat re-anchor
   does not fire that beat's accent again; a nudge never moves a section back; `bpm=0` holds. While
   held, a pumped look is shown still at its own `b=` level (the pump needs the clock), not frozen in
@@ -315,11 +348,14 @@ unplugged and a USB serial monitor at 9600.
 16. **The same look again (S11).** A pulse look, then the same line again every 300 ms: the breathing
     does not restart. A Resend of a score during playback: sections that are already showing do not
     blink.
-17. **Sparkle.** `!HFA:i=sparkle,c=ffffff` at `s=0`, `s=128` and `s=255` beside a jewel on the stock
-    firmware's sparkle-like look if there is one: judge whether the gated sparkle is acceptable or
-    should be redrawn (the gate holds over a third of its frames at `s=255` in simulation).
+17. **Sparkle.** `!HFA:i=sparkle,c=ffffff` at `s=0`, `s=128` and `s=255`: two, three or five pixels lit
+    and one moving at a time, faster with `s`; the jewel as a whole keeps one brightness. Judge the
+    look (it was redrawn for seven pixels in simulation only).
 18. **Pulse, wipe, flash and chase after CA1.5.** `s=255` pulse and wipe: a 680 ms cycle; flash: 190 ms
     a state; chase: two of the six ring pixels lit at every step.
+19. **After a hand-back.** `F0055|2` (solid blue, 2 s), and a pulse about half a second before it
+    ends (`!HFP:c=3b82f6,d=69,b=202`): the off colour comes up a third of a second after the blue
+    returns, not at once. The same with `!HFB:b=0` and `!HFM:v=show` alternating over the blue.
 
 **Conformance record.** For each of S1, S2, S4, S6, S7, S8, S9, S10, S11, C1, C6, L1 to L6, capacity,
 `V`, `Q` and section 11: the line sent, what was seen, pass or fail, and the `fw` from the WDP announce.
