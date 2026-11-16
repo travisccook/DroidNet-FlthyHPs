@@ -1008,9 +1008,9 @@ void loop(){
                resetLEDtwitch(i); offcoloroverride[i] = false; flushCommandArray(i,0); break;   // Clear Function, Enable Random LED Twitch, using random LED sequences, disable off color override,
       case 100: ledColor(i,LED_command[i].LEDOption1); break;
       // DroidNet contract render slots: 100 + effectId (CE_OFF..CE_TWINKLE => 101..115).
-      // 109 (CE_NATIVE) never actually occurs as an LEDFunction -- the native escape
-      // hatch writes the raw native code directly (ContractFlthy.h:_applyLook), never
-      // _fxCode(CE_NATIVE) -- so a contiguous 101..115 range is safe.
+      // 109 (CE_NATIVE) is never selected: a native:<n> look is either on the fork's
+      // allow-list, and then its own stock code is written here, or the line is dropped
+      // (ContractFlthy.h: flthyNativeAllowed). The contiguous 101..115 range is kept anyway.
       // A single dispatch renders the per-unit look + verb-P overlay + beat envelope.
       case 101: case 102: case 103: case 104:
       case 105: case 106: case 107: case 108:

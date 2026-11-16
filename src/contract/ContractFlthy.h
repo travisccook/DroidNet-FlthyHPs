@@ -104,6 +104,9 @@ struct FlthyUnit {
   // Once-per-beat guard for the board-side (Phase-2) accent. BEAT_NONE = "no beat accented
   // yet"; every show boundary resets it, so a new show can never inherit a stale edge.
   int32_t        lastAccentBeat = BEAT_NONE;
+  // A native look this layer started (i=native:<n>, allow-listed). No accent may replace it.
+  bool           nativeLook   = false;
+  byte           nativeFn     = 255;
 };
 
 static FlthyUnit  gUnit[HPCOUNT];
@@ -168,6 +171,9 @@ static inline void _showBegin(uint8_t hp) {
   LED_command[hp].LEDHalt     = -1;
   ledOFF(hp);
 }
+// v1.3 S7, R1: the native looks this layer may start. They need no option bytes and no
+// counters: 1 = Leia (fixed blue colour projector), 6 = rainbow.
+static inline bool flthyNativeAllowed(int code) { return code == 1 || code == 6; }
 // pack an RGB scaled by a 0..255 brightness multiplier into 0xRRGGBB (NEO_GRB
 // ordering is handled inside the library; we always pass logical R,G,B).
 static inline uint32_t _scale(const ContractRGB& c, uint8_t bri) {
@@ -442,6 +448,9 @@ static inline bool _fireAccent(uint8_t hp, ContractEffect fx, const ContractRGB&
   // that would have let the jewels strobe at up to 5.9 Hz, the one board of the three that
   // could exceed the guidance.
   if (!strobeCoolDownExpired(u.pulseLastMs, now, 2 * FLTHY_STROBE_MIN_MS)) return false;
+  // v1.3 section 6: no accent on a native section in R1, so an accent can never restart or
+  // replace a native sequence (R2 adds ae=kick where the look can be scaled).
+  if (u.nativeLook && LED_command[hp].LEDFunction == u.nativeFn) return false;
   if (durMs < FLTHY_STROBE_MIN_MS) durMs = FLTHY_STROBE_MIN_MS;   // a state shorter than the
   if (durMs > 2550u) durMs = 2550u;                               // min state IS a strobe
   // A stateful/native effect can never become an overlay: it would corrupt the base look's
@@ -481,9 +490,13 @@ static inline void _applyLook(uint8_t hp, ContractEffect eff, int nativeCode,
   LED_command[hp].LEDHalt = -1;                         // a stock |<n> or auto-twitch timer still
                                                         // running would flush this look to black
 
-  if (eff == CE_NATIVE && nativeCode >= 0) {
-    // escape hatch: hand off to a native LED function (0..7); NOT a contract render
-    u.active = false;
+  u.nativeLook = false;
+  if (eff == CE_NATIVE) {
+    // escape hatch: hand off to an allow-listed native LED function; NOT a contract render.
+    // Both callers have already dropped any other code (flthyNativeAllowed).
+    u.active     = false;
+    u.nativeLook = true;
+    u.nativeFn   = (byte)nativeCode;
     LED_command[hp].LEDFunction = (byte)nativeCode;
     return;
   }
@@ -535,7 +548,7 @@ static inline void _applyScore(uint8_t hp, const ScoreEntry& e) {
 static inline void _unitReset(uint8_t hp) {
   FlthyUnit& u = gUnit[hp];
   scoreClear(gScoreCount[hp], gScoreActive[hp]);
-  u.active = false;  u.pulseActive = false;
+  u.active = false;  u.pulseActive = false;  u.nativeLook = false;
   u.effect = CE_SOLID;  u.color = ContractRGB{0, 0, 0};  u.speed = 128;  u.brightBase = FLTHY_SAFE_MAX_BRIGHT;
   u.beatMod = 0;  u.accentMode = 0;  u.durMs = 0;  u.level = 0;
   u.sectionStart = 0;  u.sectionEnd = 0;
@@ -543,7 +556,10 @@ static inline void _unitReset(uint8_t hp) {
   u.lastEnvBright  = -1;
 }
 // Does this layer have the unit's LEDs (so a reset must hand them back)?
-static inline bool _heldLeds(uint8_t hp) { return contractHoldsLeds(hp) || _slotIsOurs(hp); }
+static inline bool _heldLeds(uint8_t hp) {
+  return contractHoldsLeds(hp) || _slotIsOurs(hp) ||
+         (gUnit[hp].nativeLook && LED_command[hp].LEDFunction == gUnit[hp].nativeFn);
+}
 // M:v=idle (and, later, the watchdog and a failed verb V) end here. A unit whose LEDs this
 // layer does not have keeps its stock look, so a stray idle cannot flush what the operator started.
 static inline void _idleUnit(uint8_t hp) {
@@ -563,6 +579,9 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
 
   switch (p.verb) {
     case CV_ANIMATE: {
+      // v1.3 S7: a line naming a native code off the allow-list is dropped whole, live or
+      // scored (a dropped scored line is not held, so verb V reports the load bad).
+      if (pr.hasEffect && pr.effect == CE_NATIVE && !flthyNativeAllowed(pr.nativeCode)) return;
       if (pr.hasAt) {                                  // Phase-2: schedule, don't apply now
         ScoreEntry e = _entryFrom(pr);
         gScoreCount[hp] = scoreInsert(gScore[hp], gScoreCount[hp], FLTHY_SCORE_CAP, e);
@@ -704,6 +723,7 @@ inline void contractBeatTick() {
       u.active = false;  u.pulseActive = false;
       if (!gInterlocked[hp]) _rearmTwitch(hp);
     }
+    if (u.nativeLook && LED_command[hp].LEDFunction != u.nativeFn) u.nativeLook = false;
   }
   if (!gBeat.running) return;
   BeatPos bp = beatPosAt(gBeat, now);
