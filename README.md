@@ -59,13 +59,13 @@ That is a genuine step up from where this fork started — it used to be checked
 hand-written mock, and mocks lie (on the sister PSI fork, one hid a critical bug by making the
 non-latching render primitive a no-op). Verified here:
 
-- `test/host/test_contract_core.cpp` — 341 checks against the wire parser, beat clock, effect math
-  and score table, and `test/host/test_contract_v13.cpp` — 1,895,037 checks of the v1.3 rules in the
+- `test/host/test_contract_core.cpp` — 139,791 checks against the wire parser, beat clock, effect math
+  and score table, and `test/host/test_contract_v13.cpp` — 2,874,222 checks of the v1.3 rules in the
   shared core (safety limits, clock, show lifecycle, score, load check, query reply), run a second
   time with stand-ins for the flash-string hooks this board uses. Both run on a normal computer.
 - `test/host/sim` — the **real `src/main.cpp`** on a fake Arduino core, with a 9600-baud wire in
   both directions (the receive ring that loses bytes when full, the transmit ring that blocks a write
-  when full) and loop passes of random length: 76 scenarios, from the stock commands and the auto
+  when full) and loop passes of random length: 78 scenarios, from the stock commands and the auto
   twitch to bursts, a pushed score, the watchdog and the load check. Three things are checked on
   every simulated pass: a pass that handles a `!` line (whole, spliced or corrupted) starts no servo
   move and writes no `HP_command[]`; a unit the contract held does not move in the pass that lets it
@@ -88,11 +88,11 @@ non-latching render primitive a no-op). Verified here:
   identity and its `Serial` adapter, with a 13-character `-dirty` fw and with none.
 - `bash test/host/run.sh` now finishes by cross-compiling the firmware for real.
 
-Flash is comfortable on this board, unlike its PSI sibling: **40,096 B of 253,952 B (15.8%)**, with
-SRAM at 4,534 B of 8,192 B (55.3%); 2,112 B of that is the three 32-section score tables.
+Flash is comfortable on this board, unlike its PSI sibling: **43,140 B of 253,952 B (17.0%)**, with
+SRAM at 4,606 B of 8,192 B (56.2%); 2,112 B of that is the three 32-section score tables.
 
-The stack has been bounded statically too (`test/host/stack_report.py`): **430 B of the 3,658 B
-available (12%)**, with no recursion, no `alloca`/VLA, and — unlike the PSI — **no interrupt-nesting
+The stack has been bounded statically too (`test/host/stack_report.py`): **451 B of the 3,586 B
+available (13%)**, with no recursion, no `alloca`/VLA, and — unlike the PSI — **no interrupt-nesting
 hazard**: no interrupt handler reaches a `sei`, so interrupts cannot nest. The I2C handler does not
 render LEDs and does not touch a `String`: it copies the bytes into its own fixed buffer, and `loop()`
 takes the line from there with interrupts off. (The tool takes any two bytes of initialised data that
@@ -193,15 +193,27 @@ in the WDP announce). What that means on the holoprojectors:
 - **Limits.** Tempo 30 to 300 BPM (a `C` outside it is ignored); no light state shorter than 170 ms
   (live looks, accents, flash, pulse); `flash`, `pulse` and `scan` run at the same rates as on the
   Logics and the PSIs; `d=` on `A` is ignored.
-- **One limit for every path (S9).** Whatever lines arrive, a jewel goes from dark to lit across its
-  whole field at most three times a second. This is kept where frames are sent to the LEDs, with the
-  rule all three DroidNet boards share: the whole field may step up by a quarter of its ceiling or
-  more only 340 ms after it last lit or last got brighter; a frame that comes sooner waits, and a
-  fall or a blackout never waits. It applies to a jewel the contract has, or handed back in the last
-  340 ms, native looks the contract started included (a contract Leia flickers a little more calmly
-  than the stock one), and to a jewel verb `B` is dimming, even when the light on it is still your
-  stock look (between Send and Play). Otherwise your own stock looks are never held back, the fast
-  ones included.
+- **One limit for every path (S9), in brightness and in colour (S4).** Whatever lines arrive, a jewel
+  goes from dark to lit across its whole field at most three times a second, and changes its look or
+  colour at most once in 170 ms. Both are kept where frames are sent to the LEDs, with the rules all
+  three DroidNet boards share: the whole field may step up by a tenth of its ceiling or more (measured
+  by its brightest channel and by its luminance) only 340 ms after it last lit or last got brighter;
+  a frame of another look or colour waits until 170 ms after the last change; a frame that comes
+  sooner waits, and a fall or a blackout never waits. This applies to a jewel the contract has, or
+  handed back in the last 340 ms. Your own stock looks are never held back, the fast ones included.
+- **The two native looks (S10).** `native:6` (rainbow) runs exactly as from a button: its frames go out
+  unchanged, and only its start waits for the window above. `native:1` (Leia) re-rolls the whole field
+  about four times a second as stock; through the contract every frame passes the gate, so it
+  flickers more calmly than from a button.
+- **Verb `B` steps wait, frames do not.** A `B` that dims applies at once. A `B` that brightens (and
+  the owner's level coming back when a show ends) waits until the jewel may brighten by that much,
+  so `B` cannot flash the stock look that is still up between Send and Play.
+- **The same look again does not restart (S11).** A live `A` or a section that names the look already
+  showing changes its level and pump only.
+- **What the gate costs a look.** Measured in simulation on the seven-pixel jewel: solid, flash,
+  pulse, rainbow, scan, meter, comet, chase, wipe, gradient, colorcycle and the beat pump are never
+  held; twinkle under 1 % of the time at its fastest; **sparkle is held often** (about 1 % of the
+  time at `s=0`, a sixth at `s=128`, over a third at `s=255`) and so runs calmer than drawn.
 - **Pause.** `C:bpm=0` holds the clock and the score. A look that was pumping with the beat is shown
   still, at its own `b=` level, while held.
 - **Lines and bursts.** A line may be 128 bytes. A PlatformIO build has a 256-byte UART receive ring;
@@ -373,17 +385,18 @@ The host suite needs nothing but a C++ compiler:
 ```bash
 bash test/host/run.sh
 # [0]  the shared core files are the ones src/contract/CORE_PIN names (needs an RSeries checkout)
-# [1]  contract_core parser unit tests             -> 341/341 checks
-# [1f] contract_core v1.3 unit tests               -> 1,895,037/1,895,037 checks
-# [1g] the same, with flash-string hook stand-ins  -> 1,895,037/1,895,037 checks
+# [1]  contract_core parser unit tests             -> 139,791/139,791 checks
+# [1f] contract_core v1.3 unit tests               -> 2,874,222/2,874,222 checks
+# [1g] the same, with flash-string hook stand-ins  -> 2,874,222/2,874,222 checks
+# [1h] no floating point in the core or in the layer
 # [1b] wdp_announce_core unit tests                -> 37,506/37,506 checks
 # [1c] wdp_fork.h announce adapter + identity      -> 19/19 checks, with fw "abcdef0-dirty" and "unknown"
 # [2]  ContractFlthy.h firmware type-check, against a mock
-# [2b] whole-firmware simulation                   -> 76 scenarios: the real src/main.cpp on a fake
+# [2b] whole-firmware simulation                   -> 78 scenarios: the real src/main.cpp on a fake
 #      Arduino core; a scenario named in test/host/sim/xfail.txt must fail (the file is empty)
 # [3]  static source guards (LED-only invariant for the contract and the brightness branch,
 #      wire budget, no Serial write that could land inside a WDP announce)
-# [4]  contract parser fuzz + differential         -> 1,581,274 checks (ASan/UBSan)
+# [4]  contract parser fuzz + differential         -> 1,617,274 checks (ASan/UBSan)
 # [5]  native_ext brightness parser unit tests     -> 77/77 checks
 # [6]  native_ext fuzz + differential              -> 2,965,122 checks (ASan/UBSan)
 # [7]  REAL cross-compile (ATmega2560), firmware and the bench probe build

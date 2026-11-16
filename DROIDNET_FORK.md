@@ -36,19 +36,19 @@ announce" below.
 
 ## Status
 
-- **Contract v1.3, release 1: built.** The shared core at revision CA1.2, and this board's layer on
+- **Contract v1.3, release 1: built.** The shared core at revision CA1.5, and this board's layer on
   the core's `ContractUnitState`: show lifecycle (arm, begin, stop, idle), the watchdog, a 32-section
   score with a load check (verb `V`), the routed query reply (verb `Q:r=`), brightness as a fraction
   of the strip's level, the native allow-list (1 and 6), native take-over, and `flash`, `pulse` and
   `scan` on the core's shared timing. See "Contract v1.3, release 1" below.
 - **Six parametric effects: built.** comet, chase, wipe, gradient, colorcycle, twinkle —
   rendered around the jewel ring.
-- **Host verification: green.** `bash test/host/run.sh` → 341/341 parser checks, 1,895,037 v1.3 core
+- **Host verification: green.** `bash test/host/run.sh` → 139,791 parser checks, 2,874,222 v1.3 core
   checks (run twice: plain, and with stand-ins for the AVR flash-string hooks), a type-check of
-  `ContractFlthy.h` against `test/host/mock_flthy.h`, 1,581,274 contract fuzz checks, 77/77 native
+  `ContractFlthy.h` against `test/host/mock_flthy.h`, 1,617,274 contract fuzz checks, 77/77 native
   brightness parser checks and 2,965,122 native brightness fuzz checks, 37,506 WDP announce core
   checks and 19 adapter checks (run twice).
-- **Whole-firmware simulation: 76 scenarios pass.** Stage 2b of `run.sh`
+- **Whole-firmware simulation: 78 scenarios pass.** Stage 2b of `run.sh`
   (`test/host/sim`) runs the real `src/main.cpp` on a fake Arduino core: the 9600-baud wire with its
   receive ring (bytes are lost when it is full) and its transmit ring (a write blocks when it is
   full), `pulseIn()` blocking as it does in RC mode, and loop passes of random length. Origin is
@@ -62,12 +62,16 @@ announce" below.
   frames measured by three observers).
 - **Second round of that review: three findings closed here, a fourth in the core.** Verb `B` flashing
   stock light on an armed unit (S9); the hold-end re-arm starving the owner's auto twitch; one `Q`
-  reply slot for three units. The fourth, swings under a quarter of the ceiling, is closed by the
-  core's next revision (the gate's step becomes a tenth of the ceiling). The property test's oracle
+  reply slot for three units. The fourth, swings under a quarter of the ceiling, is closed by
+  core revision CA1.4: the gate's step is a tenth of the ceiling. The property test's oracle
   has a strict mode since: every relight counts, whoever drew the pixels, apart from a stock
   command's own for 400 ms.
-- **Build:** flash 40,096 B of 253,952; SRAM 4,534 B of 8,192 (the score tables are 2,112 B).
-  `stack_report.py`: worst-case stack 430 B of the 3,658 B left, 3,228 B spare. The heap (Arduino
+- **CA1.5 round.** The gate's step is a tenth of the ceiling in two measures, S4 holds every change
+  of look or colour, native looks are of two kinds (S10), the same look again does not restart (S11),
+  and a verb-`B` raise waits instead of the frames. The property test measures luminance and colour
+  as well, with observers a step apart, and the held-frames table below is a scenario.
+- **Build:** flash 43,140 B of 253,952; SRAM 4,606 B of 8,192 (the score tables are 2,112 B).
+  `stack_report.py`: worst-case stack 451 B of the 3,586 B left, 3,135 B spare. The heap (Arduino
   `String`) shares that space. (The tool takes any two bytes of `.data` equal to a function's address
   for a function pointer; on one build of the fix round two letters of "Flthy HP Controller" matched
   `RCHP()` and it called the bound "not sound" over an interrupt path that does not exist.)
@@ -95,8 +99,8 @@ announce" below.
 
 `src/contract/contract_core.h` is **byte-identical** across the three DroidNet forks
 (RSeries / PSI / Flthy). It is owned by DroidNet-RSeriesLogics and never edited here:
-`src/contract/CORE_PIN` names the RSeries commit the shared files were copied from (`5cf7793`, core
-revision CA1.2), the list of shared files is that commit's `test/host/core-files.txt`, and `run.sh`
+`src/contract/CORE_PIN` names the RSeries commit the shared files were copied from (`cea4921`, core
+revision CA1.5), the list of shared files is that commit's `test/host/core-files.txt`, and `run.sh`
 stage 0 compares every one of them with the pinned commit when an RSeries checkout is at hand (CI
 always has one). A change to the core is made there and re-copied here with a new pin. It is pure
 C++ with no Arduino dependency, which is why it can be unit-tested on a host.
@@ -168,22 +172,51 @@ What `ContractFlthy.h` does on top of the shared core. The spec's rule numbers a
   mode only, and every reset puts the strip back.
 - **Native looks (S7).** `nativeAllowedFlthy()`: 1 (Leia) and 6 (rainbow). No accent on a native
   section.
-- **One limit for every path (S9).** The rule is the core's `contractFieldGate()`; this board asks it
-  where every frame is latched. The jewels are `DnStrip` (`src/droidnet/dn_strip.h`), whose `show()`
-  (in `ContractFlthy.h`) measures the field level (the mean over the seven pixels of each pixel's
-  brightest channel, as latched; `s.ceil` is kept at the owner's strip level) and passes it through
-  the gate when the layer has the jewel or let go of it in the last 340 ms. A verb-`B` ride counts as
-  having it: on an armed show that has not begun the pixels are still the stock firmware's, but `B`
-  dims and relights them through the strip's level. A frame the gate allows
-  less than is not latched: what is on the jewel already passed the gate, and the tick offers the
-  frame again every pass. Any other frame is stock light: never held back, and told to the gate
-  with `contractFieldForced()`. Native looks the contract starts need no ask-then-tell here, because
-  the stock code draws them through the same latch. Three things here are the board's own care
-  around the core's gate: the level is whole numbers but seven pixels measure it in sevenths, so a
-  lit peak that creeps up inside one level still moves the gate's clock; when the owner changes the
-  strip level (`H<unit>B<level>`) the gate's reference is rescaled with the pixels; and a frame held
-  back across a lowered level is blacked out instead of left at the old scale. Known limit, the
-  core's: a swing of less than a quarter of the ceiling is a look's texture and is not rate-limited.
+- **One limit for every path (S9), and S4 for every path.** The rules are the core's field gate and
+  look gate; this board asks them where every frame is latched. The jewels are `DnStrip`
+  (`src/droidnet/dn_strip.h`), whose `show()` (in `ContractFlthy.h`) measures the frame's level (the
+  mean of each pixel's brightest channel) and its luminance (the core's integer Rec.709, read from
+  the strip's G,R,B bytes), with `s.ceil` kept at the owner's strip level. A frame the layer drew, a
+  frame of a gated native look, and any frame in the 340 ms after a hand-back is asked
+  (`contractLookAllowed()` for a lit frame of another look, then `contractFieldAsk()`); on a no it is
+  not latched, what is on the jewel stays, and the tick offers it again every pass, as long as the
+  LED function that drew it is still the one selected. On a yes the gates are told
+  (`contractLookGate()`, `contractFieldTell()`). Any other frame is stock light: never held, and told.
+  The board's own care around the core's gate: the level is whole numbers but seven pixels measure
+  in sevenths, so a lit peak creeping up inside one level still moves the gate's clocks; the gate's
+  references are rescaled when the owner changes the strip level; a frame held across a lowered
+  level is blacked out instead of left at the old scale.
+- **Native looks (S10).** `nativeGatedFlthy()` says which kind. `native:6` (rainbow) RUNS AS STOCK:
+  `contractNativeMayStart()` before the LEDs are handed over, `contractNativeStarted()` at the first
+  lit frame with the level it runs at, `contractNativeLevel()` when a verb-`B` ride moves it,
+  `contractNativeEnded()` when a contract look replaces it; its frames are not asked. `native:1`
+  (Leia) is GATED: `contractNativeMayStart()` too, then every frame is asked like a contract frame,
+  and because Leia re-rolls the colour of the whole field by itself, a frame whose mean colour is far
+  from the one on the jewel also waits 170 ms after the last change. While a native start waits,
+  nothing lit is latched. As stock, Leia makes about four whole-field swings of a tenth or more a
+  second (an open question for the owner); `s10_native_looks_are_classified_by_their_stock_field_swing`
+  measures both looks and fails if the core's list and the measurement drift apart.
+- **Verb `B`: the step is held.** A fall applies at once; a raise, and the owner's level coming back
+  at a boundary, waits until `contractFieldAsk()` allows a white field at the new strip level
+  (`_rideTry()`). A ride no longer makes stock frames the layer's.
+- **S11.** `contractLookSame()` before a live `A` or a section is written; the start time and
+  `contractLookRestart()` only when the look really changes. Sections wait for
+  `contractSectionMayApply()`.
+- **What the gates cost a look** (`gate_held_frames_table`, simulation, 30 s a look, passes of 1 to
+  4 ms and of 10 to 15 ms, white, three speeds; the share of passes with a frame waiting):
+
+  | Look | Held |
+  | ---- | ---- |
+  | solid, flash, pulse, rainbow, scan, meter, comet, chase, wipe, gradient, colorcycle | never |
+  | the beat pump on solid (`am=1`, `m=` 64 and 255, 60 to 240 BPM) | never |
+  | twinkle | 0.9 % at `s=255`, never slower |
+  | **sparkle** | **1.1 % at `s=0`, 16.4 % at `s=128`, 37.5 % at `s=255`** (3.3, 18.2, 35.9 with slow passes) |
+  | `native:6` rainbow (runs as stock) | never |
+  | `native:1` Leia (gated) | 39.8 % |
+
+  Sparkle is a finding, not a pass: on seven pixels it re-rolls enough of the field at once to swing
+  the whole-field level by a tenth most frames, so it runs visibly calmer than drawn. Redrawing it
+  (fewer pixels a frame, or a steadier total) is the fix; it is not done.
 - **Clock (C1, C2, C6).** One clock for the three units, seeded once per line; a mid-beat re-anchor
   does not fire that beat's accent again; a nudge never moves a section back; `bpm=0` holds. While
   held, a pumped look is shown still at its own `b=` level (the pump needs the clock), not frozen in
@@ -260,8 +293,30 @@ unplugged and a USB serial monitor at 9600.
 12. **Q under load.** During a show send `!HFQ:r=<n>` ten times a second for ten seconds: the show
     does not stutter and every reply the Pi receives is a whole line.
 
-**Conformance record.** For each of S1, S2, S4, S6, S7, S8, S9, C1, C6, L1 to L6, capacity, `V`, `Q`
-and section 11: the line sent, what was seen, pass or fail, and the `fw` from the WDP announce.
+13. **Colour and narrow swings (S4, S9's tenth).** One HP: `!HFA:i=solid,c=ff0000` and
+    `!HFA:i=solid,c=0000ff` alternating as fast as the WCB sends them: the colour changes at most six
+    times a second. `!HFB:b=0` / `!HFB:b=62` over solid white, and `!HFL:v=0` / `!HFL:v=62` on
+    `i=meter`: no flicker faster than three a second. A score of one-beat red and blue sections at
+    300 BPM: no colour change closer than 170 ms (film it).
+14. **Native looks (S10).** `!HFA:i=native:6` beside the stock `R006` on another HP: the two rainbows
+    look the same. `!HFA:i=native:1` beside the stock `R001`: the contract Leia flickers more calmly;
+    note how it reads to the eye. Start each from a lit look and from dark: the start may wait up to
+    a third of a second and never flashes.
+15. **Verb `B` between Send and Play.** Arm a show with the off colours showing, then `!H*B:b=0` and
+    `!H*B:b=255` alternating fast: the HPs dim at once and come back at most three times a second.
+    During a stock look the operator started (`A0022|9`), a steady `!H*B:b=128` dims it and the stock
+    flash keeps its own rhythm.
+16. **The same look again (S11).** A pulse look, then the same line again every 300 ms: the breathing
+    does not restart. A Resend of a score during playback: sections that are already showing do not
+    blink.
+17. **Sparkle.** `!HFA:i=sparkle,c=ffffff` at `s=0`, `s=128` and `s=255` beside a jewel on the stock
+    firmware's sparkle-like look if there is one: judge whether the gated sparkle is acceptable or
+    should be redrawn (the gate holds over a third of its frames at `s=255` in simulation).
+18. **Pulse, wipe, flash and chase after CA1.5.** `s=255` pulse and wipe: a 680 ms cycle; flash: 190 ms
+    a state; chase: two of the six ring pixels lit at every step.
+
+**Conformance record.** For each of S1, S2, S4, S6, S7, S8, S9, S10, S11, C1, C6, L1 to L6, capacity,
+`V`, `Q` and section 11: the line sent, what was seen, pass or fail, and the `fw` from the WDP announce.
 
 ## Native brightness
 
