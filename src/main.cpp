@@ -1055,7 +1055,7 @@ void loop(){
   }     
   
   for (int i=0; i<HPCOUNT; i++)
-    if (millis() > twitchLEDTime[i] && enableTwitchLED[i]>=1 && LED_command[i].LEDFunction>99 && !contractHoldsLeds(i)) {   // DroidNet: never twitch over a contract look or a show that has begun
+    if (!contractLedTwitchHeld(i) && millis() > twitchLEDTime[i] && enableTwitchLED[i]>=1 && LED_command[i].LEDFunction>99) {   // DroidNet: never twitch over a contract look or a show that has begun (asked FIRST: it re-arms the timer when a hold ends)
       twitchLEDTime[i] = (1000L*random(LEDTwitchInterval[i][0],LEDTwitchInterval[i][1]))+millis();
       twitchLEDRunTime[i] = random(LEDTwitchRunInterval[i][0],LEDTwitchRunInterval[i][1]);
       flushCommandArray(i, 0);
@@ -1088,7 +1088,7 @@ void loop(){
 
 
   for (int i=0; i<HPCOUNT; i++) {
-    if (millis() > twitchHPTime[i] && enableTwitchHP[i] && HP_command[i].HPFunction>99 && !contractHolds(i)) {   // DroidNet: LED-only interlock, no servo twitch while the contract holds the unit
+    if (!contractServoTwitchHeld(i) && millis() > twitchHPTime[i] && enableTwitchHP[i] && HP_command[i].HPFunction>99) {   // DroidNet: LED-only interlock, no servo twitch while the contract holds the unit (asked FIRST: it re-arms the timer when a hold ends)
       twitchHP(i,1);
       resetHPtwitch(i);
     } 

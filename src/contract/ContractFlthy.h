@@ -6,10 +6,11 @@
 // Driveable-Animation Contract (v1.3). LED-ONLY: the '!' path NEVER writes HP_command[*]
 // and NEVER calls positionHP/twitchHP/wagHP/RCHP — no servo motion, ever. It never writes
 // the operator's settings either (enableTwitchLED[], enableTwitchHP[], offcoloroverride[]):
-// an armed show HOLDS a unit, and main.cpp's two auto-twitch gates ask contractHolds() and
-// contractHoldsLeds(). Letting go of a unit re-arms both twitch timers first, so the pass
-// that handles a '!' line never starts a servo twitch. test/host/sim checks both on the
-// real main.cpp, on every simulated pass.
+// an armed show HOLDS a unit, and main.cpp's two auto-twitch gates ask
+// contractServoTwitchHeld() and contractLedTwitchHeld(). When a hold ends, whichever way, the
+// gate itself puts the twitch timer a full interval ahead before the stock test reads it, so the
+// pass that handles a '!' line, ends an overlay or reaches a score section never starts a servo
+// twitch. test/host/sim checks both on the real main.cpp, on every simulated pass.
 //
 // WHAT LIVES WHERE. Everything a show owns on one unit — armed or not, the look, the overlay,
 // the score cursor, the load check, the watchdog — is the shared core's ContractUnitState
@@ -90,6 +91,8 @@ struct FlthyUnit {
   int      lastEnvBright = -1;            // memo for the looks that repaint only on a change
   uint32_t frameMs     = 0;               // scan/sparkle self-throttle
   uint8_t  frame       = 0;
+  bool     servoWasHeld = false;          // the two twitch gates' view of the hold on their last pass
+  bool     ledWasHeld   = false;
   // L3: a verb P with no show armed overlays the STOCK look and gives it back afterwards.
   bool     overNative  = false;
   byte     savedFn     = 255;             // the stock LEDFunction under the overlay
@@ -123,6 +126,27 @@ inline bool contractHolds(uint8_t hp) {
 inline bool contractHoldsLeds(uint8_t hp) {
   const ContractUnitState& s = gUnit[hp].s;
   return (s.inShow && s.base != CB_NONE) || s.base == CB_LOOK || s.pulseActive;
+}
+// What main.cpp's two auto-twitch gates ask, FIRST in their condition and so once every pass. This
+// is the one place a hold ENDING is seen, whichever path ended it (a reset, a look replaced by a
+// native one, the last overlay expiring, a score reaching a native section, a stock command taking
+// the slot): in that pass the timer is put a full interval ahead BEFORE the stock test reads it.
+// By then it is long overdue, and without this the stock loop twitches the unit at once, all three
+// holoprojectors together when one line let them all go. resetHPtwitch() moves nothing.
+inline bool contractServoTwitchHeld(uint8_t hp) {
+  FlthyUnit& u = gUnit[hp];
+  const bool held = contractHolds(hp);
+  if (u.servoWasHeld && !held) resetHPtwitch(hp);
+  u.servoWasHeld = held;
+  return held;
+}
+inline bool contractLedTwitchHeld(uint8_t hp) {
+  FlthyUnit& u = gUnit[hp];
+  const bool held = contractHoldsLeds(hp);
+  if (u.ledWasHeld && !held)
+    twitchLEDTime[hp] = (1000L * random(LEDTwitchInterval[hp][0], LEDTwitchInterval[hp][1])) + millis();
+  u.ledWasHeld = held;
+  return held;
 }
 // Does this layer have the unit's LEDs (so a reset must hand them back)?
 static inline bool _heldLeds(uint8_t hp) { return contractHoldsLeds(hp) || _slotIsOurs(hp) || _nativeIsUp(hp); }
