@@ -823,8 +823,8 @@ SCENARIO(s9_property_hostile_streams) {
       if (brk && getenv("S9_TRACE")) for (auto& p : st.ph) p.every([&](Observer& o) { if (o.maxPerSecond() > 3 || o.closestUs < 334000ULL) {
         printf("  hp%d observer %s%d/%d onsets (ms):", p.hp, (&o >= p.lum && &o < p.lum + 3) ? "lum " : "", o.darkPct, o.litPct); for (auto x : o.onsets) printf(" %.0f", x / 1000.0); printf("\n"); } });
       const bool brk = st.broken();
-      // S12: the regions of each jewel. Measured on every stream and reported; not part of `broken`, because
-      // the streams mix in the one known defect (a comet and a full look by turns: s12_a_comet_and_a_full_look_by_turns).
+      // S12: the regions of each jewel. Measured on every stream and reported; not part of `broken` (see the
+      // S12 scenarios at the end of this file for what is asserted, and the fork's notes for what a stream can still do).
       int regionWorst = 0; for (auto& p : st.ph) regionWorst = std::max(regionWorst, p.worstRegion());
       if (regionWorst > 3 && st.recOn) for (auto& p : st.ph) for (size_t r = 0; r < p.regions.size(); r++) for (int k = 0; k < 3; k++) { const RegionObs& o = p.regionObs[r * 3 + k];
         if (o.worst == regionWorst) { printf("  REGION seed %d hp%d %s (%d/%d): %d onsets in the second to %.0f ms:", seed, p.hp, p.regions[r].name, o.darkPct, o.litPct, o.worst, o.worstAt / 1000.0);
@@ -1297,25 +1297,40 @@ SCENARIO(s12_region_rates_each_look_alone_at_its_fastest) {
   }
   CHECK(worst <= 3);
 }
-// S12, the defect the logics property stage records as a known failure: a comet and a full look sent by
-// turns (A:i=comet for 510 ms, A:i=solid for 170 ms, again and again). The comet's head passes a part of
-// the field and the full look lights it again: two onsets of that part in one 680 ms cycle, while the
-// field's level only ever rises from a field that is lit, which no whole-field gate holds.
-SCENARIO(s12_a_comet_and_a_full_look_by_turns) {
+// S12, a look by turns with light on the whole jewel. The logics property stage records one case as a
+// known failure: a comet and a full look by turns (A:i=comet for 510 ms, A:i=solid for 170 ms). The
+// comet's head passes a part of the field and the full look lights it again, while the field's level
+// only ever rises from a field that is lit, which no whole-field gate holds. On the jewel the same
+// script lit one part 4 times in a second, and a comet under a train of pulses 5 and 6 times (soak
+// 5000000 + 608, + 1900). Every look is put through three such scripts here: a solid look by turns
+// (510 ms and 170 ms), a white pulse every 50 ms, and the look sent again in another colour every
+// 170 ms. The table is the measurement; the limit is three.
+static RegionRow regionScript(const char* look, int script, int s) {
+  RegionRow row = {-1, -1, "", 0}; int fd[2]; if (pipe(fd)) return row;
+  fflush(stdout); pid_t pid = fork();
+  if (pid == 0) {
+    close(fd[0]); run(9); calmStock(); say("!HFM:v=show\r"); if (!strcmp(look, "meter")) say("!HFL:v=200\r"); run(1);
+    Photo p(0); p.strict = true; char a[80], b[80];
+    snprintf(a, sizeof a, "!HFA:i=%s,c=ffffff,s=%d\r", look, s); snprintf(b, sizeof b, "!HFA:i=%s,c=00ff00,s=%d\r", look, s);
+    if (script == 0) for (int i = 0; i < 30; i++) { say(a); watchFor(p, 0.51); say("!HFA:i=solid,c=ffffff\r"); watchFor(p, 0.17); }
+    else if (script == 1) { say(a); for (int i = 0; i < 400; i++) { say("!HFP:c=ffffff,d=170\r"); watchFor(p, 0.05); } }
+    else for (int i = 0; i < 120; i++) { say((i % 2) ? b : a); watchFor(p, 0.17); }
+    std::string which; row.worst = p.worstRegion(&which); row.whole = p.maxPerSecond(); snprintf(row.region, sizeof row.region, "%s", which.c_str());
+    (void)!write(fd[1], &row, sizeof row); _exit(0);
+  }
+  close(fd[1]); (void)!read(fd[0], &row, sizeof row); close(fd[0]); int st; waitpid(pid, &st, 0);
+  return row;
+}
+SCENARIO(s12_region_rates_each_look_by_turns_with_full_light) {
+  static const char* LOOKS[] = {"flash", "pulse", "rainbow", "scan", "sparkle", "meter", "comet", "chase", "wipe", "gradient", "colorcycle", "twinkle"};
   int worst = 0;
-  for (int s : {255, 128, 0}) {
-    int fd[2]; if (pipe(fd)) { failures++; return; }
-    fflush(stdout); pid_t pid = fork();
-    if (pid == 0) {
-      close(fd[0]); run(9); calmStock(); say("!HFM:v=show\r"); run(1);
-      Photo p(0); p.strict = true;
-      for (int i = 0; i < 30; i++) { char l[64]; snprintf(l, sizeof l, "!HFA:i=comet,c=ffffff,s=%d\r", s); say(l); watchFor(p, 0.51); say("!HFA:i=solid,c=ffffff\r"); watchFor(p, 0.17); }
-      std::string which; RegionRow row = {p.worstRegion(&which), p.maxPerSecond(), "", 0}; snprintf(row.region, sizeof row.region, "%s", which.c_str());
-      (void)!write(fd[1], &row, sizeof row); _exit(0);
+  printf("  the most often one region lit in a second: by turns with solid | under pulses | sent again in another colour (each at s=255, s=0)\n");
+  for (const char* look : LOOKS) {
+    printf("  %-11s", look);
+    for (int script = 0; script < 3; script++) {
+      for (int s : {255, 0}) { const RegionRow r = regionScript(look, script, s); printf(" %d", r.worst); if (r.worst > 3) printf("(%s)", r.region); worst = std::max(worst, r.worst); if (r.worst < 0) failures++; }
+      printf(script < 2 ? "  |" : "\n");
     }
-    close(fd[1]); RegionRow row = {-1, -1, "", 0}; (void)!read(fd[0], &row, sizeof row); close(fd[0]); int st; waitpid(pid, &st, 0);
-    printf("  comet s=%-3d 510 ms / solid 170 ms: one region lit %d times in a second at the most (%s); the whole field %d\n", s, row.worst, row.region, row.whole);
-    worst = std::max(worst, row.worst);
   }
   CHECK(worst <= 3);
 }

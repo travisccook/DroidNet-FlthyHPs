@@ -215,11 +215,12 @@ static const uint16_t FLTHY_ONSET_GAP_MS = 2 * STROBE_MIN_STATE_MS;   // 340: ho
 // Byte order of one pixel in Adafruit_NeoPixel's buffer for NEO_GRB and NEO_GRBW (main.cpp: HP_NEO_TYPE).
 static const uint8_t FLTHY_OFF_G = 0, FLTHY_OFF_R = 1, FLTHY_OFF_B = 2;
 // S12, a part of the field: on seven pixels a quarter of the field is two pixels. A look made of
-// single pixels going dark and lit (sparkle, twinkle, and chase on the ring) would light some pair
-// many times a second, so those looks are drawn on a BED: no pixel of the look goes under two
-// fifths of the look's level. An observer whose "dark" is under two fifths of its "lit" then never
-// sees a part of the jewel go dark, at any speed, and a hand-over to another look has the whole
-// second's three onsets to itself.
+// single pixels going dark and lit (sparkle, twinkle, and chase and comet on the ring) would light
+// some pair many times a second, by itself or by turns with a look that lights the whole jewel. So
+// those looks are drawn on a BED: no pixel of the look goes under two fifths of the look's level.
+// The look's own motion then moves a part of the jewel by a factor of two and a half at the most,
+// and an observer whose "dark" is under two fifths of its "lit" never sees it go dark and lit:
+// what lights a part of the jewel is a change of the whole field, which the field gate times.
 static const uint8_t  FLTHY_BED = 102;                  // of 255
 static const uint8_t FLTHY_RECOLOUR = 48;               // of 255 in any channel of the mean colour, from the last change: a look's own change of colour
 struct FlthyLatch {
@@ -632,6 +633,7 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB
       neoStrips[hp].setPixelColor(0, 0x000000);         // center off
       for (int p = 0; p < N; p++) {
         uint8_t cb = fxCometBright(p, head, N);
+        if (cb < FLTHY_BED) cb = FLTHY_BED;             // S12: the ring behind the comet glows (see FLTHY_BED)
         uint8_t v = (uint8_t)(((uint16_t)envB * cb) / 255);
         neoStrips[hp].setPixelColor((uint16_t)(p + 1), _scale(color, v));
       }
@@ -812,7 +814,9 @@ static inline bool _fireAccent(uint8_t hp, ContractEffect fx, const ContractRGB&
 static inline void _freshCounters(uint8_t hp, ContractEffect eff) {
   if (eff != CE_SCAN && eff != CE_SPARKLE) return;
   gUnit[hp].frame = 0; gUnit[hp].frameMs = 0;         // 0: the scan's first frame is always painted
-  varResets(hp);
+  // (No varResets() here: it blacks the jewel out, and both looks paint all seven pixels on their
+  // first frame. With it, a sparkle sent again in another colour every 170 ms was the old colour for
+  // 170 ms and dark for 170 ms, and the new colour never showed.)
 }
 // A live look: now, or when its S4 hold ends. NEVER writes HP_command (LED-only).
 // A runs-as-stock native look that is up is about to be replaced: tell the gate (S10).

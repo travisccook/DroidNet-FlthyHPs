@@ -1,3 +1,0 @@
-# S12, known and not fixed (the logics fork records the same): a comet and a full look by turns
-# (A:i=comet 510 ms, A:i=solid 170 ms) light one part of the jewel 4 times in a second; the limit is 3.
-s12_a_comet_and_a_full_look_by_turns
