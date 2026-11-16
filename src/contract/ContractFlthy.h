@@ -90,6 +90,7 @@ struct FlthyUnit {
   uint8_t  rideWant    = 255;             // ...and as asked for: a RAISE waits for the field gate (see _rideTry)
   bool     nativeWait  = false;           // S10: a native look is chosen and waits for its start window
   bool     nativeTold  = false;           // S10: the gate has been told the runs-as-stock look that is up
+  byte     keptFn      = 255;             // S10: while nativeWait, the LED function of the layer's OWN look that stays up meanwhile
   uint8_t  level       = 0;               // last verb-L value (meter substitute)
   int      lastEnvBright = -1;            // memo for the looks that repaint only on a change
   uint32_t frameMs     = 0;               // scan/sparkle self-throttle
@@ -181,7 +182,11 @@ inline bool contractLedTwitchHeld(uint8_t hp) {
   return held;
 }
 // Does this layer have the unit's LEDs (so a reset must hand them back)?
-static inline bool _heldLeds(uint8_t hp) { return contractHoldsLeds(hp) || _slotIsOurs(hp) || _nativeIsUp(hp); }
+// (While a native look waits for its window, the look it will replace is still up. When that look
+// was this layer's too, a native look the contract started, the slot is still this layer's: a
+// boundary must take it down, or it would run on as stock light, ungated.)
+static inline bool _keptIsUp(uint8_t hp) { return gUnit[hp].nativeWait && gUnit[hp].keptFn != 255 && LED_command[hp].LEDFunction == gUnit[hp].keptFn; }
+static inline bool _heldLeds(uint8_t hp) { return contractHoldsLeds(hp) || _slotIsOurs(hp) || _nativeIsUp(hp) || _keptIsUp(hp); }
 
 // ------------------------------------ S9, S4, S10: the core's gates, asked at the latch ---
 // v1.3 S9: whatever lines arrive, in whatever order, a jewel goes from dark to lit across its
@@ -811,6 +816,7 @@ static inline void _setLook(uint8_t hp, ContractEffect effect, int nativeCode, c
     u.lastEnvBright = -1;                               // the level may have changed: repaint, no restart
     return;
   }
+  const byte fnWas = _heldLeds(hp) ? LED_command[hp].LEDFunction : (byte)255;   // the layer's own look on the slot, if any
   _nativeLeave(hp);
   s.effect = effect; s.nativeCode = nativeCode; s.color = color; s.speed = speed;
   s.base = (effect == CE_NATIVE) ? CB_NATIVE : CB_LOOK; // the caller dropped any code off the allow-list
@@ -818,6 +824,7 @@ static inline void _setLook(uint8_t hp, ContractEffect effect, int nativeCode, c
   contractLookRestart(s);                               // S4: the next lit frame is a change of look
   _freshCounters(hp, effect);
   _showBase(hp);
+  u.keptFn = u.nativeWait ? fnWas : (byte)255;          // S10: it stays up while the new native look waits
 }
 // A live look: now, or when its S4 hold ends. NEVER writes HP_command (LED-only).
 static inline void _applyPatch(uint8_t hp, ContractLookPatch lp, uint32_t now) {

@@ -1137,3 +1137,31 @@ SCENARIO(s4_a_look_that_comes_up_dim_counts_from_the_frame_that_shows_its_colour
   });
   CHECK_EQ(bad, 0);
 }
+// (7) THE LOOK THAT STAYS UP WHILE A NATIVE LOOK WAITS IS STILL THIS LAYER'S. Leia is up through the
+// contract; the rainbow is asked for and waits for its window (S10: what is up stays up); the unit is
+// idled before the window opens. The layer knew its LED slot by the native code it now wanted (6), saw
+// stock function 1 on the slot, took it for the operator's and left it: Leia ran on as stock light,
+// ungated, until its own timer (fresh soak, seed base 2400000 + 870, and five more like it). The
+// rainbow is asked for at forty moments of Leia; whenever it has to wait, the idle takes Leia down.
+SCENARIO(s10_idle_while_a_native_look_waits_takes_down_the_look_that_stayed_up) {
+  int bad = 0, waited = 0;
+  for (int d = 0; d < 400; d += 10) {
+    fflush(stdout); pid_t pid = fork();
+    if (pid == 0) {
+      failures = 0; run(9); calmStock();
+      say("!HTA:i=native:1\r"); run(2.0 + d / 1000.0);
+      CHECK_EQ(LED_command[2].LEDFunction, 1);
+      say("!HTA:i=native:6\r");
+      for (int i = 0; i < 200 && gUnit[2].s.nativeCode != 6; i++) run(0.002);   // until the line is in (S4 may hold it 170 ms)
+      const bool waits = gUnit[2].nativeWait;        // the rainbow has to wait: Leia stays up meanwhile
+      say("!HTM:v=idle\r"); run(3);
+      CHECK(gUnit[2].s.base == CB_NONE);
+      CHECK_EQ(LED_command[2].LEDFunction, 100);     // the off colour, not Leia running on as stock light
+      fflush(stdout); _exit(failures ? 1 : (waits ? 7 : 0));
+    }
+    int st = 0; waitpid(pid, &st, 0); const int code = WIFEXITED(st) ? WEXITSTATUS(st) : 1;
+    if (code == 1) bad++; else if (code == 7) waited++;
+  }
+  printf("  the rainbow had to wait at %d of 40 moments\n", waited);
+  CHECK_EQ(bad, 0);  CHECK(waited >= 5);
+}
