@@ -148,3 +148,41 @@ SCENARIO(q_reply_is_the_v13_line) {
   line("!HTQ\r");     CHECK(Serial.tx.find("q:") == std::string::npos);   // no r=: no reply
   line("!H*Q:r=0\r"); CHECK(Serial.tx.find("q:") == std::string::npos);   // a wildcard Q is never answered
 }
+
+// ---- section 12: flash, pulse and scan run on the core's shared timing in all three forks ------
+// Milliseconds from one "front pixel goes from dark to lit" to the next, averaged over `cycles`.
+static double litEdgePeriodMs(int px, int cycles) {
+  uint64_t first = 0, last = 0; int edges = 0; bool was = latched(0, px).r != 0;
+  for (uint64_t end = us + 30000000ULL; us < end && edges <= cycles; ) {
+    pass(1000); bool lit = latched(0, px).r != 0;
+    if (lit && !was) { if (edges == 0) first = us; last = us; edges++; }
+    was = lit;
+  }
+  return edges > cycles ? (double)(last - first) / 1000.0 / cycles : -1.0;
+}
+SCENARIO(t12_flash_pulse_scan_use_the_core_timing) {
+  run(6); line("!**M:v=show\r");
+  line("!HFA:i=solid,c=ffffff\r", 0.5); const int full = latched(0).r;   // white at the owner's level
+  CHECK(full > 50);
+  line("!HFA:i=flash,c=ffffff,s=128\r", 0.5);
+  double flash = litEdgePeriodMs(1, 10);
+  line("!HFA:i=pulse,c=ffffff,s=128\r", 0.5);
+  double pulse = litEdgePeriodMs(1, 5);
+  line("!HFA:i=scan,c=ffffff,s=128\r", 0.5);
+  double scan = litEdgePeriodMs(1, 5);                // one trip round the six ring pixels
+  printf("  s=128: flash %.1f ms a cycle, pulse %.1f ms, scan %.1f ms a revolution\n", flash, pulse, scan);
+  CHECK(fabs(flash - 2.0 * fxFlashHalfMs(128)) <= 2.0);        // 2 x 297 ms
+  CHECK(fabs(pulse - (double)fxPulsePeriodMs(128)) <= 2.0);    // 1167 ms
+  CHECK(fabs(scan - 6.0 * fxStepMs(128)) <= 2.0);              // 6 x 93 ms, no drift from a self-throttle
+  // the scan is still ONE ring pixel, the centre pixel off
+  for (int i = 0; i < 700; i++) { pass(1000); int lit = 0; for (int px = 1; px < 7; px++) lit += latched(0, px).r != 0;
+    CHECK_EQ(lit, 1); CHECK(latched(0, 0) == (RGB3{0, 0, 0})); if (failures) break; }
+  // a pulse the beat pump drives is a steady fill at the pumped level: the envelope is the breathe
+  line("!**C:bpm=120,ph=0,bpb=4\r"); line("!HFA:i=pulse,c=ffffff,s=128,m=200,am=1\r", 0.3);
+  BeatPos bp = clockPos();                            // am=1 accents the downbeat: run to the next one
+  while (clockPos().beatIndex == bp.beatIndex || clockPos().barPos != 0) pass(1000);
+  pass(1000);                                         // on the beat: the pump's own peak, whatever the breathe's phase
+  CHECK(abs(latched(0).r - full * envBright(255, 200, 200) / 255) <= 3);
+  int low = 255; for (int i = 0; i < 400; i++) { pass(1000); if (latched(0).r < low) low = latched(0).r; }
+  CHECK(low >= full * (255 - 200) / 255 - 3);         // and between beats never under the pump's own dip (m=200)
+}

@@ -247,34 +247,21 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB
       if (u.lastEnvBright != 0) { _fillShow(hp, 0x000000); u.lastEnvBright = 0; }
       break;
 
-    case CE_FLASH: {                                   // strobe-capped toggle
-      uint32_t half = (uint32_t)map((long)u.s.speed, 0, 255, 700, (long)STROBE_MIN_STATE_MS);
-      if (half < STROBE_MIN_STATE_MS) half = STROBE_MIN_STATE_MS;
-      bool on = ((now - startMs) % (2 * half)) < half;
+    // flash, pulse and scan run on the core's shared timing (fxFlashOn, fxPulseBright, fxScanPos),
+    // so the same s= is the same rate on the Logics, the PSIs and these jewels.
+    case CE_FLASH: {                                   // 170..425 ms a state: never past the strobe cap
       // envB (NOT the raw ceiling): CE_FLASH beat-pumps like every other sustained look.
-      // The Logics' CE_FLASH was aligned TO this line.
-      _fillShow(hp, on ? _scale(color, envB) : 0x000000);
+      _fillShow(hp, fxFlashOn(now - startMs, u.s.speed) ? _scale(color, envB) : 0x000000);
       break;
     }
 
-    case CE_PULSE: {                                   // triangle breathe, peak = brightest
-      uint32_t period = (uint32_t)map((long)u.s.speed, 0, 255, 2000, 240);
-      // v1.3 S8: the pulse's full cycle is never shorter than 2 x the min state (340 ms).
-      // Only s >= 242 is affected.
-      if (period < 2 * STROBE_MIN_STATE_MS) period = 2 * STROBE_MIN_STATE_MS;
-      uint32_t ph = (now - startMs) % period;
-      uint32_t tri = (ph < period / 2) ? (ph * 2 * 255 / period)
-                                       : ((period - ph) * 2 * 255 / period);
-      // An ODD period's midpoint raw-computes 256, not 255 (e.g. period=241, ph=120 ->
-      // 121*510/241 == 256). At full brightness that is 255*256/255 == 256, and the uint8_t
-      // cast truncates it to 0 — the BRIGHTEST instant of the breathe would render BLACK.
-      // contract_core.h's fxTwinkleBright() computes the same triangle and already carries
-      // exactly this guard; this copy of the math was missing it.
-      // While brightness was capped at 200 this was unreachable (200*256/255 truncates to 200).
-      // Since v1.3 S6 the level is a fraction of the strip's own brightness and envB reaches 255,
-      // so this clamp is what keeps the peak from wrapping to black.
-      if (tri > 255u) tri = 255u;
-      uint8_t br = (uint8_t)((uint16_t)envB * (uint16_t)tri / 255);
+    case CE_PULSE: {                                   // triangle breathe, a 2000..340 ms cycle (S8)
+      // Under the beat pump the envelope IS the breathe, so the fill is steady at the pumped
+      // level: two breathes multiplied together beat against each other. An overlay is never
+      // pumped (pulseActive: this call is drawing the overlay).
+      const bool pumped = !u.s.pulseActive && u.s.accentMode != 0 && u.s.beatMod != 0 && gBeat.running;
+      const uint8_t br = pumped ? envB
+                                : (uint8_t)(((uint16_t)envB * fxPulseBright(now - startMs, u.s.speed)) / 255u);
       _fillShow(hp, _scale(color, br));
       break;
     }
@@ -289,17 +276,14 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB
       break;
     }
 
-    case CE_SCAN: {                                    // dot walks ring 1..6, center px0 off
-      uint32_t step = (uint32_t)map((long)u.s.speed, 0, 255, 160, 30);
-      if ((uint32_t)(now - u.frameMs) > step) {
-        u.frameMs = now;
-        neoStrips[hp].setPixelColor(0, 0x000000);      // center always off
-        if (u.frame >= NEO_JEWEL_LEDS) u.frame = 1;
-        if (u.frame < 1) u.frame = 1;
+    case CE_SCAN: {                                    // one dot walks ring 1..6, centre px0 off
+      const uint8_t px = (uint8_t)(1 + fxScanPos(now - startMs, u.s.speed, NEO_JEWEL_LEDS - 1, true));
+      if (px != u.frame || u.lastEnvBright != (int)envB) {   // repaint on a step or a level change
+        u.frame = px;  u.lastEnvBright = envB;
+        neoStrips[hp].setPixelColor(0, 0x000000);      // centre always off
         for (uint16_t i = 1; i < NEO_JEWEL_LEDS; i++)
-          neoStrips[hp].setPixelColor(i, (i == u.frame) ? _scale(color, envB) : 0x000000);
+          neoStrips[hp].setPixelColor(i, (i == px) ? _scale(color, envB) : 0x000000);
         neoStrips[hp].show();
-        u.frame++;
       }
       break;
     }
@@ -494,7 +478,7 @@ static inline bool _fireAccent(uint8_t hp, ContractEffect fx, const ContractRGB&
 // blackout) start over when such a look starts.
 static inline void _freshCounters(uint8_t hp, ContractEffect eff) {
   if (eff != CE_SCAN && eff != CE_SPARKLE) return;
-  gUnit[hp].frame = 1; gUnit[hp].frameMs = 0;
+  gUnit[hp].frame = 0; gUnit[hp].frameMs = 0;         // 0: the scan's first frame is always painted
   varResets(hp);
 }
 // A live look: now, or when its S4 hold ends. NEVER writes HP_command (LED-only).

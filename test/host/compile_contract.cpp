@@ -637,7 +637,8 @@ int main() {
   // Also pins that a LIVE (unscored) look NEVER self-accents: only the score path fires the
   // board-side overlay, so a board driven live cannot double-fire (the Pi's verb P AND its
   // own beat edge on the same beat).
-  // 120 BPM (500 ms/beat), s=128 => the flash's ON half is 434 ms. Sample two moments that are
+  // 120 BPM (500 ms/beat), s=128 => the flash's ON half is 297 ms (the core's shared timing:
+  // fxFlashHalfMs). Sample two moments that are
   // both inside an ON half but at opposite ends of a beat: phase ~0.02 (full accent) vs phase
   // ~0.92 (the envelope has decayed to its floor).
   {
@@ -655,7 +656,7 @@ int main() {
       return (uint8_t)(neoStrips[0].shown[0] & 0xFFu);      // c=0000FF => blue == the level
     };
     uint8_t onBeat  = litBlue(T0 + 10);    // beat 0 phase 0.02, flash elapsed  10 ms -> ON
-    uint8_t offBeat = litBlue(T0 + 960);   // beat 1 phase 0.92, flash elapsed 960 ms -> ON (960 % 868 = 92)
+    uint8_t offBeat = litBlue(T0 + 2460);  // beat 4 phase 0.92, flash elapsed 2460 ms -> ON (2460 % 594 = 84)
 
     if (gUnit[0].s.pulseActive) {
       printf("FAIL: a LIVE (unscored) look self-accented — only a scored section may fire the "

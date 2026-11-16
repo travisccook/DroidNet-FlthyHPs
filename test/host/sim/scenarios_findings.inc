@@ -255,7 +255,7 @@ SCENARIO(f9_pulse_obeys_the_rate_floor) {
   run(6); line("!**M:v=show\r");
   double fast = pulseHz(255), mid = pulseHz(128);
   printf("  pulse s=255: %.2f Hz, s=128: %.2f Hz\n", fast, mid);
-  CHECK(fast <= 3.0);  CHECK(mid > 0.9 && mid < 1.1);   // only s >= 242 changed
+  CHECK(fast <= 3.0);  CHECK(mid > 0.8 && mid < 1.05);  // s=128 is the core's 1167 ms cycle: 5 or 6 peaks in 6 s
 }
 SCENARIO(l4_d_on_a_look_is_ignored) {                // v1.3 hosts never send it; a v1.3 board ignores it
   run(6); line("!**M:v=show\r");
