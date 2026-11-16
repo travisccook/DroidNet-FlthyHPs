@@ -53,7 +53,6 @@
 #include <stdio.h>          // snprintf (verb Q ack line)
 
 // -------------------------------------------------------------- constants ----
-static const uint8_t  FLTHY_SAFE_MAX_BRIGHT = 200;   // conservative jewel clamp (fork spec §11)
 static const uint32_t FLTHY_STROBE_MIN_MS   = 170;   // >=170 ms/state => <= ~3 Hz (fork spec §11)
 static const uint8_t  FLTHY_FX_BASE         = 100;   // LEDFunction = 100 + effectId (101..115)
 #ifdef NEO_JEWEL_RGBW
@@ -78,7 +77,7 @@ struct FlthyUnit {
   ContractEffect effect   = CE_SOLID;
   ContractRGB            color{0, 0, 0};
   uint8_t        speed    = 128;
-  uint8_t        brightBase = FLTHY_SAFE_MAX_BRIGHT;   // b (pre-envelope)
+  uint8_t        brightBase = 255;        // b (pre-envelope): a fraction of the strip's own brightness (S6)
   uint8_t        beatMod  = 0;            // m (envelope depth)
   uint8_t        accentMode = 0;          // am
   uint32_t       durMs    = 0;            // d (0 = hold until changed)
@@ -102,7 +101,7 @@ struct FlthyUnit {
                                           // CE_NONE == the v1.1 wire shape (a verb P with no
                                           // i=) and still means a solid full-field fill.
   ContractRGB            pulseColor{255, 255, 255};
-  uint8_t        pulseBright  = FLTHY_SAFE_MAX_BRIGHT;
+  uint8_t        pulseBright  = 255;
   uint32_t       pulseStartMs = 0;
   uint32_t       pulseDurMs   = 0;
   uint32_t       pulseLastMs  = 0;        // strobe cool-down anchor
@@ -130,6 +129,10 @@ static bool    gInterlocked[HPCOUNT] = {false, false, false};
 // v1.3 L1: an armed show keeps the stock idle look (and its LED twitch) until the show's first
 // C, live A or P. From then on the LED side is the show's too.
 static bool    gBegun[HPCOUNT]       = {false, false, false};
+// v1.3 S6: the brightness ceiling is the strip's own level when the show arms (BRIGHT, or
+// what H<unit>B<level> last set). b and verb B are fractions of it; B never outlives the show.
+static uint8_t gCeil[HPCOUNT] = {0, 0, 0};
+static uint8_t gRide[HPCOUNT] = {255, 255, 255};
 
 // Phase-2 score (per unit, sorted asc by atBeat via contract_core scoreInsert)
 static ScoreEntry gScore[HPCOUNT][FLTHY_SCORE_CAP];
@@ -138,7 +141,7 @@ static int        gScoreActive[HPCOUNT] = {-1, -1, -1};
 
 // ---------------------------------------------------------------- helpers ----
 static inline uint8_t _clampBright(int v) {
-  return (uint8_t)(v < 0 ? 0 : (v > FLTHY_SAFE_MAX_BRIGHT ? FLTHY_SAFE_MAX_BRIGHT : v));
+  return (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v));
 }
 // Is the LED render slot one of ours (101..115)?
 static inline bool _slotIsOurs(uint8_t hp) {
@@ -183,6 +186,13 @@ static inline void _showBegin(uint8_t hp) {
 // v1.3 S7, R1: the native looks this layer may start. They need no option bytes and no
 // counters: 1 = Leia (fixed blue colour projector), 6 = rainbow.
 static inline bool flthyNativeAllowed(int code) { return code == 1 || code == 6; }
+// The native brightness command (H<unit>B<level>) calls this: the owner's new level is the
+// ceiling from now on, and any verb-B ride is over.
+inline void contractOwnerBrightness(uint8_t hp, uint8_t level) {
+  gCeil[hp] = level;
+  gRide[hp] = 255;
+  gUnit[hp].lastEnvBright = -1;                         // memoised looks repaint at the new level
+}
 // pack an RGB scaled by a 0..255 brightness multiplier into 0xRRGGBB (NEO_GRB
 // ordering is handled inside the library; we always pass logical R,G,B).
 static inline uint32_t _scale(const ContractRGB& c, uint8_t bri) {
@@ -267,12 +277,9 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB
       // cast truncates it to 0 — the BRIGHTEST instant of the breathe would render BLACK.
       // contract_core.h's fxTwinkleBright() computes the same triangle and already carries
       // exactly this guard; this copy of the math was missing it.
-      // Today the bug is unreachable, but only by accident: every brightness store goes through
-      // _clampBright(), so envB can never exceed FLTHY_SAFE_MAX_BRIGHT (200), and 200*256/255
-      // truncates to 200 — the same value the clamp gives. Verified by brute force over the whole
-      // (period, ph, envB<=200) space: this clamp changes ZERO rendered values, so nothing moves
-      // in the JS visualizer mirror either. Raise that photosensitivity cap toward 255 without
-      // this line, though, and the black flash comes back (8 samples at envB=255).
+      // While brightness was capped at 200 this was unreachable (200*256/255 truncates to 200).
+      // Since v1.3 S6 the level is a fraction of the strip's own brightness and envB reaches 255,
+      // so this clamp is what keeps the peak from wrapping to black.
       if (tri > 255u) tri = 255u;
       uint8_t br = (uint8_t)((uint16_t)envB * (uint16_t)tri / 255);
       _fillShow(hp, _scale(color, br));
@@ -580,9 +587,11 @@ static inline void _applyScore(uint8_t hp, const ScoreEntry& e) {
 static inline void _unitReset(uint8_t hp) {
   FlthyUnit& u = gUnit[hp];
   scoreClear(gScoreCount[hp], gScoreActive[hp]);
+  if (gInterlocked[hp] && gRide[hp] != 255) neoStrips[hp].setBrightness(gCeil[hp]);   // B never outlives a show
+  gRide[hp] = 255;
   u.active = false;  u.pulseActive = false;  u.nativeLook = false;
   u.overNative = false;
-  u.effect = CE_SOLID;  u.color = ContractRGB{0, 0, 0};  u.speed = 128;  u.brightBase = FLTHY_SAFE_MAX_BRIGHT;
+  u.effect = CE_SOLID;  u.color = ContractRGB{0, 0, 0};  u.speed = 128;  u.brightBase = 255;
   u.beatMod = 0;  u.accentMode = 0;  u.durMs = 0;  u.level = 0;
   u.sectionStart = 0;  u.sectionEnd = 0;
   u.lastAccentBeat = BEAT_NONE;
@@ -678,9 +687,13 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
                                                        // not gate the new one
       break;
 
-    case CV_BRIGHT: {                                  // master volatile ride (never EEPROM)
-      uint8_t b = _clampBright(pr.hasBright ? pr.bright : (pr.hasLevel ? pr.level : u.brightBase));
-      neoStrips[hp].setBrightness(b);                  // RAM only: rescales the pixel buffer at once (lossy)
+    case CV_BRIGHT: {                                  // master ride, inside an armed show only (S6)
+      if (!gInterlocked[hp]) break;                    // outside a show H<unit>B<level> is the control
+      gRide[hp] = pr.hasBright ? pr.bright : (pr.hasLevel ? pr.level : 255);
+      // A fraction of the ceiling, never above it. setBrightness() rescales the RAM buffer at
+      // once and lossily, so every look is made to repaint from its own colour.
+      neoStrips[hp].setBrightness((uint8_t)(((uint16_t)gCeil[hp] * gRide[hp]) / 255));
+      u.lastEnvBright = -1;
       break;
     }
 
@@ -703,6 +716,7 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
         bool heldLeds = _heldLeds(hp);
         _unitReset(hp);
         gInterlocked[hp] = true;                       // the servo twitch waits from now (LED-only)
+        gCeil[hp] = neoStrips[hp].getBrightness();     // S6: the owner's level is the ceiling
         gBegun[hp] = false;                            // the stock idle look stays until the show begins
         if (heldLeds) _nativeLedIdle(hp);              // a Resend over a running show: back to stock idle
       } else if (pr.mode == 'i') {                     // L1: reset, then give the board back

@@ -847,7 +847,7 @@ void loop(){
           if( dnMask & (1 << hp) )
           {
             neoStrips[hp].setBrightness(dnLevel);   // rescales the RAM buffer at once (Adafruit NeoPixel 1.15.x)
-            gUnit[hp].lastEnvBright = -1;           // forces the contract's memoised solid/meter/off looks to repaint
+            contractOwnerBrightness(hp, dnLevel);   // the owner's level is the contract's ceiling from now on (v1.3 S6)
             neoStrips[hp].show();                   // shows held frames now (a finished Short Circuit, a contract idle hold)
           }
         }

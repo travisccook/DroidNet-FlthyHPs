@@ -84,7 +84,9 @@ struct Adafruit_NeoPixel {
   int      showCount = 0;
   void setPixelColor(uint16_t i, uint32_t c) { if (i < NEO_JEWEL_LEDS) staged[i] = c; }
   void show() { memcpy(shown, staged, sizeof(staged)); showCount++; }
-  void setBrightness(uint8_t) {}
+  uint8_t  bright = 100;                     // BRIGHT, until setBrightness() changes it
+  void setBrightness(uint8_t b) { bright = b; }
+  uint8_t  getBrightness() const { return bright; }
   uint8_t  raw[NEO_JEWEL_LEDS * 4] = {0};    // getPixels(): the L3 overlay saves and restores the raw frame
   uint8_t* getPixels() { return raw; }
 };
