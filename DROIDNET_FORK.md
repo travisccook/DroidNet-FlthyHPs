@@ -48,7 +48,7 @@ announce" below.
   `ContractFlthy.h` against `test/host/mock_flthy.h`, 1,581,274 contract fuzz checks, 77/77 native
   brightness parser checks and 2,965,122 native brightness fuzz checks, 37,506 WDP announce core
   checks and 19 adapter checks (run twice).
-- **Whole-firmware simulation: 72 scenarios pass.** Stage 2b of `run.sh`
+- **Whole-firmware simulation: 73 scenarios pass.** Stage 2b of `run.sh`
   (`test/host/sim`) runs the real `src/main.cpp` on a fake Arduino core: the 9600-baud wire with its
   receive ring (bytes are lost when it is full) and its transmit ring (a write blocks when it is
   full), `pulseIn()` blocking as it does in RC mode, and loop passes of random length. Origin is
@@ -60,12 +60,11 @@ announce" below.
   reply; `A199` in a show. `test/host/sim/scenarios_review.inc` holds a scenario for each, the
   single-fault sweep (45,786 corruptions) and the S9 property test (150 hostile streams, the latched
   frames measured by three observers).
-- **Build:** flash 39,138 B of 253,952; SRAM 4,576 B of 8,192 (the score tables are 2,112 B).
-  `stack_report.py`: worst-case stack 484 B of the 3,616 B left. The tool marks this build's bound
-  "not sound" over one edge that is not real: two bytes of the string "Flthy HP Controller" in
-  `.data` equal the address of `RCHP()`, which it then takes for a function the I2C interrupt could
-  call. Counted anyway, with one level of nesting: 593 B, 3,023 B spare. The heap (Arduino `String`)
-  shares that space.
+- **Build:** flash 39,706 B of 253,952; SRAM 4,588 B of 8,192 (the score tables are 2,112 B).
+  `stack_report.py`: worst-case stack 442 B of the 3,604 B left, 3,162 B spare. The heap (Arduino
+  `String`) shares that space. (The tool takes any two bytes of `.data` equal to a function's address
+  for a function pointer; on one build of the fix round two letters of "Flthy HP Controller" matched
+  `RCHP()` and it called the bound "not sound" over an interrupt path that does not exist.)
 - **Prebuilt image: older than this code.** `firmware/` holds the image built from `9d28c52`. No
   image has been built from contract v1.3; `firmware/build-image.sh` does that at release.
 - **Hardware verification: NONE.** This has never been flashed to a board. Not once. Nothing
@@ -148,10 +147,11 @@ What `ContractFlthy.h` does on top of the shared core. The spec's rule numbers a
   `A198` puts it back. Without this a show armed with no `wd=` whose host died held the servos for
   good.
 - **Pulse with no show (L3).** The overlay saves the stock function and its frame, and puts both
-  back when it ends.
+  back when it ends, the frame rescaled if the owner changed the strip level meanwhile.
 - **`d=` on `A` (L4)** is ignored. **First live `A` with no `i=` (L5)** is a solid fill.
 - **Native take-over (L6).** A stock LED command (type 0, any designator) or an `S<n>` sequence ends
-  the show on each unit it addresses, as idle would, then runs (`contractNativeTakeover()`). Two
+  the show on each unit it addresses, as idle would, then runs (`contractNativeTakeover()`); a live
+  look that S4 is still holding back is dropped with it. Two
   differences from L6's wording, by decision: a stock servo command (type 1) is not a take-over (the
   layer never has the servos; the command runs and the lights stay), and `H<unit>B<level>` moves the
   show's ceiling instead of ending the show.
@@ -170,8 +170,12 @@ What `ContractFlthy.h` does on top of the shared core. The spec's rule numbers a
   less than is not latched: what is on the jewel already passed the gate, and the tick offers the
   frame again every pass. Any other frame is stock light: never held back, and told to the gate
   with `contractFieldForced()`. Native looks the contract starts need no ask-then-tell here, because
-  the stock code draws them through the same latch. Known limit, the core's: a swing of less than a
-  quarter of the ceiling is a look's texture and is not rate-limited.
+  the stock code draws them through the same latch. Three things here are the board's own care
+  around the core's gate: the level is whole numbers but seven pixels measure it in sevenths, so a
+  lit peak that creeps up inside one level still moves the gate's clock; when the owner changes the
+  strip level (`H<unit>B<level>`) the gate's reference is rescaled with the pixels; and a frame held
+  back across a lowered level is blacked out instead of left at the old scale. Known limit, the
+  core's: a swing of less than a quarter of the ceiling is a look's texture and is not rate-limited.
 - **Clock (C1, C2, C6).** One clock for the three units, seeded once per line; a mid-beat re-anchor
   does not fire that beat's accent again; a nudge never moves a section back; `bpm=0` holds. While
   held, a pumped look is shown still at its own `b=` level (the pump needs the clock), not frozen in

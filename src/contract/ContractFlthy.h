@@ -97,6 +97,7 @@ struct FlthyUnit {
   bool     overNative  = false;
   byte     savedFn     = 255;             // the stock LEDFunction under the overlay
   uint8_t  savedPx[NEO_JEWEL_LEDS * 4];   // its frame, raw (RGB uses 21 of the 28 bytes)
+  uint8_t  savedAt     = 0;               // the strip level that frame was scaled for
 };
 
 static FlthyUnit  gUnit[HPCOUNT];
@@ -199,6 +200,8 @@ struct FlthyLatch {
   uint32_t touchMs = 0;                   // the last pass this layer had the jewel, or handed it back
   bool     touched = false;               // touchMs is meaningful
   bool     pending = false;               // a frame was held back and waits in the pixel buffer
+  uint8_t  latchedAt = 0;                 // the strip level the frame on the jewel was latched at
+  uint16_t peakSum   = 0;                 // while the field is lit: its brightest pixel sum so far (sevenths of a level)
 };
 static FlthyLatch gLatch[HPCOUNT];
 static inline void _touch(uint8_t hp) { gLatch[hp].touchMs = millis(); gLatch[hp].touched = true; }
@@ -221,8 +224,31 @@ inline void DnStrip::show() {
   const uint32_t now = millis();
   const bool ours = _hasLeds(hp) || (g.touched && (uint32_t)(now - g.touchMs) < FLTHY_ONSET_GAP_MS);
   if (!ours) contractFieldForced(s, level, now);        // stock light: recorded, never held back
-  else if (contractFieldGate(s, level, now) < level) { g.pending = true; return; }   // too soon: keep what is on the jewel
+  else if (contractFieldGate(s, level, now) < level) {  // too soon: keep what is on the jewel
+    g.pending = true;
+    if (getBrightness() < g.latchedAt) {
+      // ...unless the owner has lowered the strip level since it was latched: that frame was scaled
+      // for the old level and cannot be rescaled on the LEDs. Black it out (a fall is always
+      // allowed); the held frame follows at the new level.
+      uint8_t keep[NEO_JEWEL_LEDS * 4]; uint8_t* raw = getPixels();
+      const size_t n = (size_t)NEO_JEWEL_LEDS * FLTHY_PX_BYTES;
+      memcpy(keep, raw, n); memset(raw, 0, n);
+      Adafruit_NeoPixel::show();
+      memcpy(raw, keep, n);
+      contractFieldGate(s, 0, now);
+      g.latchedAt = getBrightness();
+    }
+    return;
+  }
   g.pending = false;
+  g.latchedAt = getBrightness();
+  // The gate takes the level as a whole number; seven pixels measure it in sevenths. While the field
+  // is lit, a peak that creeps up by less than one whole level is still "getting brighter", and by
+  // the gate's own rule the onset is not over until the light stops rising. Keep that finer peak
+  // here and move the gate's clock with it, or an observer whose line sits inside that last level
+  // would time the onset later than the gate did.
+  if (!s.fieldLit) g.peakSum = 0;
+  else if (sum > g.peakSum) { g.peakSum = sum; s.fieldOnsetMs = now; }
   Adafruit_NeoPixel::show();
 }
 // Both auto-twitch timers a full interval from now. Whenever the layer lets go of a unit the
@@ -267,20 +293,18 @@ static inline void _restoreRide(uint8_t hp) {
 // The native brightness command (H<unit>B<level>) calls this: the owner's new level is the
 // ceiling from now on, and any verb-B ride is over.
 inline void contractOwnerBrightness(uint8_t hp, uint8_t level) {
+  // The field gate keeps its reference level in latched-byte units, and setBrightness() has just
+  // rescaled every latched byte. Rescale the reference the same way, or a peak measured at the old
+  // level would be compared with a step sized for the new one (found by the S9 soak: a doubled
+  // level made the pump's next fall too small to count, and its next rise passed as "still rising").
+  ContractUnitState& gs = gUnit[hp].s;
+  const uint16_t was = (uint16_t)gs.ceil + 1u, is = (uint16_t)level + 1u;
+  const uint16_t ref = (uint16_t)(((uint32_t)gs.fieldRef * is) / was);
+  gs.fieldRef = (uint8_t)(ref > 255u ? 255u : ref);
+  gLatch[hp].peakSum = (uint16_t)(((uint32_t)gLatch[hp].peakSum * is) / was);
   gUnit[hp].s.ceil = level;
   gUnit[hp].ride = 255;
   gUnit[hp].lastEnvBright = -1;                         // memoised looks repaint at the new level
-  // A frame the field gate is holding back means the jewel still shows an older, dim frame scaled
-  // for the OLD level, and it cannot be rescaled. Black it out (a blackout is always allowed); the
-  // held frame follows at the new level when its 340 ms are over.
-  if (gLatch[hp].pending) {
-    uint8_t keep[NEO_JEWEL_LEDS * 4]; uint8_t* px = neoStrips[hp].getPixels();
-    const size_t n = (size_t)NEO_JEWEL_LEDS * FLTHY_PX_BYTES;
-    memcpy(keep, px, n); memset(px, 0, n);
-    neoStrips[hp].Adafruit_NeoPixel::show();
-    memcpy(px, keep, n);
-    contractFieldGate(gUnit[hp].s, 0, millis());        // tell the gate: the field is dark
-  }
 }
 // Put the unit's base on its jewel (no overlay up).
 static inline void _showBase(uint8_t hp) {
@@ -506,7 +530,15 @@ static inline void _expireOverlay(uint8_t hp, uint32_t now) {
   if (u.overNative) {
     u.overNative = false;
     LED_command[hp].LEDFunction = u.savedFn;
-    memcpy(neoStrips[hp].getPixels(), u.savedPx, (size_t)NEO_JEWEL_LEDS * FLTHY_PX_BYTES);
+    // The saved frame holds bytes already scaled for the strip level of that moment. If the owner
+    // has changed the level since (H<unit>B<level>), rescale them the way setBrightness() rescaled
+    // the live buffer, or a frame brighter than the new ceiling would come back.
+    const uint16_t was = (uint16_t)u.savedAt + 1u, is = (uint16_t)neoStrips[hp].getBrightness() + 1u;
+    uint8_t* px = neoStrips[hp].getPixels();
+    for (uint8_t i = 0; i < NEO_JEWEL_LEDS * FLTHY_PX_BYTES; i++) {
+      const uint16_t v = (was == is) ? u.savedPx[i] : (uint16_t)(((uint32_t)u.savedPx[i] * is) / was);
+      px[i] = (uint8_t)(v > 255u ? 255u : v);
+    }
     neoStrips[hp].show();
   } else if (s.base != CB_LOOK) {
     _showBase(hp);                                       // nothing of ours underneath: dark
@@ -577,6 +609,7 @@ static inline bool _fireAccent(uint8_t hp, ContractEffect fx, const ContractRGB&
     if (!s.inShow && !u.overNative) {                    // L3: no show armed -> overlay the STOCK look
       u.overNative = true;
       u.savedFn    = LED_command[hp].LEDFunction;
+      u.savedAt    = neoStrips[hp].getBrightness();
       memcpy(u.savedPx, neoStrips[hp].getPixels(), (size_t)NEO_JEWEL_LEDS * FLTHY_PX_BYTES);
     }
     LED_command[hp].LEDFunction = _fxCode(CE_OFF);       // ensure a contract render slot runs
@@ -704,15 +737,15 @@ static inline void _boundary(uint8_t hp, char kind, uint8_t wdSec) {
 
 // v1.3 L6, native take-over: a button on the controller always works. main.cpp calls this for
 // each unit a stock LED command or a stock sequence (S<n>) addresses, BEFORE the command runs.
-// If the contract has anything on that unit (an armed show, a score, a look, an overlay), the show
+// If the contract has anything on that unit (an armed show, a score, a look, held or up, an overlay), the show
 // ends there exactly as M:v=idle ends it: score cleared, hold released, both twitch timers a
 // full interval ahead. The other units play on. A stock SERVO command and H<unit>B<level> are
 // not take-overs here: this layer never has the servos, and the brightness command moves the
 // show's ceiling (S6) instead.
 inline void contractNativeTakeover(uint8_t hp) {
   const ContractUnitState& s = gUnit[hp].s;
-  if (s.inShow || s.scoreLen != 0 || s.base == CB_LOOK || s.base == CB_NATIVE || s.pulseActive)
-    _boundary(hp, 'i', 0);
+  if (s.inShow || s.scoreLen != 0 || s.base == CB_LOOK || s.base == CB_NATIVE || s.pulseActive || s.holdPending)
+    _boundary(hp, 'i', 0);                              // (holdPending: a live look S4 is holding would come up after the button)
 }
 
 // ------------------------------------------------------------- verb dispatch ---

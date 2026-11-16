@@ -65,7 +65,7 @@ non-latching render primitive a no-op). Verified here:
   time with stand-ins for the flash-string hooks this board uses. Both run on a normal computer.
 - `test/host/sim` — the **real `src/main.cpp`** on a fake Arduino core, with a 9600-baud wire in
   both directions (the receive ring that loses bytes when full, the transmit ring that blocks a write
-  when full) and loop passes of random length: 72 scenarios, from the stock commands and the auto
+  when full) and loop passes of random length: 73 scenarios, from the stock commands and the auto
   twitch to bursts, a pushed score, the watchdog and the load check. Three things are checked on
   every simulated pass: a pass that handles a `!` line (whole, spliced or corrupted) starts no servo
   move and writes no `HP_command[]`; a unit the contract held does not move in the pass that lets it
@@ -87,17 +87,17 @@ non-latching render primitive a no-op). Verified here:
   identity and its `Serial` adapter, with a 13-character `-dirty` fw and with none.
 - `bash test/host/run.sh` now finishes by cross-compiling the firmware for real.
 
-Flash is comfortable on this board, unlike its PSI sibling: **39,138 B of 253,952 B (15.4%)**, with
-SRAM at 4,576 B of 8,192 B (55.9%); 2,112 B of that is the three 32-section score tables.
+Flash is comfortable on this board, unlike its PSI sibling: **39,706 B of 253,952 B (15.6%)**, with
+SRAM at 4,588 B of 8,192 B (56.0%); 2,112 B of that is the three 32-section score tables.
 
-The stack has been bounded statically too (`test/host/stack_report.py`): **484 B of the 3,616 B
-available (13%)**, with no recursion and no `alloca`/VLA. On this build the tool also reports that
-the I2C interrupt could reach `Adafruit_NeoPixel::show()`, which re-enables interrupts. That edge is
-not real: the tool treats any two bytes of initialised data that equal a function's address as a
-function pointer, and here the letters `P` and space in the string "Flthy HP Controller" happen to
-equal the address of `RCHP()`. Counted anyway, with one level of nesting, the figure is 593 B. The
-I2C handler does not render LEDs and does not touch a `String`: it copies the bytes into its own
-fixed buffer, and `loop()` takes the line from there with interrupts off. (One caveat: this board
+The stack has been bounded statically too (`test/host/stack_report.py`): **442 B of the 3,604 B
+available (12%)**, with no recursion, no `alloca`/VLA, and — unlike the PSI — **no interrupt-nesting
+hazard**: no interrupt handler reaches a `sei`, so interrupts cannot nest. The I2C handler does not
+render LEDs and does not touch a `String`: it copies the bytes into its own fixed buffer, and `loop()`
+takes the line from there with interrupts off. (The tool takes any two bytes of initialised data that
+equal a function's address for a function pointer. On one build of this round two letters of the
+string "Flthy HP Controller" matched `RCHP()` and it reported an interrupt path that does not exist;
+if its verdict ever reads "not sound", check for that first.) (One caveat: this board
 *does* link the heap — Arduino `String` pulls in `malloc`/`free` — and the heap grows up toward the
 stack. With 3.6 KB free that is not an overflow risk, but long-run fragmentation is not something a
 static analysis can rule out.)
@@ -375,7 +375,7 @@ bash test/host/run.sh
 # [1b] wdp_announce_core unit tests                -> 37,506/37,506 checks
 # [1c] wdp_fork.h announce adapter + identity      -> 19/19 checks, with fw "abcdef0-dirty" and "unknown"
 # [2]  ContractFlthy.h firmware type-check, against a mock
-# [2b] whole-firmware simulation                   -> 72 scenarios: the real src/main.cpp on a fake
+# [2b] whole-firmware simulation                   -> 73 scenarios: the real src/main.cpp on a fake
 #      Arduino core; a scenario named in test/host/sim/xfail.txt must fail (the file is empty)
 # [3]  static source guards (LED-only invariant for the contract and the brightness branch,
 #      wire budget, no Serial write that could land inside a WDP announce)

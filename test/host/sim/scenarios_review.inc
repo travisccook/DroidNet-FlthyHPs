@@ -152,6 +152,16 @@ SCENARIO(r4_a_bad_load_drops_late_scored_lines) {    // spec section 7: until th
   line("!HFM:v=show\r"); line("!HFA:i=solid,c=0000ff,at=16\r"); CHECK_EQ(scoreLen(0), 1);   // a new show loads again
 }
 
+// Found by the S9 soak: a live look that S4 is still holding (it arrived under 170 ms after the last
+// one) is contract state too. The operator's button must drop it, or it comes up after the button.
+SCENARIO(l6_button_also_drops_a_live_look_s4_is_holding) {
+  run(6); say("!HFA:i=solid,c=ff0000\r"); run(0.05);
+  say("!HFX\r"); run(0.03);
+  say("!HFA:i=solid,c=00ff00\r"); say("F0055|1\r"); run(0.06);   // the green look is held; the button lands before it is due
+  CHECK_EQ(LED_command[0].LEDFunction, 5);
+  run(3.0); CHECK(!lookUp(0));  CHECK(stockAgain(0));  CHECK_EQ(LED_command[0].LEDFunction, 100);   // the off colour, after the 1 s
+}
+
 // ---- Finding 6: the Q reply never stalls loop(), and is never mixed with a WDP announce ---------
 static int qReplies() { int n = 0; size_t p = 0; while ((p = Serial.tx.find("q:ver=", p)) != std::string::npos) { n++; p++; } return n; }
 static bool txLinesWhole() {                         // every reply and every announce on TX is one unbroken line
@@ -260,8 +270,10 @@ SCENARIO(c6_hold_shows_a_pumped_look_at_its_own_level) {
 // is an ONSET. S9: at most three onsets in any second, whatever lines arrive, and never brighter
 // than the ceiling. The limit must not depend on where an observer draws the two lines, so three
 // observers count, the same three as the logics fork's property stage: 10 % and 50 % of the ceiling,
-// 19 % and 75 %, 4 % and 31 %. (The core's gate promises this for any pair at least a quarter of the
-// ceiling apart; swings smaller than that are a look's texture and are not limited.)
+// 19 % and 75 %, 4 % and 31 %. (The core's gate promises this for any pair at least a STEP apart, a
+// quarter of the ceiling plus one level; swings smaller than that are a look's texture and are not
+// limited. At a low ceiling 27 % is less than a step, so an observer's "lit" line is never drawn
+// closer to its "dark" line than a step and one level.)
 // Only the contract's onsets count: one that happens while the layer has the jewel's LEDs, or within
 // 300 ms of it letting go (so a reset that hands back to a lit off colour counts). The stock
 // firmware's own looks may strobe faster, as they always did (stock function 2, Short Circuit), and
@@ -270,13 +282,15 @@ SCENARIO(c6_hold_shows_a_pumped_look_at_its_own_level) {
 static int fullScale(int level) { return level >= 255 ? 255 : (255 * (level + 1)) >> 8; }
 struct Observer {
   int darkPct, litPct; bool lit = false; std::vector<uint64_t> onsets, recent; int worst = 0;
+  int minGap = 0;                                    // 7 * (step + 1 level), set with the ceiling
+  bool isLit(int S, int FS) const { return S * 100 >= FS * litPct && S * 100 >= FS * darkPct + minGap * 100; }
   void see(int S, int FS, bool counts, uint64_t now) {
-    if (!lit && S * 100 >= FS * litPct) {
+    if (!lit && isLit(S, FS)) {
       lit = true;
       if (counts) { onsets.push_back(now); recent.push_back(now); int n = 0; for (uint64_t x : recent) if (x + 1000000ULL > now) n++; worst = std::max(worst, n); }
     } else if (lit && S * 100 <= FS * darkPct) lit = false;
   }
-  void reread(int S, int FS) { if (S * 100 >= FS * litPct) lit = true; else if (S * 100 <= FS * darkPct) lit = false; }
+  void reread(int S, int FS) { if (isLit(S, FS)) lit = true; else if (S * 100 <= FS * darkPct) lit = false; }
   void afresh() { recent.clear(); }
   int maxPerSecond() const { return worst; }
 };
@@ -294,6 +308,7 @@ struct Photo {
   void sample() {
     if (paused) return;
     const uint8_t* p = neoStrips[hp].shown; int S = 0, FS = 7 * fullScale(ceil);
+    for (auto& o : obs) o.minGap = 7 * (ceil / 4 + 2);
     for (int i = 0; i < 7; i++) { int m = std::max(p[i * 3], std::max(p[i * 3 + 1], p[i * 3 + 2])); S += m; peak = std::max(peak, m); if (m > fullScale(ceil)) overCeiling++; }
     if (neoStrips[hp].getBrightness() > ceil) overCeiling++;
     if (simHasLeds(hp)) { lastHad = us; everHad = true; }
@@ -456,6 +471,11 @@ static bool backOnStock(Stream& st, double watch, std::string& why) {
   return why.empty();
 }
 // A longer soak: SIM_DEFS="-DS9_SEEDS=5000 -DS9_SEED0=90000" ./run_sim.sh
+// Two streams of the soak at seed base 500000 are kept in mind here because no hand-made scenario
+// reproduces what they found: 643 (ending 1) and 3597 (ending 0). A verb-P overlay over the stock look
+// saved that look's frame, the owner lowered the strip level while the overlay was up, and the frame
+// that came back was still scaled for the old level: brighter than the new ceiling until the stock
+// look repainted. (Fixed in _expireOverlay(): the saved frame is rescaled to the level of the moment.)
 #ifndef S9_SEEDS
 #define S9_SEEDS 150
 #endif
@@ -472,7 +492,9 @@ SCENARIO(s9_property_hostile_streams) {
     if (pid == 0) {
       failures = 0; ledOnlyViolations = 0; holdViolations = 0; srand(S9_SEED0 + seed);
       Stream st; st.until(us + 6000000);
-      const int ending = seed % 3;                   // 0: M:v=idle   1: the host dies (watchdog)   2: the operator's button (L6)
+      // 0: M:v=idle   1: the host dies (watchdog)   2: the operator's button (L6). To run ONE stream of a soak
+      // again: SIM_DEFS="-DS9_SEEDS=1 -DS9_SEED0=<seed0 + n>" and S9_ENDING=<n % 3> in the environment.
+      const int ending = getenv("S9_ENDING") ? atoi(getenv("S9_ENDING")) : seed % 3;
       st.traffic(40.0, ending == 1, 10, 12);
       if (ending == 1) { say("!**M:v=show,wd=3\r"); st.settle(); for (int i = 0; i < 12; i++) { std::string l = genLine(true); if (l.find("M:v=idle") == std::string::npos) sayAs(l + "\r", true); } st.settle(); st.until(us + 8000000); }
       else if (ending == 2) { st.settle(); say("A0055|2\r"); st.settle(); st.until(us + 4000000); }   // solid blue for 2 s on all three, then the off colour
