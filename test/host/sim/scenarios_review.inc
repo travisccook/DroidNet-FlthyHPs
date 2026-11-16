@@ -359,6 +359,9 @@ struct Observer {
 // (g) the field's COLOUR while it is lit, as one observer sees it: the mean colour, normalised to its
 // brightest channel. A jump of more than 96 in any channel against the frame before is a change of
 // look. S4: such changes are at least 170 ms apart, whichever path asked.
+// A colour is SEEN, and so dated, at the first frame of 4 levels or more in its strongest channel:
+// under that, one count of rounding in one LED moves the mean colour further than the test. A look
+// that comes up through 3 and 7 levels has changed the field's colour at the 7, not at the 3.
 struct ColourObs {
   int darkPct, litPct; bool lit = false, known = false, any = false; int chroma[3] = {0, 0, 0}; uint64_t at = 0;
   void see(int S, int FS, long sr, long sg, long sb, bool counts, uint64_t now, uint64_t& closest, long& changes) {
@@ -395,9 +398,20 @@ struct Photo {
   bool reread = false;
   void newCeiling(int c) { ceil = c; reread = true; paused = false; }
   template <class F> void every(F f) { for (auto& o : obs) f(o); for (auto& o : narrow) f(o); for (auto& o : lum) f(o); }
+  // EVERY frame the strip latched since the last look is measured, in order, not only the one that is
+  // up when the pass ends: the layer can latch a held frame and draw the next one 2 ms later, and a
+  // photometer that missed the first dated that onset at a later, smaller rise (soak 800000 + 2315).
+  long seenShows = -1;
   void sample() {
-    if (paused) return;
-    const uint8_t* p = neoStrips[hp].shown; int S = 0, FS = 7 * fullScale(ceil); long sr = 0, sg = 0, sb = 0, sy = 0;
+    if (paused) { seenShows = neoStrips[hp].showCount; return; }
+    const long nowShows = neoStrips[hp].showCount;
+    if (seenShows < 0 || nowShows < seenShows || nowShows - seenShows > Adafruit_NeoPixel::RING) seenShows = nowShows;
+    if (seenShows == nowShows) { frame(neoStrips[hp].shown); return; }
+    while (seenShows < nowShows) frame(neoStrips[hp].ring[seenShows++ % Adafruit_NeoPixel::RING]);
+  }
+  std::vector<std::pair<uint64_t, int>> colourLog;   // every counted change of colour: when, and which observer
+  void frame(const uint8_t* p) {
+    int S = 0, FS = 7 * fullScale(ceil); long sr = 0, sg = 0, sb = 0, sy = 0;
     const int step = ceil < 10 ? 2 : ceil / 10 + 1;
     every([&](Observer& o) { o.minGap = 7 * (step + 1); });
     for (int i = 0; i < 7; i++) { const int g = p[i * 3], r = p[i * 3 + 1], b = p[i * 3 + 2];      // the strip keeps G,R,B
@@ -429,7 +443,8 @@ struct Photo {
     for (auto& o : obs) o.see(S, FS, cOnset, us);
     for (auto& o : narrow) o.see(S, FS, cOnset, us);
     for (auto& o : lum) o.see((int)sy, FS, cOnset, us);
-    { const uint64_t was = colourClosestUs; for (auto& c : colour) c.see(S, FS, sr, sg, sb, cColour, us, colourClosestUs, colourChanges);
+    { const uint64_t was = colourClosestUs; for (auto& c : colour) { const long n = colourChanges; c.see(S, FS, sr, sg, sb, cColour, us, colourClosestUs, colourChanges);
+        if (colourChanges != n) colourLog.push_back({c.at, (int)(&c - colour)}); }
       if (colourClosestUs < was && colourClosestUs < 165000ULL) colourBadAt = us; }
     size_t n1 = 0; every([&](Observer& o) { n1 += o.onsets.size(); });
     if (n1 != n0) { edgeOnset = false; tailOnset = false; }
@@ -582,40 +597,66 @@ static const char* G_CALM[] = {"F0055", "A0059|3", "A0055|1", "R006|2", "A096", 
                                "F1013", "A104", "A105|2", "A198", "A199", "T1042", "X0045|1"};
 // One latched frame as the core's gates measure it, for the REPLAY (S9_REPLAY=1): the core's own
 // contractFieldAsk()/contractFieldTell() run again, from a fresh state, on what the jewel showed.
-struct FrameRec { uint32_t ms; uint8_t level, lum, ceil; bool ours; uint32_t sig; byte fn; uint8_t eff; bool pulse; uint8_t chroma[3]; };
+struct FrameRec { uint32_t ms; uint8_t level, lum, ceil; bool ours; uint32_t sig; byte fn; uint8_t eff; bool pulse; uint8_t chroma[3]; int top; };
 struct Stream {                                      // drives the wire and measures the three jewels
   Photo ph[3] = {Photo(0), Photo(1), Photo(2)};
-  std::vector<FrameRec> rec[3]; uint8_t lastBytes[3][21]; bool recOn = getenv("S9_REPLAY") != 0;
-  void record() {
+  std::vector<FrameRec> rec[3]; long recShows[3] = {-1, -1, -1}; bool recOn = getenv("S9_REPLAY") != 0;
+  void record() {                                    // every frame latched since the last pass, like the photometer
     for (int hp = 0; hp < 3; hp++) {
-      const uint8_t* p = neoStrips[hp].shown;
-      if (!rec[hp].empty() && !memcmp(p, lastBytes[hp], 21)) continue;
-      memcpy(lastBytes[hp], p, 21);
-      int sum = 0, sumY = 0; long c[3] = {0, 0, 0};
-      for (int i = 0; i < 7; i++) { const int g = p[i * 3], r = p[i * 3 + 1], b = p[i * 3 + 2]; sum += std::max(r, std::max(g, b)); sumY += (54 * r + 183 * g + 19 * b) >> 8; c[0] += r; c[1] += g; c[2] += b; }
-      const long top = std::max(c[0], std::max(c[1], c[2]));
-      FrameRec f = {(uint32_t)millis(), (uint8_t)(sum / 7), (uint8_t)(sumY / 7), gUnit[hp].s.ceil,
-                    simHasLeds(hp) || (gLatch[hp].touched && millis() - gLatch[hp].touchMs < 340), gUnit[hp].s.lookSig,
-                    LED_command[hp].LEDFunction, (uint8_t)gUnit[hp].s.effect, gUnit[hp].s.pulseActive,
-                    {(uint8_t)(top ? c[0] * 255 / top : 0), (uint8_t)(top ? c[1] * 255 / top : 0), (uint8_t)(top ? c[2] * 255 / top : 0)}};
-      rec[hp].push_back(f);
+      const long nowShows = neoStrips[hp].showCount;
+      if (recShows[hp] < 0 || nowShows < recShows[hp] || nowShows - recShows[hp] > Adafruit_NeoPixel::RING) recShows[hp] = nowShows;
+      while (recShows[hp] < nowShows) {
+        const uint32_t at = neoStrips[hp].ringMs[recShows[hp] % Adafruit_NeoPixel::RING];   // the board's own clock at the latch
+        const uint8_t* p = neoStrips[hp].ring[recShows[hp]++ % Adafruit_NeoPixel::RING];
+        int sum = 0, sumY = 0; long c[3] = {0, 0, 0};
+        for (int i = 0; i < 7; i++) { const int g = p[i * 3], r = p[i * 3 + 1], b = p[i * 3 + 2]; sum += std::max(r, std::max(g, b)); sumY += (54 * r + 183 * g + 19 * b) >> 8; c[0] += r; c[1] += g; c[2] += b; }
+        const long top = std::max(c[0], std::max(c[1], c[2]));
+        FrameRec f = {at, (uint8_t)(sum / 7), (uint8_t)(sumY / 7), gUnit[hp].s.ceil,
+                      simHasLeds(hp) || (gLatch[hp].touched && (millis() - gLatch[hp].touchMs < 340 || gLatch[hp].owed)), gUnit[hp].s.lookSig,
+                      LED_command[hp].LEDFunction, (uint8_t)gUnit[hp].s.effect, gUnit[hp].s.pulseActive,
+                      {(uint8_t)(top ? c[0] * 255 / top : 0), (uint8_t)(top ? c[1] * 255 / top : 0), (uint8_t)(top ? c[2] * 255 / top : 0)}, (int)top};
+        if (!rec[hp].empty()) { const FrameRec& l = rec[hp].back(); if (l.level == f.level && l.lum == f.lum && l.top == f.top && !memcmp(l.chroma, f.chroma, 3)) continue; }
+        rec[hp].push_back(f);
+      }
     }
   }
-  // What the core's field gate says of the frames a jewel showed between two times: how many of the
-  // layer's own frames it would have held (asked afresh, from a state told every frame before).
-  void replay(int hp, uint64_t fromUs, uint64_t toUs) const {
-    ContractUnitState rs; int held = 0, shown = 0; uint32_t first = 0;
+  // THE REPLAY. The core's two gates, asked afresh about every frame a jewel latched (whoever drew it),
+  // from a state that was told every frame before it and nothing else:
+  //   * the field gate (contractFieldAsk / contractFieldTell) with the frame's level and luminance as the
+  //     layer measures them (whole levels); the reference is rescaled when the owner changes the level;
+  //   * the look gate (contractLookAllowed / contractLookForced), fed the FRAME: a lit frame whose mean
+  //     colour is more than 96 from the lit frame before it in any channel (the colour observer's own
+  //     test, and its own floor of 4 levels) is a new look.
+  // A frame either gate would have held is marked: F! (field) or C! (look); "up" is a frame at which
+  // the field lit or got brighter, "colour" a change of colour. Times are the board's own clock at the
+  // latch, the same the layer gave the gate.
+  int replay(int hp, uint64_t fromUs, uint64_t toUs) const {
+    ContractUnitState rs; int heldAsked = 0, heldNot = 0, heldLook = 0, shown = 0; uint8_t wasCeil = 0;
+    int chroma[3] = {0, 0, 0}; bool known = false; uint32_t sig = 1;
     printf("    replay hp%d %.0f..%.0f ms:", hp, fromUs / 1000.0, toUs / 1000.0);
     for (const FrameRec& f : rec[hp]) {
-      rs.ceil = f.ceil;
+      if (wasCeil && f.ceil != wasCeil) { rs.fieldRef = (uint8_t)((unsigned)rs.fieldRef * f.ceil / wasCeil); rs.fieldRefY = (uint8_t)((unsigned)rs.fieldRefY * f.ceil / wasCeil); }
+      rs.ceil = wasCeil = f.ceil;
       const bool in = (uint64_t)f.ms * 1000 + 4000 >= fromUs && (uint64_t)f.ms * 1000 <= toUs + 4000;
-      if (f.ours && contractFieldAsk(rs, f.level, f.lum, f.ms) != 255) { if (in) { if (!held) first = f.ms; held++; } }
+      const bool fHeld = contractFieldAsk(rs, f.level, f.lum, f.ms) != 255;
+      bool change = false, cHeld = false;
+      if (f.top >= 28) {
+        int far = 0; for (int i = 0; i < 3; i++) far = std::max(far, abs((int)f.chroma[i] - chroma[i]));
+        if (known && far > 96) { change = true; sig++; cHeld = !contractLookAllowed(rs, sig, f.ms); }
+        for (int i = 0; i < 3; i++) chroma[i] = f.chroma[i];
+        known = true;
+      }
+      if (in) { if (fHeld) (f.ours ? heldAsked : heldNot)++; if (cHeld) heldLook++; }
       contractFieldTell(rs, f.level, f.lum, f.ms);
-      if (in && shown++ < 12) printf(" [%u L%d Y%d %s fn%d e%d%s sig%06lx c%02x%02x%02x]", f.ms, f.level, f.lum, f.ours ? "ours" : "stock", f.fn, f.eff, f.pulse ? " P" : "",
-                                     (unsigned long)(f.sig & 0xFFFFFF) ^ ((unsigned long)(f.sig >> 24) << 20), f.chroma[0], f.chroma[1], f.chroma[2]);
+      const bool onset = rs.fieldOnsetMs == f.ms;      // the field lit, or got brighter while lit, at this frame
+      if (change) contractLookForced(rs, sig, f.ms);
+      if (in && shown++ < 16) printf(" [%u L%d Y%d %s fn%d e%d%s c%02x%02x%02x%s%s%s%s]", f.ms, f.level, f.lum, f.ours ? "asked" : "stock", f.fn, f.eff, f.pulse ? " P" : "",
+                                     f.chroma[0], f.chroma[1], f.chroma[2], onset ? " up" : "", change ? " colour" : "", fHeld ? " F!" : "", cHeld ? " C!" : "");
     }
     printf("\n    (the layer's own state now: ceil %d, strip %d, ride %d/%d; the observer's ceiling %d)", gUnit[hp].s.ceil, neoStrips[hp].getBrightness(), gUnit[hp].ride, gUnit[hp].rideWant, ph[hp].ceil);
-    printf("\n    -> the core's gate, replayed on these frames, would have held %d of the layer's (first at %u ms): %s\n", held, first, held ? "LAYER" : "ORACLE");
+    printf("\n    -> replayed on these frames the core's field gate would have held %d (%d the layer asked about, %d it did not) and its look gate %d: %s\n",
+           heldAsked + heldNot, heldAsked, heldNot, heldLook, (heldAsked + heldNot + heldLook) ? "LAYER" : "ORACLE");
+    return heldAsked + heldNot + heldLook;
   }
   uint64_t lo = 1000, hi = 4000; bool strict = false;
   void setStrict() { strict = true; for (auto& p : ph) p.strict = true; for (int i = 0; i < HPCOUNT; i++) enableTwitchLED[i] = 0; }
@@ -684,12 +725,21 @@ static bool backOnStock(Stream& st, double watch, std::string& why) {
   return why.empty();
 }
 // A longer soak: SIM_DEFS="-DS9_SEEDS=5000 -DS9_SEED0=90000" ./run_sim.sh
-// OPEN after the CA1.5 round: a soak of 4,000 streams at seed base 800000 breaks on 6 (the 150 here pass).
-//   494, 1785, 2315: two onsets 288 to 291 ms apart for a narrow observer (45/60); in 494 the look is sparkle.
-//   1296, 2625, 3799: two changes of colour 63 to 78 ms apart: a fast colorcycle whose frames were held,
-//     a look made visible to a 3/15 observer by a rise smaller than the gate's step and then changed, and
-//     an overlay over stock light in an attributed stream.
-// None is understood well enough to call it the layer's or the oracle's. Run one again as described below.
+// THE SIX STREAMS OF SEED BASE 800000 that broke after the CA1.5 round (layer a2b6e5e), as the replay
+// (S9_REPLAY=1: Stream::replay(), the core's two gates asked afresh about every latched frame) names them:
+//   494, 1785, 2315 (two onsets 288 to 291 ms apart, observer 45/60; all three on the old sparkle):
+//     ORACLE. The gate held a frame, released it, and the look drew its next frame in the same loop
+//     pass; the photometer looked once a pass and never saw the first, so it dated that onset at a
+//     later, smaller rise. Replayed with every frame: 340, 341 and 389 ms. The photometer now measures
+//     every latched frame (the strip keeps the last sixteen). It counts more, and leaves nothing out.
+//   1296, 2625 (two changes of colour 77 and 78 ms apart): LAYER. A look that came up through 3 and 6
+//     levels was timed from its first frame; its colour shows from the 6. Scenario (6) below.
+//   3799 (63 ms): LAYER. The stock light's own change of colour was not one to the look gate. Scenario (2).
+// The soaks after that named four more, all LAYER, scenarios (1), (3), (4), (5) below:
+//   800000 + 2812, 2834 and 1200000 + 1086: the hand-back window ran from the hand-back, not from its
+//     frame; 800000 + 220, 1140, 1302 and 1600000 + 1512: a verb-B relight of stock light opened no
+//     window; 1200000 + 131: the gate was told a rainbow's level for its luminance; 1600000 + 1324:
+//     Leia's colour drifting in two half-steps.
 // Two streams of the soak at seed base 500000 are kept in mind here because no hand-made scenario
 // reproduces what they found: 643 (ending 1) and 3597 (ending 0). A verb-P overlay over the stock look
 // saved that look's frame, the owner lowered the strip level while the overlay was up, and the frame
@@ -732,8 +782,12 @@ SCENARIO(s9_property_hostile_streams) {
         p.every([&](Observer& o) { for (size_t i = 1; i < o.onsets.size(); i++) if (o.onsets[i] - o.onsets[i - 1] < 334000ULL) {
           printf("    hp%d observer %s%d/%d: onsets at %.0f and %.0f ms\n", p.hp, (&o >= p.lum && &o < p.lum + 3) ? "lum " : "", o.darkPct, o.litPct, o.onsets[i - 1] / 1000.0, o.onsets[i] / 1000.0);
           st.replay(p.hp, o.onsets[i - 1] - 400000, o.onsets[i]); } });
-        if (p.colourClosestUs < 165000ULL) { printf("    hp%d colour changes %.0f ms apart, the second at %.0f ms\n", p.hp, p.colourClosestUs / 1000.0, p.colourBadAt / 1000.0); st.replay(p.hp, p.colourBadAt - 300000, p.colourBadAt); }
+        if (p.colourClosestUs < 165000ULL) {
+          printf("    hp%d colour changes %.0f ms apart, the second at %.0f ms; as the observers dated them:", p.hp, p.colourClosestUs / 1000.0, p.colourBadAt / 1000.0);
+          for (auto& e : p.colourLog) if (e.first + 400000ULL >= p.colourBadAt && e.first <= p.colourBadAt) printf(" %.0f(%d/%d)", e.first / 1000.0, p.colour[e.second].darkPct, p.colour[e.second].litPct);
+          printf("\n"); st.replay(p.hp, p.colourBadAt - 400000, p.colourBadAt); }
       }
+      if (st.recOn && getenv("S9_SHOW")) { int h = 0; double a = 0, b = 0; if (sscanf(getenv("S9_SHOW"), "%d,%lf,%lf", &h, &a, &b) == 3) st.replay(h, (uint64_t)(a * 1000), (uint64_t)(b * 1000)); }
       if (brk) printf("      closest two onsets %.0f ms, closest two changes of colour %.0f ms\n", st.closestOnsetsMs() > 1e9 ? -1.0 : st.closestOnsetsMs(), st.closestColourMs() > 1e9 ? -1.0 : st.closestColourMs());
       fflush(stdout);
       _exit((brk || st.overCeiling() || !stock || ledOnlyViolations || holdViolations) ? std::min(n > 3 ? n : 99, 120) : 0);
@@ -932,4 +986,154 @@ SCENARIO(s9_gate_resolves_a_tenth_at_owner_levels_100_40_20) {
     });
     CHECK_EQ(bad, 0);
   }
+}
+
+// ---- Two layer faults the soak's replay named (seed base 800000 + 3799; + 2812 and 2834 after the
+// sparkle was redrawn), each as its smallest case ---------------------------------------------------
+// The photometer for both: every frame latched, every onset and every change of colour counted.
+static void watchFor(Photo& p, double secs) { const uint64_t end = us + (uint64_t)(secs * 1e6); while (us < end) { pass(1000); p.sample(); } }
+// (1) THE HAND-BACK WINDOW RUNS FROM THE HAND-BACK'S LIGHT. The stock light is asked of the gates for
+// 340 ms after the layer lets go. When the gate held the hand-back's own frame (the unit had lit a
+// moment before), that frame went up as the 340 ms ran out, and the stock look's NEXT change, a timed
+// function ending 170 ms later, was nobody's: a second onset and a second colour inside the limits.
+// Here a stock solid blue runs on a 2 s timer and one pulse lands near its end: the pulse lights the
+// field (luminance), the blue it gives back is an onset again (level) and is held 340 ms, and the
+// timer's end (dark, then the off colour) is swept across the 700 ms after the pulse.
+// The stock LED auto twitch off, and whatever sequence it had going over (it runs for some seconds).
+static void calmStock() {
+  for (int i = 0; i < HPCOUNT; i++) enableTwitchLED[i] = 0;
+  for (int n = 0; n < 60; n++) { run(0.5); bool busy = false; for (int i = 0; i < HPCOUNT; i++) if (LED_command[i].LEDFunction >= 1 && LED_command[i].LEDFunction <= 7) busy = true; if (!busy) break; }
+  run(0.5);
+}
+static bool tooClose(const Photo& p, const char* what, int n) {
+  const double on = p.closestOnsetsUs() / 1000.0, col = p.colourClosestUs / 1000.0;
+  if (on >= 334.0 && col >= 165.0) return false;
+  printf("  %s %d:%s%s\n", what, n, on < 334.0 ? " two onsets too close" : "", col < 165.0 ? " two changes of colour too close" : "");
+  if (on < 334.0) printf("    onsets %.0f ms apart\n", on);
+  if (col < 165.0) printf("    changes of colour %.0f ms apart\n", col);
+  return true;
+}
+SCENARIO(s9_a_stock_look_ending_after_a_held_hand_back_keeps_its_distance) {
+  int bad = 0;
+  for (int x = 100; x <= 800; x += 20) bad += trial([x] {
+    run(9); for (int i = 0; i < HPCOUNT; i++) enableTwitchLED[i] = 0;
+    run(1); say("F0055|2\r"); run(0.3);                                        // the owner's own relight, before the photometer looks
+    Photo p(0); p.strict = true; watchFor(p, 1.7 - x / 1000.0);                // the timer ends x ms from here
+    say("!HFP:c=3b82f6,d=69,b=202\r"); watchFor(p, 2.5);
+    CHECK_EQ(LED_command[0].LEDFunction, 100);                                 // the stock timer ran out: the off colour
+    CHECK(!dark(0));
+    if (tooClose(p, "a pulse this long before the stock timer ends (ms)", x)) failures++;
+  });
+  CHECK_EQ(bad, 0);
+}
+// (2) THE STOCK LIGHT'S OWN CHANGE OF COLOUR IS A CHANGE OF COLOUR. The look gate hears of stock light
+// by its function number, and a stock function draws what colours it likes under one number (function
+// 2, the colour projector, mixes white into its colour pixel by pixel, a new mix every 100 ms). A
+// pulse that took the jewel 63 ms after the stock frame's mean colour moved was "170 ms after the last
+// look" by the function number and 63 ms after it on the LEDs. The latch now measures every frame's
+// mean colour and moves the look gate's time when the stock light changes it.
+// Here the colour projector runs under the hostile pair that found it (pulses red and blue alternately,
+// 20 to 80 ms apart); forty timings.
+SCENARIO(s4_a_contract_look_keeps_its_170_ms_from_the_stock_lights_own_colour_change) {
+  int bad = 0;
+  for (int n = 0; n < 40; n++) bad += trial([n] {
+    run(9); for (int i = 0; i < HPCOUNT; i++) enableTwitchLED[i] = 0;
+    run(1); srand(4100 + n); Photo p(0);             // ATTRIBUTED: the projector's own frames are the stock look's
+    say("F0022|12\r"); watchFor(p, 0.6);
+    for (int i = 0; i < 160; i++) { say((i % 2) ? "!HFP:c=0000ff,d=170\r" : "!HFP:c=ff0000,d=170\r"); watchFor(p, (20 + rand() % 61) / 1000.0); }
+    watchFor(p, 1.0);
+    CHECK_EQ(LED_command[0].LEDFunction, 2);         // the stock look is still the unit's
+    if (tooClose(p, "pulses over the stock colour projector, timing", n)) failures++;
+  });
+  CHECK_EQ(bad, 0);
+}
+// (3) A VERB-B STEP ON STOCK LIGHT IS THIS LAYER'S LIGHT CHANGE. On an armed unit showing stock light,
+// B:b=0 darkens the jewel and the next show brings it back: the gate times that relight, and the stock
+// code draws the frame. The stock look's next change (its timer ending 37 ms later: dark, then the off
+// colour) was not asked, because no hand-back had happened. A ride step now opens the same 340 ms.
+// The hostile pair that found it (soak 800000 + 220), its phase against the stock timer swept.
+SCENARIO(s9_a_verb_b_relight_of_stock_light_keeps_the_stock_looks_next_change_away) {
+  int bad = 0;
+  for (int d = 0; d < 400; d += 20) bad += trial([d] {
+    run(9); for (int i = 0; i < HPCOUNT; i++) enableTwitchLED[i] = 0;
+    run(1); say("F0055|2\r"); run(0.3);
+    Photo p(0); p.strict = true; watchFor(p, d / 1000.0);
+    for (int i = 0; i < 60; i++) { say((i % 2) ? "!HFM:v=show,wd=5\r" : "!HFB:b=0\r"); watchFor(p, 0.05); }
+    watchFor(p, 1.5);
+    if (tooClose(p, "B:b=0 and a new show over a stock solid on a timer, phase (ms)", d)) failures++;
+  });
+  CHECK_EQ(bad, 0);
+}
+// (4) THE GATE KNOWS A RUNS-AS-STOCK LOOK'S LUMINANCE. The core takes one figure for a native look and
+// records it for both measures; the rainbow stands at 75 % of the ceiling by its brightest channel and
+// 33 % by luminance. A white look at half level after it is dimmer by the first and brighter by the
+// second: an onset the gate did not see, so the relight that followed 326 ms later went out (soak
+// 1200000 + 131). The latch now tells the gate the luminance it measures on the look's first frame.
+// Two parts. The state: with the rainbow up, the gate's two references are what the jewel shows. And
+// the lines of that stream, swept (in the stream the white frame was latched 14 ms after the rainbow
+// was let go, which is what made the 326; at 1 ms passes it is 1 ms, so this part is a guard that
+// passes on the old layer too, and the state check is the one that fails there).
+SCENARIO(s9_a_look_brighter_only_by_luminance_after_the_rainbow_is_an_onset) {
+  run(9); calmStock();
+  say("!HFM:v=show\r!HFA:i=off\r"); run(1); say("!HFA:i=native:6\r"); run(1);
+  { int S = 0, Y = 0; for (int i = 0; i < 7; i++) { const uint8_t* q = neoStrips[0].shown + i * 3; S += std::max(q[0], std::max(q[1], q[2])); Y += (54 * q[1] + 183 * q[0] + 19 * q[2]) >> 8; }
+    printf("  the rainbow on the jewel: level %d, luminance %d; the gate's references: %d, %d\n", S / 7, Y / 7, gUnit[0].s.fieldRef, gUnit[0].s.fieldRefY);
+    CHECK(abs((int)gUnit[0].s.fieldRef - S / 7) <= 3);  CHECK(abs((int)gUnit[0].s.fieldRefY - Y / 7) <= 3);  CHECK(S / 7 - Y / 7 > 30); }
+  int bad = 0;
+  for (int d = 0; d <= 120; d += 10) bad += trial([d] {
+    run(9); calmStock();
+    say("!HFM:v=show\r!HFA:i=off\r"); run(1);                                  // armed and dark
+    Photo p(0); p.strict = true; watchFor(p, 0.5);
+    say("!HFA:i=native:6\r"); watchFor(p, 0.02 + d / 1000.0);                   // the rainbow has just started...
+    say("!HFA:i=solid,c=ffffff,b=160\r"); watchFor(p, 0.2);                     // ...so S4 holds this look: luminance up, level down
+    say("!HFB:b=5\r"); watchFor(p, 0.05);
+    say("!HFB:b=255\r"); watchFor(p, 1.0);                                      // the relight keeps 340 ms from the white FRAME
+    CHECK(lookUp(0));  CHECK(!dark(0));
+    if (tooClose(p, "white this long after the rainbow started, then B down and up (ms)", d)) failures++;
+  });
+  CHECK_EQ(bad, 0);
+}
+// (5) LEIA'S COLOUR, WHICHEVER FRAMES AN EYE COMPARES. The gated Leia re-rolls the field's colour by
+// itself. The latch judged each frame against the one before: two half-steps 141 ms apart were one
+// change to the observer whose band missed the dim frame between (soak 1600000 + 1324). Random Leia
+// does this once in thousands of streams, so here the test draws Leia's frames itself: Leia is up
+// through the contract, the loop stands still, and each frame goes to the latch as the stock code
+// would send it.
+static void leiaFrame(int r, int g, int b) {
+  uint8_t* px = neoStrips[0].getPixels();
+  for (int i = 0; i < 7; i++) { px[i * 3] = (uint8_t)g; px[i * 3 + 1] = (uint8_t)r; px[i * 3 + 2] = (uint8_t)b; }
+  neoStrips[0].show();
+}
+static bool shownIs(int r, int g, int b) { const uint8_t* q = neoStrips[0].shown; for (int i = 0; i < 7; i++) if (q[i * 3] != g || q[i * 3 + 1] != r || q[i * 3 + 2] != b) return false; return true; }
+static void later(int ms) { us += (uint64_t)ms * 1000; g_ms = (uint32_t)(us / 1000); }
+SCENARIO(s4_leias_own_colours_are_judged_against_the_colour_of_the_last_change) {
+  run(9); calmStock();
+  say("!HFM:v=show\r!HFA:i=native:1\r"); run(3);
+  CHECK_EQ(LED_command[0].LEDFunction, 1);  CHECK(gUnit[0].s.base == CB_NATIVE);  CHECK(!gUnit[0].nativeWait);
+  // a drift in two half-steps: light blue, then 47 and 50 nearer to blue, 70 and 141 ms later
+  later(1000); leiaFrame(100, 0, 0);    CHECK(shownIs(100, 0, 0));
+  later(400);  leiaFrame(54, 54, 100);  CHECK(shownIs(54, 54, 100));           // a change of colour: the 170 ms run from here
+  later(70);   leiaFrame(35, 35, 100);  CHECK(shownIs(35, 35, 100));           // 47 of 255 from it: the same colour
+  later(71);   leiaFrame(16, 16, 100);  CHECK(shownIs(35, 35, 100));           // 97 from it, after 141 ms: held
+  later(40);   leiaFrame(16, 16, 100);  CHECK(shownIs(16, 16, 100));           // after 181 ms: shown
+}
+// (6) A LOOK THAT COMES UP DIM HAS CHANGED THE FIELD'S COLOUR WHEN A FRAME SHOWS IT. A green pulse drawn
+// as a wipe lights one pixel, then two: 3 levels, then 6. The look gate timed it from its first frame;
+// an eye can tell green from the 6. The white look under it came back 171 ms after the first frame and
+// 77 ms after the green could be seen (soak 800000 + 2625, and + 1296 with a colour cycle). The latch
+// now moves the look gate's time when a contract look's colour first shows. Here: a dim white look
+// (the eye is on it), the green wipe pulse over it at seven lengths, and the white coming back.
+SCENARIO(s4_a_look_that_comes_up_dim_counts_from_the_frame_that_shows_its_colour) {
+  int bad = 0;
+  for (int d = 100; d <= 400; d += 50) bad += trial([d] {
+    run(9); calmStock();
+    say("!HRM:v=show\r!HRA:i=solid,c=ffffff\r"); run(2);
+    Photo p(1); p.strict = true; watchFor(p, 0.5);
+    say("!HRA:i=solid,c=ffffff,b=12\r"); watchFor(p, 1.0);                      // four levels of white: lit, to an eye that was on it
+    char l[48]; snprintf(l, sizeof l, "!HRP:c=00ff00,b=59,i=wipe,d=%d\r", d);
+    say(l); watchFor(p, 2.0);
+    CHECK(lookUp(1));  CHECK(!dark(1));
+    if (tooClose(p, "a green wipe pulse over a dim white look, pulse length (ms)", d)) failures++;
+  });
+  CHECK_EQ(bad, 0);
 }

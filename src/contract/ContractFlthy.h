@@ -210,6 +210,8 @@ static inline bool _heldLeds(uint8_t hp) { return contractHoldsLeds(hp) || _slot
 static const uint16_t FLTHY_ONSET_GAP_MS = 2 * STROBE_MIN_STATE_MS;   // 340: how long a hand-back stays this layer's
 // Byte order of one pixel in Adafruit_NeoPixel's buffer for NEO_GRB and NEO_GRBW (main.cpp: HP_NEO_TYPE).
 static const uint8_t FLTHY_OFF_G = 0, FLTHY_OFF_R = 1, FLTHY_OFF_B = 2;
+static const uint8_t FLTHY_RECOLOUR = 48;               // of 255 in any channel of the mean colour, from the last change: a look's own change of colour
+static const uint8_t FLTHY_ARRIVED  = 64;               // ...from the frame before: a contract look's colour has arrived on the field
 struct FlthyLatch {
   uint32_t touchMs   = 0;                 // the last pass this layer had the jewel, or handed it back
   uint32_t frameSig  = 0;                 // the look (contractLookSig) of the frame the layer is drawing
@@ -217,10 +219,13 @@ struct FlthyLatch {
   uint16_t peakSumY  = 0;                 // ...and the same for the luminance
   uint8_t  latchedAt = 0;                 // the strip level the frame on the jewel was latched at
   uint8_t  nativeFull = 0;                // S10: the level a runs-as-stock look has at the ceiling (for verb B)
-  uint8_t  chroma[3]  = {0, 0, 0};        // S10, a GATED native look: the mean colour of the frame on the jewel
+  uint8_t  nativeFullY = 0;               // ...and its luminance
+  uint8_t  chroma[3]  = {0, 0, 0};        // the field's colour at its last change; under a contract look, of its last frame
   byte     pendingFn  = 255;              // the LED function that drew the frame being held back
   bool     touched   = false;             // touchMs is meaningful
   bool     pending   = false;             // a frame was held back and waits in the pixel buffer
+  bool     owed      = false;             // a frame of the hand-back was held back: the stock light is asked until one is shown
+  bool     extended  = false;             // ...and the 340 ms ran again from that frame (once for each hand-back)
 };
 static FlthyLatch gLatch[HPCOUNT];
 // A frame is being held back, so what is on the jewel stays. If the owner has lowered the strip
@@ -239,7 +244,7 @@ static inline void _holdFrame(uint8_t hp) {
   contractFieldTell(gUnit[hp].s, 0, 0, millis());
   g.latchedAt = neoStrips[hp].getBrightness();
 }
-static inline void _touch(uint8_t hp) { gLatch[hp].touchMs = millis(); gLatch[hp].touched = true; }
+static inline void _touch(uint8_t hp) { FlthyLatch& g = gLatch[hp]; g.touchMs = millis(); g.touched = true; g.extended = false; }
 // Has this layer the jewel's LEDs right now? (base == CB_NATIVE counts before the reconcile in the tick.)
 static inline bool _hasLeds(uint8_t hp) { return _heldLeds(hp) || gUnit[hp].s.base == CB_NATIVE; }
 inline void DnStrip::show() {
@@ -274,36 +279,66 @@ inline void DnStrip::show() {
     // the first lit frame, the level the look runs at (a stock look may clear the jewel first).
     if (!u.nativeTold && level != 0) {
       contractNativeStarted(s, s.nativeCode, level, now); u.nativeTold = true;
+      // The core takes ONE figure for a native look and records it for both measures. A rainbow's
+      // luminance is under half its level: left at that, a contract frame that follows it dimmer by
+      // level and brighter by luminance is no onset to the gate. Tell it what this frame measures.
+      contractFieldTell(s, level, lum, now);
       const uint16_t full = (uint16_t)(((uint32_t)level * (s.ceil + 1u)) / (getBrightness() + 1u));   // a ride may be on
+      const uint16_t fullY = (uint16_t)(((uint32_t)lum * (s.ceil + 1u)) / (getBrightness() + 1u));
       g.nativeFull = (uint8_t)(full > 255u ? 255u : full);
+      g.nativeFullY = (uint8_t)(fullY > 255u ? 255u : fullY);
     }
   } else {
     const bool drawn = nativeUp || (fn >= 101 && fn <= FLTHY_FX_MAX);
-    if (drawn || (g.touched && (uint32_t)(now - g.touchMs) < FLTHY_ONSET_GAP_MS)) {
-      const uint32_t sig = nativeUp ? contractLookSigNative(s.nativeCode)
-                                    : (drawn ? g.frameSig : contractLookSigNative(0x4000 | fn));   // the board's own look
-      // S10, a GATED native look (Leia) is ONE look to the look gate, but it re-rolls the colour of
-      // the whole field by itself. A frame whose mean colour is far from the one on the jewel is a
-      // change of colour like any other (S4): it waits 170 ms after the field's last change.
-      uint8_t chroma[3] = {0, 0, 0}; bool recolour = false;
-      if (nativeUp && level != 0) {
-        uint16_t top = sumC[0] > sumC[1] ? sumC[0] : sumC[1]; if (sumC[2] > top) top = sumC[2];
+    // THE COLOUR ON THE JEWEL (S4), measured on every frame of 4 levels or more in its strongest
+    // channel (under that, one count of rounding in a LED moves the mean colour further than any
+    // test): its three channels summed over the LEDs, over the strongest.
+    //   * A look that draws its OWN colours under one name: a GATED native look (Leia re-rolls the
+    //     whole field by itself) and stock light (one function number, any colours). A frame far
+    //     from the colour the field had at its LAST CHANGE is a change of colour like any other: it
+    //     waits its 170 ms where the frame is asked, and moves the look gate's time where it is
+    //     shown. "Far" is half of what an observer calls a change, and is measured from the last
+    //     change, not from the frame before: every frame between two changes is then within that
+    //     half of one colour, so no two of them are a change apart, whichever frames an observer
+    //     happens to compare (a drift of 47 and then 50 in 141 ms was two small steps frame to
+    //     frame, and one change to an eye that missed the dim frame between).
+    //   * A CONTRACT look's colour is in its signature, and the look gate has timed it. But a look
+    //     that comes up dim (a pulse through 3 and 7 levels) has not changed the field's colour at
+    //     its first frame: it has when a frame first SHOWS the colour. That frame moves the look
+    //     gate's time too (it is never held for it), as a field that lights does (the core's
+    //     _fieldBrighter), so the next look keeps its 170 ms from the colour's arrival.
+    bool recolour = false, coloured = false; uint8_t chroma[3] = {0, 0, 0};
+    const bool ownColour = nativeUp || !drawn;
+    {
+      uint16_t top = sumC[0] > sumC[1] ? sumC[0] : sumC[1]; if (sumC[2] > top) top = sumC[2];
+      if (top >= 4u * NEO_JEWEL_LEDS) {
+        coloured = true;
         for (uint8_t k = 0; k < 3; k++) {
-          chroma[k] = top ? (uint8_t)(((uint32_t)sumC[k] * 255u) / top) : 0;
+          chroma[k] = (uint8_t)(((uint32_t)sumC[k] * 255u) / top);
           const uint8_t d = chroma[k] > g.chroma[k] ? (uint8_t)(chroma[k] - g.chroma[k]) : (uint8_t)(g.chroma[k] - chroma[k]);
-          if (d > 64) recolour = true;
+          if (d > (ownColour ? FLTHY_RECOLOUR : FLTHY_ARRIVED)) recolour = true;
         }
       }
-      if ((level != 0 && (!contractLookAllowed(s, sig, now) || (recolour && !strobeCoolDownExpired(s.lookMs, now, STROBE_MIN_STATE_MS)))) ||
+    }
+    // The hand-back stays this layer's for 340 ms; while a frame of it is held back, until one is
+    // shown; and, once, for 340 ms more from that frame: the stock look's next change keeps its
+    // distance from the light the hand-back put up, not from the moment the layer let go.
+    if (drawn || (g.touched && ((uint32_t)(now - g.touchMs) < FLTHY_ONSET_GAP_MS || g.owed))) {
+      const uint32_t sig = nativeUp ? contractLookSigNative(s.nativeCode)
+                                    : (drawn ? g.frameSig : contractLookSigNative(0x4000 | fn));   // the board's own look
+      if ((level != 0 && (!contractLookAllowed(s, sig, now) || (ownColour && recolour && !strobeCoolDownExpired(s.lookMs, now, STROBE_MIN_STATE_MS)))) ||
           contractFieldAsk(s, level, lum, now) != 255) {
+        if (!drawn) g.owed = true;
         _holdFrame(hp);                                 // too soon: keep what is on the jewel
         return;
       }
       if (level != 0) contractLookGate(s, sig, now);    // the change of look is shown now
-      if (nativeUp && level != 0) { if (recolour) s.lookMs = now; memcpy(g.chroma, chroma, 3); }
+      if (!drawn && g.owed) { g.owed = false; if (!g.extended) { g.extended = true; g.touchMs = now; } }
     } else if (level != 0) {
       contractLookForced(s, contractLookSigNative(0x4000 | fn), now);   // stock light: recorded, never held back
     }
+    if (recolour) s.lookMs = now;
+    if (coloured && (recolour || !ownColour)) memcpy(g.chroma, chroma, 3);   // the colour of the last change; a contract look's, of its last frame
     contractFieldTell(s, level, lum, now);              // what the unit shows from now
     // The gate takes whole levels; seven pixels measure in sevenths. While the field is lit, a peak
     // that creeps up by less than one whole level is still "getting brighter", and by the gate's own
@@ -369,8 +404,13 @@ static inline void _rideApply(uint8_t hp, uint8_t r) {
   // S10: a runs-as-stock native look is not measured frame by frame, so the gate is told its new level here.
   if (u.s.base == CB_NATIVE && u.nativeTold && !nativeGatedFlthy(u.s.nativeCode)) {
     const uint16_t lv = (uint16_t)(((uint32_t)gLatch[hp].nativeFull * (is + 1u)) / (u.s.ceil + 1u));
+    const uint16_t ly = (uint16_t)(((uint32_t)gLatch[hp].nativeFullY * (is + 1u)) / (u.s.ceil + 1u));
     contractNativeLevel(u.s, (uint8_t)(lv > 255u ? 255u : lv), millis());
+    contractFieldTell(u.s, (uint8_t)(lv > 255u ? 255u : lv), (uint8_t)(ly > 255u ? 255u : ly), millis());   // its luminance too
   }
+  // (c) The step is this layer's light change, whoever draws the frame it shows on: stock light on
+  // an armed unit is asked of the gates for 340 ms from here, like a hand-back.
+  _touch(hp);
 }
 static inline void _rideTry(uint8_t hp) {
   FlthyUnit& u = gUnit[hp];

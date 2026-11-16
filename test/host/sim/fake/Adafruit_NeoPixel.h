@@ -14,6 +14,9 @@
 struct Adafruit_NeoPixel {
   uint8_t pixels[7 * 3] = {0}; uint8_t brightness = 0; uint16_t numLEDs = 7;
   uint8_t shown[7 * 3] = {0}; long showCount = 0;
+  // the last frames latched, oldest overwritten: a photometer that looks once a loop pass reads every
+  // frame latched since it last looked (frame number n is ring[n % RING]), not only the last one
+  enum { RING = 16 }; uint8_t ring[RING][7 * 3] = {{0}}; uint32_t ringMs[RING] = {0};   // ...and the board's clock at each latch
   void updateType(int) {} void updateLength(int) {} void setPin(int) {} void begin() {}
   void setPixelColor(uint16_t n, uint32_t c) {
     if (n < numLEDs) { uint8_t r = (uint8_t)(c >> 16), g = (uint8_t)(c >> 8), b = (uint8_t)c;
@@ -27,7 +30,7 @@ struct Adafruit_NeoPixel {
       else scale = (((uint16_t)newBrightness << 8) - 1) / oldBrightness;
       for (uint16_t i = 0; i < sizeof(pixels); i++) { c = *ptr; *ptr++ = (c * scale) >> 8; }
       brightness = newBrightness; } }
-  void show() { memcpy(shown, pixels, sizeof(pixels)); showCount++; }
+  void show() { memcpy(shown, pixels, sizeof(pixels)); memcpy(ring[showCount % RING], pixels, sizeof(pixels)); ringMs[showCount % RING] = (uint32_t)millis(); showCount++; }
   uint8_t getBrightness() const { return brightness - 1; }
   uint8_t* getPixels() { return pixels; }
   uint16_t numPixels() const { return numLEDs; }
