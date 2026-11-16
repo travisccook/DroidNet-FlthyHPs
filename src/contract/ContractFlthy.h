@@ -62,7 +62,7 @@
 #define CONTRACT_READ_BYTE(p) pgm_read_byte(p)
 #endif
 #include "contract_core.h"
-#include "../wdp/wdp_fork.h" // wdpFinish() (verb Q reply)
+#include "../wdp/wdp_fork.h" // wdpInFlight() (verb Q reply)
 
 // -------------------------------------------------------------- constants ----
 static const uint8_t  FLTHY_FX_BASE         = 100;   // LEDFunction = 100 + effectId (101..115)
@@ -109,6 +109,11 @@ static uint32_t   gLastLineMs = 0;        // L2: millis() of the last well-forme
 // Cleared by the expiry, by M:v=idle once no unit is left in a show (the host ended it itself), and
 // by an M:v=show with no wd= for the whole board (a show nobody watches, such as a WCB macro).
 static uint8_t    gBoardWd = 0;
+// Section 10: the verb-Q reply waits here (one slot, the newest Q wins) and contractBeatTick()
+// sends it. The line handler never writes to Serial: a write that finds the 63-byte TX ring full
+// blocks loop(), servo stepping included, for as long as the bytes take to leave at 9600 baud.
+static char       gQueryLine[CONTRACT_REPLY_MAX];
+static uint8_t    gQueryLen = 0;
 // The score table is the fork's (sized by its cap); the cursor and the count are in s.
 static ScoreEntry gScore[HPCOUNT][FLTHY_SCORE_CAP];
 
@@ -716,12 +721,9 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p, uint16_t li
       // is routed (";S0!..." or ";W<n>,;S0!...") so the WCB never broadcasts it. Any other Q is
       // silent (it has already fed the watchdog: it is the host's keepalive).
       if (!contractQueryAnswerable(p)) break;
-      char buf[CONTRACT_REPLY_MAX];
-      const uint8_t n = contractFormatQuery(buf, sizeof(buf), pr.route, 'H', _unitChar(hp), FLTHY_SCORE_CAP,
-                                            s.scoreLen, s.loadOk, gBeat.running ? gBeat.bpm : 0);
-      wdpFinish();                                     // a WDP announce in flight goes out whole first
-      Serial.write((const uint8_t*)buf, n);
-      break;
+      gQueryLen = contractFormatQuery(gQueryLine, sizeof(gQueryLine), pr.route, 'H', _unitChar(hp), FLTHY_SCORE_CAP,
+                                      s.scoreLen, s.loadOk, gBeat.running ? gBeat.bpm : 0);
+      break;                                           // contractBeatTick() sends it
     }
 
     default: break;                                    // CV_CLOCK is the board's, not a unit's: applyContract()
@@ -762,6 +764,12 @@ inline void applyContract(const ParsedContract& p, uint16_t lineCrc = 0) {
 // Call once per loop(), before the per-hp render block. It runs every pass, clock or no clock.
 inline void contractBeatTick() {
   const uint32_t now = millis();
+  // The waiting Q reply: whole, in one write that cannot wait (the TX ring has room for all of
+  // it), and only when no WDP announce is partly sent, so neither line lands inside the other.
+  if (gQueryLen && !wdpInFlight() && Serial.availableForWrite() >= (int)gQueryLen) {
+    Serial.write((const uint8_t*)gQueryLine, gQueryLen);   // after the wdpInFlight() test above
+    gQueryLen = 0;
+  }
   for (uint8_t hp = 0; hp < HPCOUNT; hp++) {
     FlthyUnit& u = gUnit[hp];
     ContractUnitState& s = u.s;

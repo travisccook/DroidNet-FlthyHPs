@@ -688,6 +688,8 @@ int main() {
     for (int i = 0; i < 3; i++) {
       Serial.clear();
       if (contractParse(cmd[i], q)) applyContract(q);
+      if (Serial.last[0] != 0) { printf("FAIL: the line handler wrote the Q reply itself (a blocking write)\n"); return 1; }
+      contractBeatTick();                              // the reply leaves from the tick
       if (strncmp(Serial.last, want[i], 8) != 0) {
         printf("FAIL: Flthy %s reply did not echo its unit (wanted \"%s...\", got \"%s\")\n",
                cmd[i], want[i], Serial.last);
@@ -698,13 +700,15 @@ int main() {
     for (int i = 0; i < 3; i++) {
       Serial.clear();
       if (contractParse(silent[i], q)) applyContract(q);
+      contractBeatTick();
       if (Serial.last[0] != 0) { printf("FAIL: Flthy answered %s (\"%s\")\n", silent[i], Serial.last); return 1; }
     }
   }
 
-  // WDP: the verb-Q ack must never land INSIDE a WDP device announce. The announce leaves in
-  // pieces no bigger than the TX room (src/wdp/wdp_fork.h), so a Q handled between two pieces
-  // must send the rest of the line first (wdpFinish()), then its ack.
+  // WDP: the verb-Q reply must never land INSIDE a WDP device announce, must never wait for TX
+  // room, and must go out whole. The announce leaves in pieces no bigger than the TX room
+  // (src/wdp/wdp_fork.h); a Q handled between two pieces is held until the announce is out and the
+  // TX ring has room for all of the reply.
   {
     ParsedContract q;
     char line[WDP_LINE_MAX];
@@ -719,11 +723,26 @@ int main() {
       return 1;
     }
     if (contractParse("HRQ:r=0", q)) applyContract(q);
-    if (strlen(Serial.last) < len + 8 || strncmp(Serial.last, line, len) != 0 ||
-        strncmp(Serial.last + len, ";S0!HRq:", 8) != 0) {
-      printf("FAIL: the verb-Q ack landed inside a WDP announce (got \"%s\")\n", Serial.last);
+    contractBeatTick();
+    if (strlen(Serial.last) != 20) {
+      printf("FAIL: the verb-Q reply was written while a WDP announce was in flight (got \"%s\")\n", Serial.last);
       return 1;
     }
+    for (int k = 0; k < 20 && wdpInFlight(); k++) { _mock_millis++; wdpForkTick(); contractBeatTick(); }   // 20 bytes a pass
+    if (wdpInFlight() || strlen(Serial.last) != len || strncmp(Serial.last, line, len) != 0) {
+      printf("FAIL: the announce did not go out whole and alone (got \"%s\")\n", Serial.last);
+      return 1;                                        // txFree is 20: the reply (over 30 bytes) must still be waiting
+    }
+    Serial.maxWrite = 0; Serial.txFree = 63;
+    contractBeatTick();
+    size_t got = strlen(Serial.last);
+    if (got <= len + 8 || strncmp(Serial.last + len, ";S0!HRq:", 8) != 0 || Serial.last[got - 1] != '\r' ||
+        Serial.maxWrite != (int)(got - len)) {
+      printf("FAIL: the verb-Q reply did not follow the announce whole, in one write (got \"%s\")\n", Serial.last);
+      return 1;
+    }
+    contractBeatTick();
+    if (strlen(Serial.last) != got) { printf("FAIL: the verb-Q reply was sent twice\n"); return 1; }
     Serial.txFree = 63;
     Serial.clear();
     _mock_millis = 0;

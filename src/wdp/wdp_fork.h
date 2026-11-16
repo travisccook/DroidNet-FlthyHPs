@@ -7,8 +7,8 @@
 // It goes out on Serial (UART0, D0/D1, 9600 baud), the WCB's port, which is also the Mega's USB
 // serial. The line leaves in pieces no bigger than the room in Serial's TX buffer (63 bytes when
 // empty, and the line is longer), so loop() never waits on it. Every other write to Serial after
-// setup() calls wdpFinish() first, so no other text lands inside an announce: RCHP's "No RC Input
-// Detected!" in main.cpp and the verb-Q reply in ContractFlthy.h. main.cpp's DEBUG prints do not;
+// setup() keeps out of an announce: RCHP's "No RC Input Detected!" in main.cpp calls wdpFinish()
+// first, and the verb-Q reply in ContractFlthy.h waits while wdpInFlight(). main.cpp's DEBUG prints do not;
 // DEBUG is off (commented out) in this build.
 //
 // Part of the DroidNet board forks. Copyright (c) 2026 Travis Cook.
@@ -45,6 +45,10 @@ inline void wdpForkTick() {
                       Serial.availableForWrite(), &chunk);
   if (n) Serial.write((const uint8_t*)chunk, n);
 }
+
+// Is an announce line partly sent? A writer that must never wait (the verb-Q reply) holds its own
+// line back while this is true, instead of calling wdpFinish().
+inline bool wdpInFlight() { return gWdp.len != 0; }
 
 // Before any other write to Serial: sends the rest of a line in flight, if there is one. This can
 // wait for room in the TX buffer: at most the time to send that rest, about 0.1 s at 9600 baud.

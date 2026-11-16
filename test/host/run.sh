@@ -213,9 +213,10 @@ fi
 
 # --- WDP: NO TEXT INSIDE AN ANNOUNCE ---------------------------------------------------
 # The WDP announce leaves Serial in pieces over a few loop() passes (src/wdp/wdp_fork.h), so every
-# other write to Serial once loop() runs must call wdpFinish() first -- on the same line or the
-# code line above -- or its text can land in the middle of an announce and the WCB drops both.
-# compile_contract.cpp proves it for the verb-Q ack; this finds every writer. In src/main.cpp it
+# other write to Serial once loop() runs must call wdpFinish() first, or be held back by a
+# wdpInFlight() test -- on the same line or the code line above -- or its text can land in the middle
+# of an announce and the WCB drops both. compile_contract.cpp and the simulation prove it for the
+# verb-Q reply; this finds every writer. In src/main.cpp it
 # checks from `void loop()` down (setup() writes before the first announce can start), skipping
 # what a build without DEBUG leaves out (#ifdef DEBUG, which is commented out). It fails closed:
 # each file must hold at least one checked write, or the scan has gone blind.
@@ -236,7 +237,7 @@ wdp_writers() {   # <file> <start-regex>: prints "checked=<n>", then each unguar
       for (i = 1; i <= depth; i++) if (dbg[i] == 1) indebug = 1
       if (on && !indebug && code ~ /Serial[ \t]*\.[ \t]*(print|println|write)[ \t]*\(/) {
         n++
-        if (code !~ /wdpFinish\(\)/ && prev !~ /wdpFinish\(\)/) { print "  " NR ": " $0; bad = 1 }
+        if (code !~ /wdpFinish\(\)|wdpInFlight\(\)/ && prev !~ /wdpFinish\(\)|wdpInFlight\(\)/) { print "  " NR ": " $0; bad = 1 }
       }
       if (code ~ /[^ \t]/) prev = code
     }
@@ -246,8 +247,8 @@ for spec in "../../src/main.cpp|^void loop[(]" "../../src/contract/ContractFlthy
   f="${spec%%|*}"; start="${spec#*|}"
   if ! out=$(wdp_writers "$f" "$start"); then
     printf '%s\n' "$out" | grep -v '^checked='
-    echo "FAIL: $f writes to Serial (lines above) without calling wdpFinish() first, so that text"
-    echo "      can land inside a WDP announce in flight. Call wdpFinish() on that line or the one above."
+    echo "FAIL: $f writes to Serial (lines above) without calling wdpFinish() or testing wdpInFlight()"
+    echo "      first, so that text can land inside a WDP announce in flight. Do it on that line or the one above."
     exit 1
   fi
   if [ "$(printf '%s\n' "$out" | sed -n 's/^checked=//p')" = "0" ]; then
