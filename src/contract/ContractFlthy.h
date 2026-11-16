@@ -28,7 +28,8 @@
 //   (.LEDOption1, .LEDOption2, .LEDHalt: written only to hand the LED side back, as the stock flush does)
 //   const int offcolor[HPCOUNT]; boolean offcoloroverride[HPCOUNT];      (read only)
 //   unsigned long twitchLEDTime[HPCOUNT]; const unsigned int LEDTwitchInterval[HPCOUNT][2];
-//   void resetHPtwitch(byte);    // sets twitchHPTime[hp] a full interval ahead; moves nothing
+//   void resetHPtwitch(byte);    // sets the servo twitch timer a full interval ahead; moves nothing
+//   bool dnServoTwitchOverdue(byte);   // is that timer overdue? (a DroidNet one-liner in main.cpp)
 //   void ledOFF(byte);
 //   void varResets(byte);
 //   #define HPCOUNT 3 / #define NEO_JEWEL_LEDS 7
@@ -156,17 +157,20 @@ inline bool contractHoldsLeds(uint8_t hp) {
 // the slot): in that pass the timer is put a full interval ahead BEFORE the stock test reads it.
 // By then it is long overdue, and without this the stock loop twitches the unit at once, all three
 // holoprojectors together when one line let them all go. resetHPtwitch() moves nothing.
+// ONLY an overdue timer is re-armed. A timer that is not due yet would not fire at the release
+// anyway, and pushing it a full interval ahead at the end of every short hold (a pulse every 40 s
+// from a WCB macro) meant the owner's auto twitch never came due at all.
 inline bool contractServoTwitchHeld(uint8_t hp) {
   FlthyUnit& u = gUnit[hp];
   const bool held = contractHolds(hp);
-  if (u.servoWasHeld && !held) resetHPtwitch(hp);
+  if (u.servoWasHeld && !held && dnServoTwitchOverdue(hp)) resetHPtwitch(hp);   // only an OVERDUE timer (see below)
   u.servoWasHeld = held;
   return held;
 }
 inline bool contractLedTwitchHeld(uint8_t hp) {
   FlthyUnit& u = gUnit[hp];
   const bool held = contractHoldsLeds(hp);
-  if (u.ledWasHeld && !held)
+  if (u.ledWasHeld && !held && millis() > twitchLEDTime[hp])
     twitchLEDTime[hp] = (1000L * random(LEDTwitchInterval[hp][0], LEDTwitchInterval[hp][1])) + millis();
   u.ledWasHeld = held;
   return held;
@@ -255,12 +259,13 @@ inline void DnStrip::show() {
   else if (sum > g.peakSum) { g.peakSum = sum; s.fieldOnsetMs = now; }
   Adafruit_NeoPixel::show();
 }
-// Both auto-twitch timers a full interval from now. Whenever the layer lets go of a unit the
-// timers are long overdue, and without this the stock loop twitches the LEDs AND THE SERVOS
-// in the same pass. resetHPtwitch() only sets twitchHPTime[hp]; it moves nothing.
+// Each auto-twitch timer that is OVERDUE, a full interval from now. When the layer lets go of a unit
+// after a show the timers are long overdue, and without this the stock loop twitches the LEDs AND
+// THE SERVOS in the same pass. A timer that is not due yet is left alone (see the twitch gates). resetHPtwitch() only sets twitchHPTime[hp]; it moves nothing.
 static inline void _rearmTwitch(uint8_t hp) {
-  twitchLEDTime[hp] = (1000L * random(LEDTwitchInterval[hp][0], LEDTwitchInterval[hp][1])) + millis();
-  resetHPtwitch(hp);
+  if (millis() > twitchLEDTime[hp])
+    twitchLEDTime[hp] = (1000L * random(LEDTwitchInterval[hp][0], LEDTwitchInterval[hp][1])) + millis();
+  if (dnServoTwitchOverdue(hp)) resetHPtwitch(hp);
 }
 // Give the LED side back to the stock firmware: what its own flush does for the LED command
 // (off colour if one is set and not overridden, else dark), then re-arm the timers.
@@ -734,8 +739,8 @@ static inline void _boundary(uint8_t hp, char kind, uint8_t wdSec) {
     if (!s.inShow) { s.base = CB_NONE; _rearmTwitch(hp); }
   } else if (heldLeds) {
     _nativeLedIdle(hp);
-  } else if (kind == 'i' && armed) {
-    resetHPtwitch(hp);
+  } else if (kind == 'i' && armed && dnServoTwitchOverdue(hp)) {
+    resetHPtwitch(hp);                                  // overdue only, as everywhere a hold ends
   }
 }
 

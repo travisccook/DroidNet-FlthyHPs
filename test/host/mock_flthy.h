@@ -8,7 +8,7 @@
 //   Adafruit_NeoPixel::{setPixelColor(uint16_t,uint32_t),show(),setBrightness(uint8_t)}
 //   neoStrips[HPCOUNT]; LED_command[HPCOUNT].LEDFunction
 //   enableTwitchLED/enableTwitchHP/offcoloroverride (the layer must never write these three)
-//   offcolor[], twitchLEDTime[], LEDTwitchInterval[][], resetHPtwitch(byte)
+//   offcolor[], twitchLEDTime[], twitchHPTime[], LEDTwitchInterval[][], resetHPtwitch(byte)
 //   ledOFF(byte), varResets(byte); millis/random/map/Serial (Arduino core)
 // What the firmware really does with these is test/host/sim's job: it runs the real main.cpp.
 //   micros/analogRead and Serial.write/availableForWrite (Arduino core, for src/wdp/wdp_fork.h,
@@ -113,7 +113,9 @@ static const unsigned int LEDTwitchInterval[HPCOUNT][2] = {{45, 180}, {45, 180},
 // main.cpp's resetHPtwitch() sets twitchHPTime[hp] a full interval ahead and moves nothing. The
 // layer calls it whenever it lets go of a unit, so it is counted, not a servo tripwire.
 static int _mock_hpTwitchRearms = 0;
-inline void resetHPtwitch(byte) { _mock_hpTwitchRearms++; }
+static unsigned long twitchHPTime[HPCOUNT] = {4100, 4200, 4300};         // main.cpp: next servo auto twitch
+inline void resetHPtwitch(byte hp) { _mock_hpTwitchRearms++; twitchHPTime[hp % HPCOUNT] = millis() + 45000UL; }
+inline bool dnServoTwitchOverdue(byte hp) { return millis() > twitchHPTime[hp % HPCOUNT]; }   // main.cpp's DroidNet one-liner
 
 // ---- board effect primitives the fork calls ----
 inline void ledOFF(byte) {}

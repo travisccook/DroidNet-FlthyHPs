@@ -682,6 +682,7 @@ DnStrip neoStrips[HPCOUNT];
 ///*****   Additive '!' parser branch. Never writes HP_command *****///
 ///*****   / never moves a servo. See src/contract/*.          *****///
 //////////////////////////////////////////////////////////////////////
+static inline bool dnServoTwitchOverdue(byte hp) { return millis() > twitchHPTime[hp]; }   // DroidNet: a read-only view of the servo twitch timer for the contract layer, whose source may not name the servo path at all (test/host/run.sh stage 3)
 #include "contract/ContractFlthy.h"
 
 //////////////////////////////////////////////////////////////////////
