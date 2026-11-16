@@ -7,6 +7,8 @@
 using namespace sim;
 #include "scenarios_native.inc"
 #include "scenarios_contract.inc"
+#include "scenarios_findings.inc"
+#include "scenarios_v13.inc"
 
 int main(int argc, char** argv) {
   if (argc < 2) { printf("usage: %s --list | <scenario>\n", argv[0]); return 2; }
