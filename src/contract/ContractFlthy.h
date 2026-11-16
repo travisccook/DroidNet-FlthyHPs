@@ -136,10 +136,10 @@ static inline bool _slotIsOurs(uint8_t hp) {
 // main.cpp's two auto-twitch gates. The SERVO twitch waits from the moment a show is armed
 // (this fork is LED-only); the LED twitch waits once the show has begun or a look is up.
 inline bool contractHolds(uint8_t hp) {
-  return gInterlocked[hp] || gUnit[hp].active;
+  return gInterlocked[hp] || gUnit[hp].active || gUnit[hp].pulseActive;
 }
 inline bool contractHoldsLeds(uint8_t hp) {
-  return (gInterlocked[hp] && gBegun[hp]) || gUnit[hp].active;
+  return (gInterlocked[hp] && gBegun[hp]) || gUnit[hp].active || gUnit[hp].pulseActive;
 }
 // Both auto-twitch timers a full interval from now. Whenever the layer lets go of a unit the
 // timers are long overdue, and without this the stock loop twitches the LEDs AND THE SERVOS
@@ -694,8 +694,19 @@ inline void applyContract(const ParsedContract& p) {
 // ------------------------------ beat tick + score switch + board-side accent ---
 // Call once per loop(), before the per-hp render block.
 inline void contractBeatTick() {
+  uint32_t now = millis();
+  for (uint8_t hp = 0; hp < HPCOUNT; hp++) {
+    FlthyUnit& u = gUnit[hp];
+    // A stock command, or its |<n> timer, took the render slot: the jewel is the stock
+    // firmware's again. Stop holding the unit (outside a show its auto twitch would never
+    // come back) and re-arm the timers so letting go moves nothing in this pass.
+    if ((u.active || u.pulseActive) && !_slotIsOurs(hp)) {
+      u.active = false;  u.pulseActive = false;
+      if (!gInterlocked[hp]) _rearmTwitch(hp);
+    }
+  }
   if (!gBeat.running) return;
-  BeatPos bp = beatPosAt(gBeat, millis());
+  BeatPos bp = beatPosAt(gBeat, now);
   for (uint8_t hp = 0; hp < HPCOUNT; hp++) {
     int idx = scoreActiveIndex(gScore[hp], gScoreCount[hp], bp.beatIndex);
     if (idx >= 0 && idx != gScoreActive[hp]) {
