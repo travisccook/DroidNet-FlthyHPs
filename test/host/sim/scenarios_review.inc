@@ -607,3 +607,64 @@ SCENARIO(s9_property_hostile_streams) {
   printf("  %d of %d streams broke the property (worst %d onsets in a second)\n", bad, SEEDS, worst);
   CHECK_EQ(bad, 0);
 }
+
+// ===== S10: the allow-listed native looks, classified by how they run as STOCK ===================
+// S10 sorts an allow-listed native look into one of two kinds by what its stock form does to the whole
+// field: RUNS AS STOCK when the field does not swing by a tenth of the ceiling or more faster than
+// every 340 ms, GATED when it does (and this board can pass its frames through the gate). This
+// scenario measures every code on the board's allow-list, as the stock command starts it, two ways
+// (the brightest channel, which is what the gate measures, and Rec.709 luminance), and compares the
+// kind with the table below. A code added to the list with no row here fails; so does a row whose
+// look no longer measures as its kind. The list cannot drift from what the looks do.
+enum NativeKind { RUNS_AS_STOCK, GATED };
+static const struct { int code; NativeKind kind; const char* name; } S10_NATIVE[] = {
+  {1, GATED, "Leia"},                                // all seven pixels re-roll together, several times a second
+  {6, RUNS_AS_STOCK, "rainbow"},                     // the colours move, the field level does not
+};
+struct FieldSwing { int lo = 100000, hi = 0, rises = 0; double closestMs = 1e9; int trough = 100000; uint64_t last = 0;
+  void see(int v, int tenth, uint64_t now) {         // v and tenth in the same unit; trough-following, as the gate does
+    lo = std::min(lo, v); hi = std::max(hi, v);
+    if (v < trough) trough = v;
+    if (v - trough >= tenth) { rises++; if (last) closestMs = std::min(closestMs, (now - last) / 1000.0); last = now; trough = v; }
+  }
+  bool swingsFast() const { return closestMs < 340.0; }
+};
+static void measureStockLook(int code, FieldSwing& chan, FieldSwing& lum) {   // 20 s of the stock look on the front HP
+  char cmd[16]; snprintf(cmd, sizeof cmd, "F0%02d\r", code);
+  run(8); for (int i = 0; i < HPCOUNT; i++) enableTwitchLED[i] = 0;
+  line(cmd, 1.0);
+  const int full = fullScale(neoStrips[0].getBrightness());                 // one channel at the ceiling
+  for (int k = 0; k < 20000; k++) {
+    pass(1000); long c = 0, y = 0;
+    for (int px = 0; px < 7; px++) { RGB3 p = latched(0, px); c += std::max(p.r, std::max(p.g, p.b)); y += 2126L * p.r + 7152L * p.g + 722L * p.b; }
+    chan.see((int)(c * 10 / 7), full, us);           // tenths of a level; a tenth of the ceiling is `full` tenths
+    lum.see((int)(y / 7000), full, us);              // Rec.709, the same scale: white at the ceiling is full * 10
+  }
+}
+SCENARIO(s10_native_looks_are_classified_by_their_stock_field_swing) {
+  int bad = 0, onList = 0;
+  for (int code = 0; code < 100; code++) {
+    if (!nativeAllowedFlthy(code)) continue;
+    onList++; const char* name = 0; NativeKind kind = RUNS_AS_STOCK;
+    for (auto& row : S10_NATIVE) if (row.code == code) { name = row.name; kind = row.kind; }
+    if (!name) { printf("  native:%d is on the allow-list and has no row in S10_NATIVE\n", code); bad++; continue; }
+    bad += trial([=] {
+      FieldSwing chan, lum; measureStockLook(code, chan, lum);
+      const bool fast = chan.swingsFast() || lum.swingsFast();
+      printf("  native:%d %-8s as stock, 20 s: brightest channel %d..%d %% of the ceiling, %d rises of a tenth or more, closest %s ms;"
+             " Rec.709 luminance %d..%d %%, %d rises, closest %s ms -> %s\n", code, name,
+             chan.lo * 10 / fullScale(100), chan.hi * 10 / fullScale(100), chan.rises, chan.rises > 1 ? std::to_string((int)chan.closestMs).c_str() : "-",
+             lum.lo * 10 / fullScale(100), lum.hi * 10 / fullScale(100), lum.rises, lum.rises > 1 ? std::to_string((int)lum.closestMs).c_str() : "-",
+             fast ? "its whole field swings faster than every 340 ms: GATED" : "RUNS AS STOCK");
+      if (fast != (kind == GATED)) { printf("  FAIL: the table says %s\n", kind == GATED ? "GATED" : "RUNS AS STOCK"); failures++; }
+    });
+  }
+  CHECK_EQ(onList, (int)(sizeof S10_NATIVE / sizeof *S10_NATIVE));
+  CHECK_EQ(bad, 0);
+  // and the look S10 names as off the list really is one that could not be on it
+  CHECK(!nativeAllowedFlthy(7));
+  int sc = trial([] { FieldSwing chan, lum; measureStockLook(7, chan, lum);
+    printf("  (off the list) Short Circuit as stock: %d rises of a tenth or more by brightest channel, closest %d ms\n", chan.rises, (int)chan.closestMs);
+    if (!chan.swingsFast()) failures++; });
+  CHECK_EQ(sc, 0);
+}
