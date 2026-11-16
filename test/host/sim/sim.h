@@ -142,7 +142,7 @@ inline void runRand(double seconds, uint64_t lo, uint64_t hi) { uint64_t end = u
 inline void drain(uint64_t lo = PASS, uint64_t hi = PASS, double extra = 0.05) { while (!wireIdle()) pass(rnd(lo, hi)); runRand(extra, lo, hi); }
 // latched (last show()) and RAM colour of pixel px on jewel hp, as R,G,B
 struct RGB3 { int r, g, b; bool operator==(const RGB3& o) const { return r == o.r && g == o.g && b == o.b; } };
-inline RGB3 latched(int hp, int px = 1) { uint8_t* p = neoStrips[hp].shown + px * 3; return {p[0], p[1], p[2]}; }
+inline RGB3 latched(int hp, int px = 1) { uint8_t* p = neoStrips[hp].shown + px * 3; return {p[1], p[0], p[2]}; }   // the buffer is G,R,B
 inline bool dark(int hp) { for (int i = 0; i < 21; i++) if (neoStrips[hp].shown[i]) return false; return true; }
 inline long shows(int hp) { return neoStrips[hp].showCount; }
 inline long twitches() { return ledTwitchStarts[0] + ledTwitchStarts[1] + ledTwitchStarts[2]; }

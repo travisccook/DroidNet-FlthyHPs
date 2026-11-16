@@ -4,7 +4,8 @@
 //
 // A strip that keeps its RAM buffer and the last latched frame, with the REAL Adafruit_NeoPixel 1.15.5
 // brightness math (setPixelColor at Adafruit_NeoPixel.cpp:3447, setBrightness at :3663). Bytes are kept
-// R,G,B per pixel: the wire order (NEO_GRB) does not matter to any check.
+// G,R,B per pixel, as the library keeps them for NEO_GRB: the firmware's field gate reads the raw
+// buffer and takes its luminance from the three channels by position.
 #pragma once
 #include "Arduino.h"
 #define NEO_GRB 0x52
@@ -17,7 +18,7 @@ struct Adafruit_NeoPixel {
   void setPixelColor(uint16_t n, uint32_t c) {
     if (n < numLEDs) { uint8_t r = (uint8_t)(c >> 16), g = (uint8_t)(c >> 8), b = (uint8_t)c;
       if (brightness) { r = (r * brightness) >> 8; g = (g * brightness) >> 8; b = (b * brightness) >> 8; }
-      pixels[n*3] = r; pixels[n*3+1] = g; pixels[n*3+2] = b; } }
+      pixels[n*3] = g; pixels[n*3+1] = r; pixels[n*3+2] = b; } }
   void setBrightness(uint8_t b) {
     uint8_t newBrightness = b + 1;
     if (newBrightness != brightness) {

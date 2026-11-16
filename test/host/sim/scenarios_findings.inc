@@ -167,8 +167,8 @@ SCENARIO(f3_native_allow_list) {
     CHECK_EQ(LED_command[0].LEDFunction, 102);       // ignored whole: the red solid is still there
     CHECK(lookUp(0));
   }
-  line("!HFA:i=native:1\r");  CHECK_EQ(LED_command[0].LEDFunction, 1);    // Leia
-  line("!HFA:i=native:6\r");  CHECK_EQ(LED_command[0].LEDFunction, 6);    // rainbow
+  line("!HFA:i=native:1\r", 0.6);  CHECK_EQ(LED_command[0].LEDFunction, 1);    // Leia (a native look waits for its window, S10)
+  line("!HFA:i=native:6\r", 0.6);  CHECK_EQ(LED_command[0].LEDFunction, 6);    // rainbow
   line("!HFA:i=native:3,at=4\r");  CHECK_EQ(scoreLen(0), 0);          // refused in a score too
 }
 SCENARIO(f3_no_accent_replaces_a_native_look) {
@@ -280,7 +280,8 @@ SCENARIO(f9_pulse_obeys_the_rate_floor) {
   run(6); line("!**M:v=show\r");
   double fast = pulseHz(255), mid = pulseHz(128);
   printf("  pulse s=255: %.2f Hz, s=128: %.2f Hz\n", fast, mid);
-  CHECK(fast <= 3.0);  CHECK(mid > 0.8 && mid < 1.05);  // s=128 is the core's 1167 ms cycle: 5 or 6 peaks in 6 s
+  CHECK(fast <= 1.6);                                 // s=255 is the core's shortest cycle, 680 ms (FX_CYCLE_MIN_MS)
+  CHECK(mid > 0.6 && mid < 0.9);                      // s=128 is the core's 1337 ms cycle: 4 or 5 peaks in 6 s
 }
 SCENARIO(l4_d_on_a_look_is_ignored) {                // v1.3 hosts never send it; a v1.3 board ignores it
   run(6); line("!**M:v=show\r");

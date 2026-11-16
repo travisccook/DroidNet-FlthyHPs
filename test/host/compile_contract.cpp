@@ -124,8 +124,9 @@ int main() {
   // M:v=idle (the other way a show ends) clears too.
   {
     ParsedContract q;
+    _mock_millis = 200;                                // S4 holds every look for 170 ms after the unit's last one: not at boot time 0
     if (contractParse("**X", q)) applyContract(q);                            // clean slate
-    if (contractParse("**C:bpm=120,ph=0,bpb=4,beat=0", q)) applyContract(q);  // clock at beat 0 (millis()==0)
+    if (contractParse("**C:bpm=120,ph=0,bpb=4,beat=0", q)) applyContract(q);  // clock at beat 0 (millis()==200)
     if (contractParse("HFA:i=flash,c=FF0000,at=0", q)) applyContract(q);      // show 1, section at beat 0
     contractBeatTick();
     if (gUnit[0].s.base != CB_LOOK || gUnit[0].s.effect != CE_FLASH) { printf("FAIL: Flthy scored section never applied\n"); return 1; }
@@ -141,6 +142,7 @@ int main() {
     if (gUnit[0].s.base == CB_LOOK) { printf("FAIL: Flthy beat tick resurrected the stopped show from a stale score\n"); return 1; }
 
     // !**X: every unit's score cleared, plus the beat clock
+    _mock_millis += 200;                               // (S4: 170 ms between two looks on a unit)
     if (contractParse("**C:bpm=120,ph=0,bpb=4,beat=0", q)) applyContract(q);
     if (contractParse("H*A:i=solid,c=00FF00,at=0", q)) applyContract(q);
     contractBeatTick();
@@ -153,6 +155,7 @@ int main() {
     if (gBeat.running) { printf("FAIL: Flthy !**X did not stop the beat clock\n"); return 1; }
 
     // M:v=idle also ends a show: its sections must not survive it
+    _mock_millis += 200;
     if (contractParse("**C:bpm=120,ph=0,bpb=4,beat=0", q)) applyContract(q);
     if (contractParse("HRA:i=flash,c=FF0000,at=0", q)) applyContract(q);
     contractBeatTick();
@@ -163,6 +166,7 @@ int main() {
     contractBeatTick();
     if (gUnit[1].s.base == CB_LOOK) { printf("FAIL: Flthy beat tick resurrected a show after idle\n"); return 1; }
     if (contractParse("**X", q)) applyContract(q);                            // leave a clean slate
+    _mock_millis = 0;
   }
 
   // I5 guard (BEHAVIORAL): an am=3 ("build") section must actually RAMP across its span.
@@ -637,7 +641,7 @@ int main() {
   // Also pins that a LIVE (unscored) look NEVER self-accents: only the score path fires the
   // board-side overlay, so a board driven live cannot double-fire (the Pi's verb P AND its
   // own beat edge on the same beat).
-  // 120 BPM (500 ms/beat), s=128 => the flash's ON half is 297 ms (the core's shared timing:
+  // 120 BPM (500 ms/beat), s=128 => the flash's ON half is 317 ms (the core's shared timing:
   // fxFlashHalfMs). Sample two moments that are
   // both inside an ON half but at opposite ends of a beat: phase ~0.02 (full accent) vs phase
   // ~0.92 (the envelope has decayed to its floor).
@@ -656,7 +660,7 @@ int main() {
       return (uint8_t)(neoStrips[0].shown[0] & 0xFFu);      // c=0000FF => blue == the level
     };
     uint8_t onBeat  = litBlue(T0 + 10);    // beat 0 phase 0.02, flash elapsed  10 ms -> ON
-    uint8_t offBeat = litBlue(T0 + 2460);  // beat 4 phase 0.92, flash elapsed 2460 ms -> ON (2460 % 594 = 84)
+    uint8_t offBeat = litBlue(T0 + 1460);  // beat 2 phase 0.92, flash elapsed 1460 ms -> ON (1460 % 634 = 192)
 
     if (gUnit[0].s.pulseActive) {
       printf("FAIL: a LIVE (unscored) look self-accented — only a scored section may fire the "

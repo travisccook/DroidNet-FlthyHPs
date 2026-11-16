@@ -18,8 +18,9 @@ static bool fires(uint8_t am, uint8_t barPos) {
   BeatPos bp; bp.barPos = barPos; bp.beatIndex = barPos;
   return beatAccentFires(am, bp, tc120());
 }
-static uint8_t amount(uint8_t am, const BeatPos& bp, uint8_t mod, float prog) {
-  return beatAccentAmount(am, bp, mod, prog, tc120());
+// prog16: the section progress in Q16 (0 .. 65536), as beatSectionProgress16() returns it.
+static uint8_t amount(uint8_t am, const BeatPos& bp, uint8_t mod, uint32_t prog16) {
+  return beatAccentAmount(am, bp, mod, prog16, tc120());
 }
 
 static void test_scope_and_verb() {
@@ -89,7 +90,6 @@ static void test_params() {
   CHECK(contractParse("LFA:c=XYZ", p) && !p.params.hasColor);
 }
 
-static bool approx(float a, float b) { float d = a - b; return (d < 0 ? -d : d) < 0.01f; }
 
 static void test_beat_clock() {
   // 120 BPM (2 beats/sec), anchor downbeat at t=1000ms, beat 0, 4/4
@@ -99,11 +99,11 @@ static void test_beat_clock() {
   CHECK(bc.running && bc.bpm == 120 && bc.anchorMs == 1000 && bc.beatOffset == 0);
 
   BeatPos p0 = beatPosAt(bc, 1000);
-  CHECK(p0.beatIndex == 0 && approx(p0.phase, 0.0f) && p0.barPos == 0);
+  CHECK(p0.beatIndex == 0 && p0.phase16 == 0 && p0.barPos == 0);
   BeatPos p1 = beatPosAt(bc, 1500);              // +0.5s @120bpm = 1 beat
-  CHECK(p1.beatIndex == 1 && approx(p1.phase, 0.0f) && p1.barPos == 1);
+  CHECK(p1.beatIndex == 1 && p1.phase16 == 0 && p1.barPos == 1);
   BeatPos pHalf = beatPosAt(bc, 1250);           // +0.25s = 0.5 beat
-  CHECK(pHalf.beatIndex == 0 && approx(pHalf.phase, 0.5f) && pHalf.barPos == 0);
+  CHECK(pHalf.beatIndex == 0 && pHalf.phase16 == 32768 && pHalf.barPos == 0);   // phase is Q16 since CA1.3: half a beat
   BeatPos pBar = beatPosAt(bc, 3000);            // +2s = 4 beats -> downbeat again
   CHECK(pBar.beatIndex == 4 && pBar.barPos == 0);
 
@@ -118,17 +118,17 @@ static void test_beat_clock() {
 }
 
 static void test_accent_envelope() {
-  BeatPos down; down.barPos = 0; down.phase = 0.0f;    // on the downbeat, phase 0 -> env 1
-  BeatPos offbeat; offbeat.barPos = 1; offbeat.phase = 0.0f;
-  BeatPos mid; mid.barPos = 0; mid.phase = 0.5f;       // decayed
+  BeatPos down; down.barPos = 0; down.phase16 = 0;     // on the downbeat, phase 0 -> env 1
+  BeatPos offbeat; offbeat.barPos = 1; offbeat.phase16 = 0;
+  BeatPos mid; mid.barPos = 0; mid.phase16 = 32768;    // decayed
   CHECK(amount(0, down, 255, 0) == 0);       // am=0 none
   CHECK(amount(1, down, 0, 0) == 0);         // beatMod=0 -> none
   CHECK(amount(1, down, 255, 0) > 200);      // am=1 fires strong on downbeat
   CHECK(amount(1, offbeat, 255, 0) == 0);    // am=1 silent off the downbeat
   CHECK(amount(2, offbeat, 255, 0) > 0);     // am=2 fires every beat
   CHECK(amount(2, mid, 255, 0) < amount(2, offbeat, 255, 0)); // decays with phase
-  CHECK(amount(3, down, 255, 0.0f) == 0);    // build at 0 progress -> 0
-  CHECK(amount(3, down, 255, 1.0f) > 200);   // build at full progress -> strong
+  CHECK(amount(3, down, 255, 0) == 0);       // build at 0 progress -> 0
+  CHECK(amount(3, down, 255, 65536UL) > 200);   // build at full progress -> strong
 }
 
 // ===================== v1.2: the accent-effect overlay =====================
@@ -178,8 +178,8 @@ static void test_beat_accent_fires() {
       for (int mod = 0; mod < 256; mod += 17) {
         for (int ph = 0; ph < 10; ph++) {
           for (int pg = 0; pg <= 2; pg++) {
-            BeatPos bp; bp.barPos = (uint8_t)bpos; bp.phase = (float)ph / 10.0f;
-            uint8_t amt = amount((uint8_t)am, bp, (uint8_t)mod, (float)pg * 0.5f);
+            BeatPos bp; bp.barPos = (uint8_t)bpos; bp.phase16 = (uint16_t)(ph * 6553);
+            uint8_t amt = amount((uint8_t)am, bp, (uint8_t)mod, (uint32_t)pg * 32768UL);
             bool f = fires((uint8_t)am, (uint8_t)bpos);
             if (amt > 0 && !f) divergences++;      // pump fired on a beat the accent skips
             if (!f && amt != 0) divergences++;
@@ -545,21 +545,42 @@ static void test_fx_spatial_helpers() {
   CHECK(fxCometBright(9, 0, 10) == 192);  // wraps around N: 1 behind head=0
   CHECK(fxCometBright(8, 0, 10) == 128);  // wraps around N: 2 behind head=0
 
-  // fxChaseLit: (p + elapsed/fxStepMs) % 3 == 0.
-  CHECK(fxChaseLit(0, 0, 255) == true);   // p+phase=0 -> lit
-  CHECK(fxChaseLit(1, 0, 255) == false);
-  CHECK(fxChaseLit(2, 0, 255) == false);
-  CHECK(fxChaseLit(3, 0, 255) == true);   // 3 % 3 == 0 -> lit
-  CHECK(fxChaseLit(0, 30, 255) == false); // one step elapsed -> phase 1
+  // fxChaseLit: every third position of a ring of N, ((p + elapsed/fxStepMs) % N) % 3 == 0.
+  CHECK(fxChaseLit(0, 0, 255, 6) == true);   // p+phase=0 -> lit
+  CHECK(fxChaseLit(1, 0, 255, 6) == false);
+  CHECK(fxChaseLit(2, 0, 255, 6) == false);
+  CHECK(fxChaseLit(3, 0, 255, 6) == true);   // 3 % 3 == 0 -> lit
+  CHECK(fxChaseLit(0, 30, 255, 6) == false); // one step elapsed -> phase 1
+  CHECK(fxChaseLit(0, 0, 255, 0) == false && fxChaseLit(0, 0, 255, -3) == false);
+  // CA1.5: the lit count is the same at every step, ceil(N / 3), for every N (it was 3, 3, 2 on
+  // 8, which moved the field mean by an eighth at every step), and where N is a multiple of 3
+  // it is the old pattern exactly
+  for (int N = 1; N <= 60; N++)
+    for (uint32_t step = 0; step < 200; step++) {
+      int count = 0;
+      for (int p = 0; p < N; p++) {
+        const bool lit = fxChaseLit(p, step * 30u, 255, N);
+        if (lit) count++;
+        if (N % 3 == 0) CHECK(lit == ((((uint32_t)p + step) % 3u) == 0u));
+      }
+      CHECK(count == (N + 2) / 3);
+    }
+  // ...and it still turns: what is lit at one step is lit one position lower at the next
+  for (int p = 1; p < 8; p++) CHECK(fxChaseLit(p, 0, 255, 8) == fxChaseLit(p - 1, 30, 255, 8));
 
   // fxWipeLit: a PING-PONG. Fill 0 -> N-1, then drain BACK from the far end.
   // Exact vectors captured by running the real implementation.
   CHECK(fxWipeLit(0, 0, 255, 10) == true);    // front at 0, p<=front
   CHECK(fxWipeLit(9, 0, 255, 10) == false);
   CHECK(fxWipeLit(1, 0, 255, 10) == false);
-  CHECK(fxWipeLit(0, 300, 255, 10) == true);  // ph==N: drain begins at the FAR end, so 0 stays lit
-  CHECK(fxWipeLit(9, 300, 255, 10) == false); // ph==N: the far end is the first to go dark
-  CHECK(fxWipeLit(5, 300, 255, 10) == true);
+  // (CA1.5: a wipe of 10 at the top speed takes 34 ms a step, not 30: one cycle is never under 680 ms)
+  CHECK(fxWipeStepMs(255, 10) == 34 && fxWipeStepMs(255, 8) == 43 && fxWipeStepMs(255, 12) == 30 && fxWipeStepMs(0, 8) == fxStepMs(0));
+  CHECK(fxWipeStepMs(255, 1) == 340 && fxWipeStepMs(255, 60) == 30);
+  for (int N = 1; N <= 80; N++) for (int sp = 0; sp <= 255; sp += 15)
+    CHECK(fxWipeStepMs((uint8_t)sp, N) * 2u * (uint32_t)N >= FX_CYCLE_MIN_MS && fxWipeStepMs((uint8_t)sp, N) >= fxStepMs((uint8_t)sp));
+  CHECK(fxWipeLit(0, 340, 255, 10) == true);  // ph==N: drain begins at the FAR end, so 0 stays lit
+  CHECK(fxWipeLit(9, 340, 255, 10) == false); // ph==N: the far end is the first to go dark
+  CHECK(fxWipeLit(5, 340, 255, 10) == true);
 
   // IT MUST ACTUALLY PING-PONG. The drain used to read `p > (ph - N)`, which empties from
   // position 0 upward — the erase head running the SAME direction as the fill head. The
@@ -569,7 +590,7 @@ static void test_fx_spatial_helpers() {
   // the fill and only ever shrinks from the top during the drain.
   {
     const int N = 10;
-    const uint32_t STEP = 30;   // fxStepMs(255)
+    const uint32_t STEP = fxWipeStepMs(255, N);   // 34 ms: fxStepMs(255) is 30, stretched so that the cycle takes 680 ms
     int prevCount = -1;
     for (uint32_t ph = 0; ph < (uint32_t)N; ph++) {           // FILL: 0..N-1 light up in order
       int count = 0, highest = -1;

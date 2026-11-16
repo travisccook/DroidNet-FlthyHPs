@@ -62,8 +62,8 @@ SCENARIO(f6_reanchor_does_not_refire_the_accent) {
     pass();
     if (accentStartMs(0) != last) { fires++; last = accentStartMs(0); }
     BeatPos bp = clockPos();
-    if (sent < 5 && bp.beatIndex == 3 + 4 * sent && bp.phase >= 0.6f && wireIdle()) {   // the same grid again, 600 ms into a beat
-      char b[64]; snprintf(b, sizeof b, "!**C:ph=%d,beat=%d\r", (int)((1.0f - bp.phase) * 1000) - 26, (int)bp.beatIndex + 1);
+    if (sent < 5 && bp.beatIndex == 3 + 4 * sent && bp.phase16 >= 39322 && wireIdle()) {   // the same grid again, 600 ms into a beat
+      char b[64]; snprintf(b, sizeof b, "!**C:ph=%d,beat=%d\r", (int)((65536L - bp.phase16) * 1000 / 65536) - 26, (int)bp.beatIndex + 1);
       say(b); sent++;
     }
   }

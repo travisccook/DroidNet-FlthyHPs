@@ -8,6 +8,7 @@
 #   1.  contract_core.h parser unit tests
 #   1f. contract_core.h v1.3 unit tests (safety limits, clock rules, lifecycle, score, query)
 #   1g. the same, built with stand-ins for this fork's flash-string hooks (ContractFlthy.h defines them on the AVR)
+#   1h. no floating point in the core or in the layer
 #   1b. wdp_announce_core.h (WDP device announce) unit tests, shared with the other two forks
 #   1c. wdp_fork.h, this fork's announce adapter and identity
 #   2.  ContractFlthy.h firmware-layer type-check against a mock of the board API
@@ -92,6 +93,19 @@ stage 1  "contract_core parser unit tests" "$CXX" -std=c++17 -Wall -Wextra -O0 t
 # Shared with the RSeries and PSI forks, like stage 1. -std=c++11: avr-gcc builds the core as gnu++11 here.
 stage 1f "contract_core v1.3 unit tests" "$CXX" -std=c++11 -Wall -Wextra -O0 test_contract_v13.cpp
 stage 1g "contract_core v1.3 unit tests, flash-string hooks on" "$CXX" -std=c++11 -Wall -Wextra -O0 -DCONTRACT_TEST_FLASH_HOOKS test_contract_v13.cpp
+# The core and everything this fork runs per frame are integer only (core revision CA1.3: the beat
+# clock and the envelope without float). On an ATmega a float in the render path costs flash, time
+# and a second set of rounding rules beside the vector file's.
+if want 1h; then
+STAGE="1h"; echo "[1h] no float in the core or the layer"
+for f in ../../src/contract/contract_core.h ../../src/contract/ContractFlthy.h ../../src/droidnet/dn_strip.h ../../src/droidnet/native_ext.h; do
+  if sed 's://.*::' "$f" | grep -nE '\b(float|double)\b|[0-9]\.[0-9]+f\b|<math\.h>|<cmath>|\b(floorf?|ceilf?|roundf?|fabsf?|sqrtf?|powf?)[[:space:]]*\('; then
+    echo "FAIL: $f uses floating point (the lines above). The core and the per-frame path are integer only."; exit 1
+  fi
+done
+echo "OK  contract_core.h, ContractFlthy.h, dn_strip.h and native_ext.h are integer only"
+RAN="$RAN 1h"
+fi
 # Shared byte-identically with the RSeries and PSI forks (src/wdp/wdp_announce_core.h and this test).
 # -std=c++11: avr-gcc builds the same header as gnu++11 here.
 stage 1b "wdp_announce_core WDP device announce unit tests" "$CXX" -std=c++11 -Wall -Wextra -Werror -O0 test_wdp_announce_core.cpp
