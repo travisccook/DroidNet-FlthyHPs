@@ -117,8 +117,8 @@ int main() {
   }
 
   // I3 guard: ending a show must CLEAR the Phase-2 score. Without scoreClear(),
-  // gScoreCount/gScoreActive survived verb X — and because a later at= insert resets
-  // gScoreActive[hp] to -1, the very next contractBeatTick() re-applied the OLD table's
+  // the score count and cursor survived verb X — and because a later at= insert resets
+  // gUnit[hp].s.curSection to -1, the very next contractBeatTick() re-applied the OLD table's
   // section and RESURRECTED the previous show on a jewel that had just been blacked out.
   // Semantics: !HFX clears that HP; !**X clears all three units plus the beat clock;
   // M:v=idle (the other way a show ends) clears too.
@@ -128,17 +128,17 @@ int main() {
     if (contractParse("**C:bpm=120,ph=0,bpb=4,beat=0", q)) applyContract(q);  // clock at beat 0 (millis()==0)
     if (contractParse("HFA:i=flash,c=FF0000,at=0", q)) applyContract(q);      // show 1, section at beat 0
     contractBeatTick();
-    if (!gUnit[0].active || gUnit[0].effect != CE_FLASH) { printf("FAIL: Flthy scored section never applied\n"); return 1; }
+    if (gUnit[0].s.base != CB_LOOK || gUnit[0].s.effect != CE_FLASH) { printf("FAIL: Flthy scored section never applied\n"); return 1; }
 
     if (contractParse("HFX", q)) applyContract(q);                            // per-unit STOP
-    if (gUnit[0].active)   { printf("FAIL: Flthy STOP left the unit active\n"); return 1; }
-    if (gScoreCount[0] != 0 || gScoreActive[0] != -1) { printf("FAIL: Flthy STOP left the Phase-2 score armed\n"); return 1; }
+    if (gUnit[0].s.base == CB_LOOK)   { printf("FAIL: Flthy STOP left the unit active\n"); return 1; }
+    if (gUnit[0].s.scoreLen != 0 || gUnit[0].s.curSection != -1) { printf("FAIL: Flthy STOP left the Phase-2 score armed\n"); return 1; }
 
     // show 2 arrives: its at= insert resets the active cursor, so a table that was never
     // cleared re-applies show 1's beat-0 section on the next tick (the resurrection path).
     if (contractParse("HFA:i=solid,c=00FF00,at=8", q)) applyContract(q);      // show 2 starts at beat 8
     contractBeatTick();                                                        // still beat 0 => nothing to play
-    if (gUnit[0].active) { printf("FAIL: Flthy beat tick resurrected the stopped show from a stale score\n"); return 1; }
+    if (gUnit[0].s.base == CB_LOOK) { printf("FAIL: Flthy beat tick resurrected the stopped show from a stale score\n"); return 1; }
 
     // !**X: every unit's score cleared, plus the beat clock
     if (contractParse("**C:bpm=120,ph=0,bpb=4,beat=0", q)) applyContract(q);
@@ -146,7 +146,7 @@ int main() {
     contractBeatTick();
     if (contractParse("**X", q)) applyContract(q);
     for (uint8_t hp = 0; hp < HPCOUNT; hp++) {
-      if (gScoreCount[hp] != 0 || gScoreActive[hp] != -1 || gUnit[hp].active) {
+      if (gUnit[hp].s.scoreLen != 0 || gUnit[hp].s.curSection != -1 || gUnit[hp].s.base == CB_LOOK) {
         printf("FAIL: Flthy !**X did not clear HP %u\n", (unsigned)hp); return 1;
       }
     }
@@ -156,12 +156,12 @@ int main() {
     if (contractParse("**C:bpm=120,ph=0,bpb=4,beat=0", q)) applyContract(q);
     if (contractParse("HRA:i=flash,c=FF0000,at=0", q)) applyContract(q);
     contractBeatTick();
-    if (!gUnit[1].active) { printf("FAIL: Flthy scored section never applied (idle case)\n"); return 1; }
+    if (gUnit[1].s.base != CB_LOOK) { printf("FAIL: Flthy scored section never applied (idle case)\n"); return 1; }
     if (contractParse("HRM:v=idle", q)) applyContract(q);
-    if (gScoreCount[1] != 0 || gScoreActive[1] != -1) { printf("FAIL: Flthy idle left the Phase-2 score armed\n"); return 1; }
+    if (gUnit[1].s.scoreLen != 0 || gUnit[1].s.curSection != -1) { printf("FAIL: Flthy idle left the Phase-2 score armed\n"); return 1; }
     if (contractParse("HRA:i=solid,c=00FF00,at=8", q)) applyContract(q);
     contractBeatTick();
-    if (gUnit[1].active) { printf("FAIL: Flthy beat tick resurrected a show after idle\n"); return 1; }
+    if (gUnit[1].s.base == CB_LOOK) { printf("FAIL: Flthy beat tick resurrected a show after idle\n"); return 1; }
     if (contractParse("**X", q)) applyContract(q);                            // leave a clean slate
   }
 
@@ -169,7 +169,7 @@ int main() {
   // _envBright() passed a hardcoded sectionProgress = 1.0f to beatAccentAmount(), so every
   // build frame returned FULL accent: the jewel sat pinned at the b= ceiling for the whole
   // section instead of swelling into the next one. The span now comes from the active score
-  // entry (gUnit[hp].sectionStart/.sectionEnd, set in contractBeatTick()).
+  // entry (gUnit[hp].s.sectionStart/.sectionEnd, set in contractBeatTick()).
   // Score two 16-beat sections at 120 BPM (500 ms/beat) and read the LATCHED pixel a hair
   // after a downbeat 1/4 and 3/4 of the way through the first one: same barPos, same phase,
   // so section progress is the ONLY thing that differs. With c=0000FF the blue channel of
@@ -190,7 +190,7 @@ int main() {
     };
     uint8_t early = renderedBright(4);    // beat  4 of [0,16) -> section progress 0.25
     uint8_t late  = renderedBright(12);   // beat 12 of [0,16) -> section progress 0.75
-    uint8_t ceil_ = gUnit[0].brightBase;  // b= ceiling: full accent renders exactly here
+    uint8_t ceil_ = gUnit[0].s.bright;  // b= ceiling: full accent renders exactly here
 
     if (early >= ceil_ && late >= ceil_) {
       printf("FAIL: am=3 BUILD section is pinned at FULL accent for its whole span "
@@ -242,15 +242,15 @@ int main() {
     auto tick = [&](uint32_t ms) {
       _mock_millis = ms;
       for (uint8_t hp = 0; hp < HPCOUNT; hp++) {
-        startBefore[hp]  = gUnit[hp].pulseStartMs;
-        activeBefore[hp] = gUnit[hp].pulseActive;
+        startBefore[hp]  = gUnit[hp].s.pulseStartMs;
+        activeBefore[hp] = gUnit[hp].s.pulseActive;
       }
       contractBeatTick();
     };
     // an accent FIRED on this tick == the overlay is armed AND its start time is new
     auto fired = [&](uint8_t hp) {
-      return gUnit[hp].pulseActive &&
-             (!activeBefore[hp] || gUnit[hp].pulseStartMs != startBefore[hp]);
+      return gUnit[hp].s.pulseActive &&
+             (!activeBefore[hp] || gUnit[hp].s.pulseStartMs != startBefore[hp]);
     };
 
     tick(t0 + 10);                                                     // beat 0, barPos 0
@@ -259,21 +259,21 @@ int main() {
     if (!fired(1)) { printf("FAIL: an am=2 scored accent did not fire on beat 0\n"); return 1; }
     if (fired(2))  { printf("FAIL: a v1.1 score entry (no ae=) armed the accent overlay — the "
                             "v1.2 layer is NOT backward compatible\n"); return 1; }
-    if (gUnit[0].pulseFx != CE_FLASH || gUnit[0].pulseColor.r != 255 ||
-        gUnit[0].pulseColor.g != 0   || gUnit[0].pulseColor.b != 0 || gUnit[0].pulseDurMs != 200) {
+    if (gUnit[0].s.pulseFx != CE_FLASH || gUnit[0].s.pulseColor.r != 255 ||
+        gUnit[0].s.pulseColor.g != 0   || gUnit[0].s.pulseColor.b != 0 || gUnit[0].s.pulseDurMs != 200) {
       printf("FAIL: the scored accent did not carry ae=flash / ac=FF0000 / ad=200 "
-             "(fx=%d rgb=%u,%u,%u dur=%lu)\n", (int)gUnit[0].pulseFx,
-             (unsigned)gUnit[0].pulseColor.r, (unsigned)gUnit[0].pulseColor.g,
-             (unsigned)gUnit[0].pulseColor.b, (unsigned long)gUnit[0].pulseDurMs);
+             "(fx=%d rgb=%u,%u,%u dur=%lu)\n", (int)gUnit[0].s.pulseFx,
+             (unsigned)gUnit[0].s.pulseColor.r, (unsigned)gUnit[0].s.pulseColor.g,
+             (unsigned)gUnit[0].s.pulseColor.b, (unsigned long)gUnit[0].s.pulseDurMs);
       return 1;
     }
     // no ac= => the accent inherits the SECTION's colour (resolved at insert); no ad= => 180 ms
-    if (gUnit[1].pulseFx != CE_PULSE || gUnit[1].pulseColor.g != 255 ||
-        gUnit[1].pulseColor.r != 0 || gUnit[1].pulseDurMs != 180) {
+    if (gUnit[1].s.pulseFx != CE_PULSE || gUnit[1].s.pulseColor.g != 255 ||
+        gUnit[1].s.pulseColor.r != 0 || gUnit[1].s.pulseDurMs != 180) {
       printf("FAIL: an ac=-less accent did not inherit the section colour / the 180 ms default "
-             "(fx=%d rgb=%u,%u,%u dur=%lu)\n", (int)gUnit[1].pulseFx,
-             (unsigned)gUnit[1].pulseColor.r, (unsigned)gUnit[1].pulseColor.g,
-             (unsigned)gUnit[1].pulseColor.b, (unsigned long)gUnit[1].pulseDurMs);
+             "(fx=%d rgb=%u,%u,%u dur=%lu)\n", (int)gUnit[1].s.pulseFx,
+             (unsigned)gUnit[1].s.pulseColor.r, (unsigned)gUnit[1].s.pulseColor.g,
+             (unsigned)gUnit[1].s.pulseColor.b, (unsigned long)gUnit[1].s.pulseDurMs);
       return 1;
     }
     // ...and it must actually be LAYERED onto the jewel: the accent's red over the blue base
@@ -319,7 +319,7 @@ int main() {
     if (!fired(0)) {
       printf("FAIL: an am=1 accent did not fire on the next downbeat (beat 4)\n"); return 1;
     }
-    if (gUnit[2].pulseActive || gUnit[2].pulseStartMs != 0) {
+    if (gUnit[2].s.pulseActive || gUnit[2].s.pulseStartMs != 0) {
       printf("FAIL: a v1.1 score entry armed the overlay somewhere across the run\n"); return 1;
     }
 
@@ -379,7 +379,7 @@ int main() {
              "solid fill; blue means the base look is showing through\n", (unsigned long)dark);
       return 1;
     }
-    if (!gUnit[2].pulseActive) { printf("FAIL: the 900 ms accent expired early\n"); return 1; }
+    if (!gUnit[2].s.pulseActive) { printf("FAIL: the 900 ms accent expired early\n"); return 1; }
     if (contractParse("**X", q)) applyContract(q);
   }
 
@@ -396,9 +396,9 @@ int main() {
       {"HFA:i=solid,c=0000FF,at=0,am=2,ae=flash", "a scored A (a new show's sections)"},
     };
     for (auto& b : bounds) {
-      gUnit[0].lastAccentBeat = 7;                       // pretend beat 7 accented, last show
+      gUnit[0].s.lastAccentBeat = 7;                       // pretend beat 7 accented, last show
       if (contractParse(b.cmd, q)) applyContract(q);
-      if (gUnit[0].lastAccentBeat != BEAT_NONE) {
+      if (gUnit[0].s.lastAccentBeat != BEAT_NONE) {
         printf("FAIL: %s did not reset the accent beat edge — a stale edge swallows the next "
                "show's first accent\n", b.what);
         return 1;
@@ -413,7 +413,7 @@ int main() {
     if (contractParse("**C:bpm=120,ph=0,bpb=4,beat=0", q)) applyContract(q);
     if (contractParse("HFA:i=solid,c=0000FF,at=0,am=2,ae=flash", q)) applyContract(q);
     _mock_millis = t1 + 10; contractBeatTick();
-    if (!gUnit[0].pulseActive) { printf("FAIL: show 1's first accent never fired\n"); return 1; }
+    if (!gUnit[0].s.pulseActive) { printf("FAIL: show 1's first accent never fired\n"); return 1; }
 
     if (contractParse("HFX", q)) applyContract(q);                  // show 1 ends
     _mock_millis = t1 + 5000;                                       // show 2 arrives, re-anchors
@@ -421,7 +421,7 @@ int main() {
     if (contractParse("**C:bpm=120,ph=0,bpb=4,beat=0", q)) applyContract(q);
     if (contractParse("HFA:i=solid,c=00FF00,at=0,am=2,ae=flash", q)) applyContract(q);
     _mock_millis = t2 + 10; contractBeatTick();
-    if (!gUnit[0].pulseActive || gUnit[0].pulseStartMs != t2 + 10) {
+    if (!gUnit[0].s.pulseActive || gUnit[0].s.pulseStartMs != t2 + 10) {
       printf("FAIL: the new show's first accent was SWALLOWED by a stale beat edge from the "
              "previous show (both start at beat 0)\n");
       return 1;
@@ -441,19 +441,19 @@ int main() {
     _mock_millis = 500000;
     uint32_t t = _mock_millis;
     if (contractParse("HFP:c=FFFFFF,d=200", q)) applyContract(q);
-    uint32_t first = gUnit[0].pulseStartMs;
-    if (!gUnit[0].pulseActive || first != t) { printf("FAIL: verb P did not fire an accent\n"); return 1; }
+    uint32_t first = gUnit[0].s.pulseStartMs;
+    if (!gUnit[0].s.pulseActive || first != t) { printf("FAIL: verb P did not fire an accent\n"); return 1; }
 
     _mock_millis = t + 200;                        // 200 ms after the last one == 5 Hz: DROP
     if (contractParse("HFP:c=FFFFFF,d=200", q)) applyContract(q);
-    if (gUnit[0].pulseStartMs != first) {
+    if (gUnit[0].s.pulseStartMs != first) {
       printf("FAIL: an accent only 200 ms after the previous one was accepted — 5 flashes/sec "
              "exceeds the <= 3 flashes/sec photosensitivity cap\n");
       return 1;
     }
     _mock_millis = t + 400;                        // 400 ms == 2.5 Hz: must PASS
     if (contractParse("HFP:c=FFFFFF,d=200", q)) applyContract(q);
-    if (gUnit[0].pulseStartMs != t + 400) {
+    if (gUnit[0].s.pulseStartMs != t + 400) {
       printf("FAIL: the strobe cool-down is dropping accents it should pass (2.5 Hz) — a "
              "Studio-authored show would stutter on alternate beats\n");
       return 1;
@@ -497,15 +497,15 @@ int main() {
 
     // ---- (a) verb P carrying i=native:3 — the LATCH hazard --------------------------------
     if (contractParse("HFP:i=native:3,c=FF0000,d=200", q)) applyContract(q);
-    if (!gUnit[0].pulseActive || gUnit[0].pulseStartMs != t) {
+    if (!gUnit[0].s.pulseActive || gUnit[0].s.pulseStartMs != t) {
       printf("FAIL: verb P did not fire an accent at all — this guard is measuring nothing\n");
       return 1;
     }
-    if (gUnit[0].pulseFx != CE_SOLID) {
+    if (gUnit[0].s.pulseFx != CE_SOLID) {
       printf("FAIL: a verb P with i=native:3 ARMED A NATIVE OVERLAY (pulseFx=%d, want CE_SOLID=%d). "
              "The native renderer is not in contractRenderHP's dispatch, so the overlay's expiry "
              "check would never run again and the jewel LATCHES\n",
-             (int)gUnit[0].pulseFx, (int)CE_SOLID);
+             (int)gUnit[0].s.pulseFx, (int)CE_SOLID);
       return 1;
     }
     if (LED_command[0].LEDFunction != baseSlot) {
@@ -524,7 +524,7 @@ int main() {
     }
     _mock_millis = t + 400;                       // ...and, above all, it must EXPIRE
     contractRenderHP(0);
-    if (gUnit[0].pulseActive) {
+    if (gUnit[0].s.pulseActive) {
       printf("FAIL: the accent overlay NEVER EXPIRED 400 ms into a 200 ms accent — the board is "
              "LATCHED\n");
       return 1;
@@ -544,16 +544,16 @@ int main() {
     uint32_t frameMsBefore = gUnit[0].frameMs;
     _mock_millis = t + 1000;                      // well clear of the 340 ms strobe cool-down
     if (contractParse("HFP:i=scan,c=FF0000,d=200", q)) applyContract(q);
-    if (!gUnit[0].pulseActive || gUnit[0].pulseStartMs != t + 1000) {
+    if (!gUnit[0].s.pulseActive || gUnit[0].s.pulseStartMs != t + 1000) {
       printf("FAIL: verb P (i=scan) did not fire an accent at all — this guard is measuring "
              "nothing\n");
       return 1;
     }
-    if (gUnit[0].pulseFx != CE_SOLID) {
+    if (gUnit[0].s.pulseFx != CE_SOLID) {
       printf("FAIL: a verb P with i=scan ARMED A STATEFUL OVERLAY (pulseFx=%d, want CE_SOLID=%d) "
              "— CE_SCAN drives the frame counters it SHARES with the base look, so the swap-and-"
              "restore corrupts the base look's state machine mid-song\n",
-             (int)gUnit[0].pulseFx, (int)CE_SOLID);
+             (int)gUnit[0].s.pulseFx, (int)CE_SOLID);
       return 1;
     }
     contractRenderHP(0);
@@ -577,7 +577,7 @@ int main() {
     }
     _mock_millis = t + 1400;                      // and it EXPIRES: no latch here either
     contractRenderHP(0);
-    if (gUnit[0].pulseActive) {
+    if (gUnit[0].s.pulseActive) {
       printf("FAIL: the scan-rejected accent never EXPIRED — the board is LATCHED\n");
       return 1;
     }
@@ -594,12 +594,12 @@ int main() {
                "nothing\n", (int)rejected[i]);
         return 1;
       }
-      if (gUnit[0].pulseFx != CE_SOLID) {
+      if (gUnit[0].s.pulseFx != CE_SOLID) {
         printf("FAIL: _fireAccent ARMED a stateful/native overlay (effect %d -> pulseFx=%d, want "
                "CE_SOLID=%d) when handed one DIRECTLY. The allow-gate inside _fireAccent is gone, "
                "so the CV_PULSE call site is the only thing left between a native i= and a "
                "permanently LATCHED jewel\n",
-               (int)rejected[i], (int)gUnit[0].pulseFx, (int)CE_SOLID);
+               (int)rejected[i], (int)gUnit[0].s.pulseFx, (int)CE_SOLID);
         return 1;
       }
       if (LED_command[0].LEDFunction < 101 || LED_command[0].LEDFunction > FLTHY_FX_MAX) {
@@ -657,7 +657,7 @@ int main() {
     uint8_t onBeat  = litBlue(T0 + 10);    // beat 0 phase 0.02, flash elapsed  10 ms -> ON
     uint8_t offBeat = litBlue(T0 + 960);   // beat 1 phase 0.92, flash elapsed 960 ms -> ON (960 % 868 = 92)
 
-    if (gUnit[0].pulseActive) {
+    if (gUnit[0].s.pulseActive) {
       printf("FAIL: a LIVE (unscored) look self-accented — only a scored section may fire the "
              "board-side overlay, or a live-driven board double-fires with the Pi's verb P\n");
       return 1;
@@ -749,43 +749,43 @@ int main() {
     SEND("HFA:i=solid,c=FF0000,at=0");
     SEND("HFA:i=solid,c=800080,at=200");
     SEND("**C:bpm=120,ph=0,bpb=4,beat=0");             // v1.3 C3: the seed FOLLOWS the load (a show reset stops the clock)
-    if (gScoreCount[0] != 2) {
-      printf("FAIL: show A did not load (count=%d)\n", gScoreCount[0]); return 1;
+    if (gUnit[0].s.scoreLen != 2) {
+      printf("FAIL: show A did not load (count=%d)\n", gUnit[0].s.scoreLen); return 1;
     }
     _mock_millis = t0 + 210 * 500 + 10;                // beat 210: A's 2nd section is PLAYING
     contractBeatTick();
-    if (gScoreActive[0] != 1 || gUnit[0].color.r != 0x80 || gUnit[0].color.b != 0x80) {
+    if (gUnit[0].s.curSection != 1 || gUnit[0].s.color.r != 0x80 || gUnit[0].s.color.b != 0x80) {
       printf("FAIL: show A is not playing its purple @200 section at beat 210 (active=%d "
-             "rgb=%u,%u,%u) — the rest of A7 would prove nothing\n", gScoreActive[0],
-             (unsigned)gUnit[0].color.r, (unsigned)gUnit[0].color.g, (unsigned)gUnit[0].color.b);
+             "rgb=%u,%u,%u) — the rest of A7 would prove nothing\n", gUnit[0].s.curSection,
+             (unsigned)gUnit[0].s.color.r, (unsigned)gUnit[0].s.color.g, (unsigned)gUnit[0].s.color.b);
       return 1;
     }
 
     SEND("H*M:v=show");                                // ---- the Resend. No stop. ----
-    if (gScoreCount[0] != 0 || gScoreActive[0] != -1) {
+    if (gUnit[0].s.scoreLen != 0 || gUnit[0].s.curSection != -1) {
       printf("FAIL: M:v=show did not CLEAR the score (count=%d active=%d) — Studio's Resend "
              "sends v=show and then the new sections, so show B is now merging into show A\n",
-             gScoreCount[0], gScoreActive[0]);
+             gUnit[0].s.scoreLen, gUnit[0].s.curSection);
       return 1;
     }
     SEND("HFA:i=solid,c=00FF00,at=100");
     SEND("HFA:i=solid,c=0000FF,at=300");
     SEND("**C:bpm=120,ph=0,bpb=4,beat=210");           // ...and the host re-seeds after a Resend too
-    if (gScoreCount[0] != 2 || gScore[0][0].atBeat != 100 || gScore[0][0].color.g != 0xFF
+    if (gUnit[0].s.scoreLen != 2 || gScore[0][0].atBeat != 100 || gScore[0][0].color.g != 0xFF
         || gScore[0][1].atBeat != 300 || gScore[0][1].color.b != 0xFF) {
       printf("FAIL: the score is not EXACTLY show B's two sections (count=%d, first at=%ld) — "
              "a section of show A survived the resend\n",
-             gScoreCount[0], (long)gScore[0][0].atBeat);
+             gUnit[0].s.scoreLen, (long)gScore[0][0].atBeat);
       return 1;
     }
     _mock_millis = t0 + 250 * 500 + 10;                // beat 250
     contractBeatTick();
-    if (gScoreActive[0] != 0 || gUnit[0].color.g != 0xFF || gUnit[0].color.r != 0
-        || gUnit[0].color.b != 0) {
+    if (gUnit[0].s.curSection != 0 || gUnit[0].s.color.g != 0xFF || gUnit[0].s.color.r != 0
+        || gUnit[0].s.color.b != 0) {
       printf("FAIL: at beat 250 the re-sent show rendered rgb=%u,%u,%u — it is playing a "
              "section from the PREVIOUS show (purple 800080 @200), which outlived the resend "
-             "and now sits between show B's sections\n", (unsigned)gUnit[0].color.r,
-             (unsigned)gUnit[0].color.g, (unsigned)gUnit[0].color.b);
+             "and now sits between show B's sections\n", (unsigned)gUnit[0].s.color.r,
+             (unsigned)gUnit[0].s.color.g, (unsigned)gUnit[0].s.color.b);
       return 1;
     }
 
@@ -800,26 +800,26 @@ int main() {
       char c[48]; snprintf(c, sizeof(c), "HFA:i=solid,c=FF0000,at=%d", i * 10);
       SEND(c);
     }
-    if (gScoreCount[0] != FLTHY_SCORE_CAP) {           // non-vacuous: the table really IS full
-      printf("FAIL: show A did not fill the score to cap (count=%d)\n", gScoreCount[0]); return 1;
+    if (gUnit[0].s.scoreLen != FLTHY_SCORE_CAP) {           // non-vacuous: the table really IS full
+      printf("FAIL: show A did not fill the score to cap (count=%d)\n", gUnit[0].s.scoreLen); return 1;
     }
     SEND("H*M:v=show");                                // ---- the Resend. No stop. ----
     SEND("HFA:i=solid,c=00FF00,at=5");
     SEND("HFA:i=solid,c=0000FF,at=15");
     SEND("**C:bpm=120,ph=0,bpb=4,beat=0");
-    if (gScoreCount[0] != 2) {
+    if (gUnit[0].s.scoreLen != 2) {
       printf("FAIL: after a resend onto a FULL score the table holds %d entries, not show B's "
              "2 — scoreInsert() silently dropped show B at the %d-entry cap\n",
-             gScoreCount[0], FLTHY_SCORE_CAP);
+             gUnit[0].s.scoreLen, FLTHY_SCORE_CAP);
       return 1;
     }
     _mock_millis = t0 + 6 * 500 + 10;                  // beat 6 => show B's GREEN@5
     contractBeatTick();
-    if (gUnit[0].color.g != 0xFF || gUnit[0].color.r != 0) {
+    if (gUnit[0].s.color.g != 0xFF || gUnit[0].s.color.r != 0) {
       printf("FAIL: the re-sent show is playing show A's RED section (rgb=%u,%u,%u) — every one "
              "of show B's sections was dropped at the cap, so the HP replays the FIRST show "
-             "forever\n", (unsigned)gUnit[0].color.r, (unsigned)gUnit[0].color.g,
-             (unsigned)gUnit[0].color.b);
+             "forever\n", (unsigned)gUnit[0].s.color.r, (unsigned)gUnit[0].s.color.g,
+             (unsigned)gUnit[0].s.color.b);
       return 1;
     }
     SEND("**X");

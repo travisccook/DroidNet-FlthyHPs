@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MIT
 //
 // src/contract/ContractFlthy.h — Flthy Holoprojectors firmware layer for the
-// Driveable-Animation Contract. LED-ONLY: the '!' path NEVER writes HP_command[*]
+// Driveable-Animation Contract (v1.3). LED-ONLY: the '!' path NEVER writes HP_command[*]
 // and NEVER calls positionHP/twitchHP/wagHP/RCHP — no servo motion, ever. It never writes
 // the operator's settings either (enableTwitchLED[], enableTwitchHP[], offcoloroverride[]):
 // an armed show HOLDS a unit, and main.cpp's two auto-twitch gates ask contractHolds() and
@@ -11,13 +11,18 @@
 // that handles a '!' line never starts a servo twitch. test/host/sim checks both on the
 // real main.cpp, on every simulated pass.
 //
+// WHAT LIVES WHERE. Everything a show owns on one unit — armed or not, the look, the overlay,
+// the score cursor, the load check, the watchdog — is the shared core's ContractUnitState
+// (contract_core.h), with the core's one reset, so the three DroidNet forks cannot differ on
+// safety, clock or lifecycle. This file adds only what is this board's: how a unit's base is
+// put on a NeoPixel jewel through the stock LED command, the render of each effect on seven
+// pixels, the strip-brightness ceiling, and handing the jewel back to the stock firmware.
+//
 // INCLUDE ORDER (see main.cpp): include this AFTER the board globals + effect
 // primitives it references are declared, and BEFORE loop(). It relies on these
 // being already declared in src/main.cpp (named, not numbered: line numbers there move):
 //   Adafruit_NeoPixel neoStrips[HPCOUNT];
-//     .setPixelColor(uint16_t,uint32_t)
-//     .show()
-//     .setBrightness(uint8_t)
+//     .setPixelColor(uint16_t,uint32_t)  .show()  .setBrightness(uint8_t)  .getBrightness()  .getPixels()
 //   LEDCmd  LED_command[HPCOUNT];  (.LEDFunction byte)
 //   (.LEDOption1, .LEDOption2, .LEDHalt: written only to hand the LED side back, as the stock flush does)
 //   const int offcolor[HPCOUNT]; boolean offcoloroverride[HPCOUNT];      (read only)
@@ -36,17 +41,16 @@
 // setPixelColor() already scales every write by the strip's brightness. The per-unit look
 // renders through LED_command[hp].LEDFunction = 100 + effectId (cases 101..115,
 // added to the render switch); an ACCENT layers a second look OVER the base and
-// auto-restores on ms-expiry (never ledOFF / never flushCommandArray — the native
-// flush-to-black). A Studio-seeded beat-clock (verb C) drives an accent envelope,
-// and the Phase-2 score (verb A + at=) switches sections on-beat, board-side.
+// auto-restores on ms-expiry. A host-seeded beat-clock (verb C) drives an accent envelope,
+// and the score (verb A + at=) switches sections on-beat, board-side.
 //
-// CONTRACT v1.2 — the accent is ONE primitive (_fireAccent) with TWO triggers:
-//   * verb P                — live, the Pi mirrors the show beat by beat (Phase 1);
+// The accent is ONE primitive (_fireAccent) with TWO triggers:
+//   * verb P                — live, the host mirrors the show beat by beat;
 //   * the board's beat edge — the active scored section's ae=/ac=/ad=, fired by
-//                             contractBeatTick() with the Pi SILENT (Phase 2).
-// Both render through _renderLook(), so a delivered blueprint and a live-mirrored show
-// fire the same effect-swap accent on top of the same brightness pump. A score entry
-// with no ae= can never arm the overlay: it behaves exactly as it did in v1.1.
+//                             contractBeatTick() with the host SILENT.
+// Both render through _renderLook(), so a delivered show and a live-mirrored one fire the
+// same effect-swap accent on top of the same brightness pump. A score entry with no ae=
+// can never arm the overlay.
 #pragma once
 // The core's name tables and reply text stay in flash on the AVR (contract_core.h, "name tables,
 // and where they live"). test/host/run.sh stage 1g runs the core's tests with stand-ins that make
@@ -67,102 +71,61 @@ static const uint8_t  FLTHY_PX_BYTES        = 4;     // raw bytes a pixel
 #else
 static const uint8_t  FLTHY_PX_BYTES        = 3;
 #endif
-static const int      FLTHY_SCORE_CAP       = 8;     // per-unit Phase-2 sections
+static const uint8_t  FLTHY_SCORE_CAP       = 8;     // scored sections a unit holds
 
 // contract effectId -> LEDFunction render code (CE_OFF..CE_TWINKLE map to 101..115)
 static inline byte _fxCode(ContractEffect e) { return (byte)(FLTHY_FX_BASE + (uint8_t)e); }
-// hp index -> the contract unit letter it answers as (Front/Rear/Top, fork spec §4)
+// hp index -> the contract unit letter it answers as (Front/Rear/Top)
 static inline char _unitChar(uint8_t hp) { return (hp == 0) ? 'F' : ((hp == 1) ? 'R' : 'T'); }
-// upper bound of the contract render-slot range (main.cpp's render switch + the
-// CV_PULSE guard below both gate on this; bump it here, not with a fresh
-// literal, when a later task adds another effect after CE_TWINKLE).
+// upper bound of the contract render-slot range (main.cpp's render switch gates on this;
+// bump it here, not with a fresh literal, when a later task adds an effect after CE_TWINKLE).
 static const uint8_t  FLTHY_FX_MAX          = _fxCode(CE_TWINKLE);   // 115
 
 // ----------------------------------------------------------- per-unit state ---
 struct FlthyUnit {
-  bool           active   = false;        // the ! path is driving this jewel
-  ContractEffect effect   = CE_SOLID;
-  ContractRGB            color{0, 0, 0};
-  uint8_t        speed    = 128;
-  uint8_t        brightBase = 255;        // b (pre-envelope): a fraction of the strip's own brightness (S6)
-  uint8_t        beatMod  = 0;            // m (envelope depth)
-  uint8_t        accentMode = 0;          // am
-  uint32_t       durMs    = 0;            // d (0 = hold until changed)
-  uint32_t       startMs  = 0;            // millis() at apply
-  // Phase-2 section span (beats), for the am=3 "build" ramp. Equal => no span known
-  // (a live, unscored cue), which reads as progress 0 — same as the Logics/PSIs.
-  int32_t        sectionStart = 0, sectionEnd = 0;
-  uint8_t        level    = 0;            // last verb-L value (meter substitute)
-  int            lastEnvBright = -1;      // force-repaint on envelope change (fork spec §9)
-  // scan/sparkle self-throttle
-  uint32_t       frameMs  = 0;
-  uint8_t        frame    = 0;
-  // Accent overlay — ONE primitive, TWO triggers (contract v1.2):
-  //   * live  (Phase 1): verb P, carrying the overlay in i=/c=/d=;
-  //   * score (Phase 2): the board's own beat edge, carrying it in the active section's
-  //     ae=/ac=/ad=, so a DELIVERED blueprint fires the same effect-swap accent a
-  //     MIRRORED show gets from the Pi. Both go through _fireAccent().
-  // It LAYERS over the base look and auto-restores on ms-expiry (never flushes to black).
-  bool           pulseActive = false;
-  ContractEffect pulseFx     = CE_NONE;   // v1.2: which effect the overlay renders.
-                                          // CE_NONE == the v1.1 wire shape (a verb P with no
-                                          // i=) and still means a solid full-field fill.
-  ContractRGB            pulseColor{255, 255, 255};
-  uint8_t        pulseBright  = 255;
-  uint32_t       pulseStartMs = 0;
-  uint32_t       pulseDurMs   = 0;
-  uint32_t       pulseLastMs  = 0;        // strobe cool-down anchor
-  // Once-per-beat guard for the board-side (Phase-2) accent. BEAT_NONE = "no beat accented
-  // yet"; every show boundary resets it, so a new show can never inherit a stale edge.
-  int32_t        lastAccentBeat = BEAT_NONE;
-  // A native look this layer started (i=native:<n>, allow-listed). No accent may replace it.
-  bool           nativeLook   = false;
-  byte           nativeFn     = 255;
+  ContractUnitState s;                    // everything a show owns on this unit (shared core)
+  // ---- this board's own
+  uint8_t  ride        = 255;             // verb B: a fraction of s.ceil on the STRIP's brightness
+  uint8_t  level       = 0;               // last verb-L value (meter substitute)
+  uint8_t  pulseBright = 255;             // the overlay's level, a fraction like s.bright
+  int      lastEnvBright = -1;            // memo for the looks that repaint only on a change
+  uint32_t frameMs     = 0;               // scan/sparkle self-throttle
+  uint8_t  frame       = 0;
   // L3: a verb P with no show armed overlays the STOCK look and gives it back afterwards.
-  bool           overNative   = false;
-  byte           savedFn      = 255;              // the stock LEDFunction under the overlay
-  uint8_t        savedPx[NEO_JEWEL_LEDS * 4];     // its frame, raw (RGB uses 21 of the 28 bytes)
+  bool     overNative  = false;
+  byte     savedFn     = 255;             // the stock LEDFunction under the overlay
+  uint8_t  savedPx[NEO_JEWEL_LEDS * 4];   // its frame, raw (RGB uses 21 of the 28 bytes)
 };
 
 static FlthyUnit  gUnit[HPCOUNT];
-static BeatClock  gBeat;
-
-// ------------------------------------------------------- show-mode interlock ---
-// An armed show HOLDS a unit: main.cpp's two auto-twitch gates ask contractHolds() and
-// contractHoldsLeds(). The layer never writes enableTwitchLED[], enableTwitchHP[] or
-// offcoloroverride[]: they stay the operator's, so a native 96-99 / S command sent during a
-// show is still in force after it.
-static bool    gInterlocked[HPCOUNT] = {false, false, false};
-// v1.3 L1: an armed show keeps the stock idle look (and its LED twitch) until the show's first
-// C, live A or P. From then on the LED side is the show's too.
-static bool    gBegun[HPCOUNT]       = {false, false, false};
-// v1.3 S6: the brightness ceiling is the strip's own level when the show arms (BRIGHT, or
-// what H<unit>B<level> last set). b and verb B are fractions of it; B never outlives the show.
-static uint8_t gCeil[HPCOUNT] = {0, 0, 0};
-static uint8_t gRide[HPCOUNT] = {255, 255, 255};
-
-// Phase-2 score (per unit, sorted asc by atBeat via contract_core scoreInsert)
+static BeatClock  gBeat;                  // ONE clock for the three units
+// The score table is the fork's (sized by its cap); the cursor and the count are in s.
 static ScoreEntry gScore[HPCOUNT][FLTHY_SCORE_CAP];
-static int        gScoreCount[HPCOUNT]  = {0, 0, 0};
-static int        gScoreActive[HPCOUNT] = {-1, -1, -1};
 
 // ---------------------------------------------------------------- helpers ----
-static inline uint8_t _clampBright(int v) {
-  return (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v));
-}
 // Is the LED render slot one of ours (101..115)?
 static inline bool _slotIsOurs(uint8_t hp) {
   byte f = LED_command[hp].LEDFunction;
-  return f >= 101 && f <= (byte)(FLTHY_FX_BASE + (uint8_t)CE_TWINKLE);
+  return f >= 101 && f <= FLTHY_FX_MAX;
+}
+// Is the native look this layer started (i=native:<n>) still the one on the jewel?
+static inline bool _nativeIsUp(uint8_t hp) {
+  const ContractUnitState& s = gUnit[hp].s;
+  return s.base == CB_NATIVE && LED_command[hp].LEDFunction == (byte)s.nativeCode;
 }
 // main.cpp's two auto-twitch gates. The SERVO twitch waits from the moment a show is armed
-// (this fork is LED-only); the LED twitch waits once the show has begun or a look is up.
+// (this fork is LED-only); the LED twitch waits once the show has begun (its first C, live A
+// or P: until then the stock idle look stays) or while a contract look or overlay is up.
 inline bool contractHolds(uint8_t hp) {
-  return gInterlocked[hp] || gUnit[hp].active || gUnit[hp].pulseActive;
+  const ContractUnitState& s = gUnit[hp].s;
+  return s.inShow || s.base == CB_LOOK || s.pulseActive;
 }
 inline bool contractHoldsLeds(uint8_t hp) {
-  return (gInterlocked[hp] && gBegun[hp]) || gUnit[hp].active || gUnit[hp].pulseActive;
+  const ContractUnitState& s = gUnit[hp].s;
+  return (s.inShow && s.base != CB_NONE) || s.base == CB_LOOK || s.pulseActive;
 }
+// Does this layer have the unit's LEDs (so a reset must hand them back)?
+static inline bool _heldLeds(uint8_t hp) { return contractHoldsLeds(hp) || _slotIsOurs(hp) || _nativeIsUp(hp); }
 // Both auto-twitch timers a full interval from now. Whenever the layer lets go of a unit the
 // timers are long overdue, and without this the stock loop twitches the LEDs AND THE SERVOS
 // in the same pass. resetHPtwitch() only sets twitchHPTime[hp]; it moves nothing.
@@ -181,23 +144,48 @@ static inline void _nativeLedIdle(uint8_t hp) {
   ledOFF(hp);
   _rearmTwitch(hp);
 }
-// L1: the show's first C, live A or P takes the LED side: cancel a stock look still running
-// and the timer that would end it later, and start from dark.
-static inline void _showBegin(uint8_t hp) {
-  if (!gInterlocked[hp] || gBegun[hp]) return;
-  gBegun[hp] = true;
+// Dark, with nothing of the stock firmware's left running: 255 is its "idle, dark" value
+// (never 0: that is "do nothing", which also blocks the stock auto twitch for good), and the
+// |<n> / auto-twitch timer that would flush the jewel later is cancelled.
+static inline void _dark(uint8_t hp) {
   LED_command[hp].LEDFunction = 255;
   LED_command[hp].LEDHalt     = -1;
   ledOFF(hp);
 }
 // v1.3 S7: the native looks this layer may start are the core's nativeAllowedFlthy() list. They
 // need no option bytes and no counters: 1 = Leia (fixed blue colour projector), 6 = rainbow.
+// v1.3 S6: the brightness ceiling is the STRIP's own level when the show arms (BRIGHT, or what
+// H<unit>B<level> last set); it is kept in s.ceil. setPixelColor() applies the strip's level to
+// every write, so b= (s.bright) is used as the fraction it is and never multiplied by s.ceil.
+// Verb B rides the strip below the ceiling and never outlives the show.
+static inline void _restoreRide(uint8_t hp) {
+  FlthyUnit& u = gUnit[hp];
+  if (u.ride != 255) neoStrips[hp].setBrightness(u.s.ceil);
+  u.ride = 255;
+}
 // The native brightness command (H<unit>B<level>) calls this: the owner's new level is the
 // ceiling from now on, and any verb-B ride is over.
 inline void contractOwnerBrightness(uint8_t hp, uint8_t level) {
-  gCeil[hp] = level;
-  gRide[hp] = 255;
+  gUnit[hp].s.ceil = level;
+  gUnit[hp].ride = 255;
   gUnit[hp].lastEnvBright = -1;                         // memoised looks repaint at the new level
+}
+// Put the unit's base on its jewel (no overlay up).
+static inline void _showBase(uint8_t hp) {
+  FlthyUnit& u = gUnit[hp];
+  const ContractUnitState& s = u.s;
+  u.lastEnvBright = -1;                                 // force the first repaint
+  if (s.base == CB_LOOK) {
+    LED_command[hp].LEDFunction = _fxCode(s.effect);
+    LED_command[hp].LEDHalt     = -1;                   // a stock |<n> or auto-twitch timer still
+  } else if (s.base == CB_NATIVE) {                     // running would flush this look to black
+    LED_command[hp].LEDFunction = (byte)s.nativeCode;   // allow-listed: needs no option bytes
+    LED_command[hp].LEDHalt     = -1;
+  } else if (s.base == CB_DARK) {
+    _dark(hp);
+  } else {
+    _nativeLedIdle(hp);                                 // CB_NONE: the stock firmware's again
+  }
 }
 // pack an RGB scaled by a 0..255 brightness multiplier into 0xRRGGBB (NEO_GRB
 // ordering is handled inside the library; we always pass logical R,G,B).
@@ -223,21 +211,18 @@ static inline uint32_t _wheel(uint8_t pos, uint8_t bri) {
 
 // ------------------------------------------------------------- envelope -------
 // Effective per-write brightness for a unit: baseline dips by beatMod depth, the
-// accent rides it back up on the beat (fork spec §9). am=0 => flat brightBase.
+// accent rides it back up on the beat. am=0 => flat s.bright.
 // Level math lives in contract_core's envBright() — the SHARED envelope all three
 // boards render through (b= is the ceiling, m= is the dip depth). Do not reintroduce
 // a board-local floor here: it desyncs the HPs from the Logics/PSIs on every cue.
 static inline uint8_t _envBright(uint8_t hp) {
-  const FlthyUnit& u = gUnit[hp];
-  if (!gBeat.running || u.beatMod == 0 || u.accentMode == 0) return u.brightBase;
+  const ContractUnitState& s = gUnit[hp].s;
+  if (!gBeat.running || s.beatMod == 0 || s.accentMode == 0) return s.bright;
   BeatPos bp = beatPosAt(gBeat, millis());
   // am=3 (build) ramps across the section; the span is only known while a scored
   // section is active, so a stale span from a finished show can't leak in here.
-  float prog = 0.0f;
-  if (gScoreActive[hp] >= 0 && u.sectionEnd > u.sectionStart)
-    prog = (float)(bp.beatIndex - u.sectionStart) / (float)(u.sectionEnd - u.sectionStart);
-  uint8_t accent = beatAccentAmount(u.accentMode, bp, u.beatMod, prog, gBeat);   // gBeat: the S2 rate floor
-  return envBright(u.brightBase, u.beatMod, accent);
+  const float prog = (s.curSection >= 0) ? beatSectionProgress(bp.beatIndex, s.sectionStart, s.sectionEnd) : 0.0f;
+  return envBright(s.bright, s.beatMod, beatAccentAmount(s.accentMode, bp, s.beatMod, prog, gBeat, s.accentEvery));
 }
 
 // --------------------------------------------------- the single render fn -----
@@ -245,9 +230,9 @@ static inline uint8_t _envBright(uint8_t hp) {
 // board-side beat edge) both render through this one switch — so the accent's effect
 // vocabulary costs ZERO extra flash and can never drift from the base look's.
 // Only the four inputs differ between the two callers:
-//   base    : (u.effect,  u.color,      _envBright(hp)  — beat-pumped, u.startMs)
-//   overlay : (u.pulseFx, u.pulseColor, u.pulseBright   — the un-pumped CEILING,
-//              u.pulseStartMs — the overlay owns its own time origin)
+//   base    : (s.effect,  s.color,      _envBright(hp)  — beat-pumped, s.startMs)
+//   overlay : (s.pulseFx, s.pulseColor, u.pulseBright   — un-pumped,
+//              s.pulseStartMs — the overlay owns its own time origin)
 // speed/level/frame counters always come from the unit (an overlay never owns them, which
 // is exactly why the STATEFUL effects — scan/sparkle/meter — are barred from ae= in
 // contract_core's accentEffectAllowed(): a 180 ms swap-and-restore would corrupt the base
@@ -263,7 +248,7 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB
       break;
 
     case CE_FLASH: {                                   // strobe-capped toggle
-      uint32_t half = (uint32_t)map((long)u.speed, 0, 255, 700, (long)STROBE_MIN_STATE_MS);
+      uint32_t half = (uint32_t)map((long)u.s.speed, 0, 255, 700, (long)STROBE_MIN_STATE_MS);
       if (half < STROBE_MIN_STATE_MS) half = STROBE_MIN_STATE_MS;
       bool on = ((now - startMs) % (2 * half)) < half;
       // envB (NOT the raw ceiling): CE_FLASH beat-pumps like every other sustained look.
@@ -273,7 +258,7 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB
     }
 
     case CE_PULSE: {                                   // triangle breathe, peak = brightest
-      uint32_t period = (uint32_t)map((long)u.speed, 0, 255, 2000, 240);
+      uint32_t period = (uint32_t)map((long)u.s.speed, 0, 255, 2000, 240);
       // v1.3 S8: the pulse's full cycle is never shorter than 2 x the min state (340 ms).
       // Only s >= 242 is affected.
       if (period < 2 * STROBE_MIN_STATE_MS) period = 2 * STROBE_MIN_STATE_MS;
@@ -295,7 +280,7 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB
     }
 
     case CE_RAINBOW: {                                 // color ignored (contract §6)
-      uint32_t step = (uint32_t)map((long)u.speed, 0, 255, 40, 8);
+      uint32_t step = (uint32_t)map((long)u.s.speed, 0, 255, 40, 8);
       if (step < 1) step = 1;
       uint8_t base = (uint8_t)(((now - startMs) / step) & 255);
       for (uint16_t i = 0; i < NEO_JEWEL_LEDS; i++)
@@ -305,7 +290,7 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB
     }
 
     case CE_SCAN: {                                    // dot walks ring 1..6, center px0 off
-      uint32_t step = (uint32_t)map((long)u.speed, 0, 255, 160, 30);
+      uint32_t step = (uint32_t)map((long)u.s.speed, 0, 255, 160, 30);
       if ((uint32_t)(now - u.frameMs) > step) {
         u.frameMs = now;
         neoStrips[hp].setPixelColor(0, 0x000000);      // center always off
@@ -320,7 +305,7 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB
     }
 
     case CE_SPARKLE: {                                 // re-roll per-px brightness/off, keep hue
-      uint32_t step = (uint32_t)map((long)u.speed, 0, 255, 150, 40);
+      uint32_t step = (uint32_t)map((long)u.s.speed, 0, 255, 150, 40);
       if ((uint32_t)(now - u.frameMs) > step) {
         u.frameMs = now;
         for (uint16_t i = 0; i < NEO_JEWEL_LEDS; i++) {
@@ -341,7 +326,7 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB
 
     case CE_COMET: {                                   // comet trail around the 6-jewel ring, center off
       int N = NEO_JEWEL_LEDS - 1;                       // ring positions (center excluded)
-      int head = fxHead(now - startMs, u.speed, N);
+      int head = fxHead(now - startMs, u.s.speed, N);
       neoStrips[hp].setPixelColor(0, 0x000000);         // center off
       for (int p = 0; p < N; p++) {
         uint8_t cb = fxCometBright(p, head, N);
@@ -357,7 +342,7 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB
       uint32_t el = now - startMs;
       neoStrips[hp].setPixelColor(0, 0x000000);           // center off
       for (int p = 0; p < N; p++) {
-        uint32_t c = fxChaseLit(p, el, u.speed) ? _scale(color, envB) : 0x000000;
+        uint32_t c = fxChaseLit(p, el, u.s.speed) ? _scale(color, envB) : 0x000000;
         neoStrips[hp].setPixelColor((uint16_t)(p + 1), c);
       }
       neoStrips[hp].show();
@@ -369,7 +354,7 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB
       uint32_t el = now - startMs;
       neoStrips[hp].setPixelColor(0, 0x000000);           // center off
       for (int p = 0; p < N; p++) {
-        uint32_t c = fxWipeLit(p, el, u.speed, N) ? _scale(color, envB) : 0x000000;
+        uint32_t c = fxWipeLit(p, el, u.s.speed, N) ? _scale(color, envB) : 0x000000;
         neoStrips[hp].setPixelColor((uint16_t)(p + 1), c);
       }
       neoStrips[hp].show();
@@ -381,7 +366,7 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB
       uint32_t el = now - startMs;
       neoStrips[hp].setPixelColor(0, 0x000000);           // center off
       for (int p = 0; p < N; p++) {
-        uint8_t hue = fxGradientHue(p, N, 0, el, u.speed); // base hue 0, color-independent (like rainbow)
+        uint8_t hue = fxGradientHue(p, N, 0, el, u.s.speed); // base hue 0, color-independent (like rainbow)
         ContractRGB c = fxHsv2rgb(hue, 255, envB);
         uint32_t packed = ((uint32_t)c.r << 16) | ((uint32_t)c.g << 8) | (uint32_t)c.b;
         neoStrips[hp].setPixelColor((uint16_t)(p + 1), packed);
@@ -391,7 +376,7 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB
     }
 
     case CE_COLORCYCLE: {                               // whole-jewel hue rotation (color-independent)
-      ContractRGB c = fxHsv2rgb(fxCycleHue(0, now - startMs, u.speed), 255, envB);
+      ContractRGB c = fxHsv2rgb(fxCycleHue(0, now - startMs, u.s.speed), 255, envB);
       uint32_t packed = ((uint32_t)c.r << 16) | ((uint32_t)c.g << 8) | (uint32_t)c.b;
       _fillShow(hp, packed);
       break;
@@ -399,7 +384,7 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB
 
     case CE_TWINKLE: {                                  // per-px hashed triangle twinkle, whole jewel
       for (uint16_t i = 0; i < NEO_JEWEL_LEDS; i++) {
-        uint8_t tb = fxTwinkleBright((int)i, now, u.speed);
+        uint8_t tb = fxTwinkleBright((int)i, now, u.s.speed);
         uint8_t v = (uint8_t)(((uint16_t)envB * tb) / 255);
         neoStrips[hp].setPixelColor(i, _scale(color, v));
       }
@@ -415,208 +400,216 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB
 }
 
 // Overlay expiry. Over a contract look the base repaints; over the STOCK look (L3) the stock
-// function and its frame come back exactly as they were.
+// function and its frame come back exactly as they were; over a dark baseline it goes dark.
 static inline void _expireOverlay(uint8_t hp, uint32_t now) {
   FlthyUnit& u = gUnit[hp];
-  if (!u.pulseActive || (uint32_t)(now - u.pulseStartMs) < u.pulseDurMs) return;
-  u.pulseActive   = false;
+  ContractUnitState& s = u.s;
+  if (!s.pulseActive || (uint32_t)(now - s.pulseStartMs) < s.pulseDurMs) return;
+  s.pulseActive   = false;
   u.lastEnvBright = -1;                                  // force a base repaint
+  if (!_slotIsOurs(hp)) { u.overNative = false; return; }   // the stock firmware took the jewel meanwhile
   if (u.overNative) {
     u.overNative = false;
-    if (_slotIsOurs(hp)) {                               // still ours: nothing native took it meanwhile
-      LED_command[hp].LEDFunction = u.savedFn;
-      memcpy(neoStrips[hp].getPixels(), u.savedPx, (size_t)NEO_JEWEL_LEDS * FLTHY_PX_BYTES);
-      neoStrips[hp].show();
-    }
+    LED_command[hp].LEDFunction = u.savedFn;
+    memcpy(neoStrips[hp].getPixels(), u.savedPx, (size_t)NEO_JEWEL_LEDS * FLTHY_PX_BYTES);
+    neoStrips[hp].show();
+  } else if (s.base != CB_LOOK) {
+    _showBase(hp);                                       // nothing of ours underneath: dark
   }
 }
 
 // Called from the LED render switch (cases 101..115) once per loop for unit hp.
 inline void contractRenderHP(uint8_t hp) {
   FlthyUnit& u = gUnit[hp];
+  ContractUnitState& s = u.s;
   uint32_t now = millis();
 
-
-  // Accent overlay: LAYER it over the base look, auto-restore on ms-expiry.
-  // v1.2: it now renders a full EFFECT (pulseFx), not only a solid fill. pulseFx == CE_NONE
-  // is the v1.1 wire shape (a verb P with no i=) and takes the CE_SOLID branch, which with
-  // the forced repaint below is byte-for-byte the old
-  //   _fillShow(hp, _scale(u.pulseColor, u.pulseBright));
-  // The overlay rides the unit's brightness CEILING un-pumped (an accent must not dip with
-  // the envelope it exists to punctuate) and starts its own timeline at pulseStartMs.
+  // Accent overlay: LAYER it over the base look, auto-restore on ms-expiry. It renders a
+  // full EFFECT (pulseFx); CE_NONE is a verb P with no i= and takes the CE_SOLID branch.
+  // The overlay is un-pumped (an accent must not dip with the envelope it exists to
+  // punctuate) and starts its own timeline at pulseStartMs.
   _expireOverlay(hp, now);
-  if (!_slotIsOurs(hp)) return;                          // the overlay just gave the stock look back
-  if (u.pulseActive) {
+  if (!_slotIsOurs(hp)) return;                          // the overlay just gave the jewel back
+  if (s.pulseActive) {
     u.lastEnvBright = -1;                // the MEMOISING branches (off/meter/solid) skip a
                                          // repaint when the level is unchanged — without this
                                          // the accent would never actually be drawn over a
                                          // same-level base look
-    _renderLook(hp, (u.pulseFx == CE_NONE) ? CE_SOLID : u.pulseFx,
-                u.pulseColor, u.pulseBright, u.pulseStartMs);
+    _renderLook(hp, (s.pulseFx == CE_NONE) ? CE_SOLID : s.pulseFx,
+                s.pulseColor, u.pulseBright, s.pulseStartMs);
     return;
   }
-
-  _renderLook(hp, u.effect, u.color, _envBright(hp), u.startMs);
+  if (s.base != CB_LOOK) { _showBase(hp); return; }      // a contract slot with no contract look: put the base back
+  _renderLook(hp, s.effect, s.color, _envBright(hp), s.startMs);
 }
 
 // ------------------------------------------------ the ONE accent-overlay path ---
-// BOTH triggers land here: verb P (Phase-1 — the Pi mirrors the show live) and the board's
-// own beat edge (Phase-2 — the board plays a delivered blueprint with the Pi silent). One
-// primitive, two triggers => a mirrored show and a delivered one fire the SAME accent.
+// BOTH triggers land here: verb P (the host mirrors the show live) and the board's own beat
+// edge (the board plays a delivered score with the host silent). One primitive, two
+// triggers => a mirrored show and a delivered one fire the SAME accent.
 //
-// LED-ONLY INVARIANT (fork README §11): this NEVER writes HP_command[*] and NEVER calls
+// LED-ONLY INVARIANT: this NEVER writes HP_command[*] and NEVER calls
 // positionHP / twitchHP / wagHP / RCHP / flushCommandArray, so no holoprojector SERVO can
 // move because of an accent. The ONLY board global it touches is LED_command[hp].LEDFunction,
-// and only to keep a contract render slot selected (the same guard verb P already used).
-// It also deliberately does NOT go through _applyLook() — that is the only place varResets()
-// runs — so the base look's frame/frameMs counters survive the accent untouched.
+// and only to keep a contract render slot selected.
+//
+// STROBE CAP (SAFETY — photosensitivity, enforced for BOTH triggers): an overlay may not
+// RESTART more often than every 2 * STROBE_MIN_STATE_MS (340 ms => <= 2.94 a second), and it
+// lasts at least STROBE_MIN_STATE_MS and at most ACCENT_DUR_MAX_MS (accentDurClamp). The gate
+// anchors on s.pulseLastMs, which the core's show reset keeps: a reset is not a way around it.
 static inline bool _fireAccent(uint8_t hp, ContractEffect fx, const ContractRGB& color,
                                uint8_t bright, uint32_t durMs) {
   FlthyUnit& u = gUnit[hp];
+  ContractUnitState& s = u.s;
   uint32_t now = millis();
-  // Strobe cool-down: >= 2x the min state between accent STARTS => <= ~2.9 accents/sec,
-  // inside the <= 3 flashes/sec photosensitivity guidance, and matched to the Logics/PSIs.
-  // v1.1 gated on 1x the min state here — with a Phase-2 every-beat accent above ~176 BPM
-  // that would have let the jewels strobe at up to 5.9 Hz, the one board of the three that
-  // could exceed the guidance.
-  if (!strobeCoolDownExpired(u.pulseLastMs, now, 2 * STROBE_MIN_STATE_MS)) return false;
+  if (!strobeCoolDownExpired(s.pulseLastMs, now, 2 * STROBE_MIN_STATE_MS)) return false;
   // v1.3 section 6: no accent on a native section in R1, so an accent can never restart or
   // replace a native sequence (R2 adds ae=kick where the look can be scaled).
-  if (u.nativeLook && LED_command[hp].LEDFunction == u.nativeFn) return false;
-  if (durMs < STROBE_MIN_STATE_MS) durMs = STROBE_MIN_STATE_MS;   // a state shorter than the
-  if (durMs > 2550u) durMs = 2550u;                               // min state IS a strobe
+  if (_nativeIsUp(hp)) return false;
   // A stateful/native effect can never become an overlay: it would corrupt the base look's
   // state machine on restore (scan/sparkle/meter), or hand the frame to a renderer we do not
   // own so the expiry check never runs and the board LATCHES (native). Same gate the ae=
   // parser applies — re-asserted here because verb P reaches this straight from the wire's i=.
-  u.pulseFx      = accentEffectAllowed(fx) ? fx : CE_SOLID;
-  u.pulseColor   = color;
-  u.pulseBright  = _clampBright(bright);
-  u.pulseDurMs   = durMs;
-  u.pulseStartMs = now;                              // ALWAYS retrigger (defeats a re-send no-op)
-  u.pulseLastMs  = now;
-  u.pulseActive  = true;
+  s.pulseFx      = accentEffectAllowed(fx) ? fx : CE_SOLID;
+  s.pulseColor   = color;
+  u.pulseBright  = bright;
+  s.pulseDurMs   = accentDurClamp(durMs);                // a state shorter than the min state IS a strobe
+  s.pulseStartMs = now;                                  // ALWAYS retrigger (defeats a re-send no-op)
+  s.pulseLastMs  = now;                                  // the cool-down anchor: set on every accent that ARMS
+  s.pulseActive  = true;
   u.lastEnvBright = -1;
   if (!_slotIsOurs(hp)) {
-    if (!gInterlocked[hp] && !u.overNative) {          // L3: no show armed -> overlay the STOCK look
+    if (!s.inShow && !u.overNative) {                    // L3: no show armed -> overlay the STOCK look
       u.overNative = true;
       u.savedFn    = LED_command[hp].LEDFunction;
       memcpy(u.savedPx, neoStrips[hp].getPixels(), (size_t)NEO_JEWEL_LEDS * FLTHY_PX_BYTES);
     }
-    u.effect = CE_OFF;                                  // nothing of ours was running underneath
-    LED_command[hp].LEDFunction = _fxCode(CE_OFF);      // ensure a contract render slot runs
+    LED_command[hp].LEDFunction = _fxCode(CE_OFF);       // ensure a contract render slot runs
   }
   return true;
 }
 
-// ---------------------------------------------------- apply a look to a unit ---
-// Common path for Phase-1 (live A) and Phase-2 (score switch): sets cState + the
-// render code. NEVER flushes to black, NEVER writes HP_command (LED-only, §11).
-static inline void _applyLook(uint8_t hp, ContractEffect eff, int nativeCode,
-                              const ContractRGB& color, uint8_t speed, uint8_t bright,
-                              uint8_t beatMod, uint8_t am, uint32_t durMs,
-                              bool freshEffect) {
+// ------------------------------------------------------- applying a look -------
+// The counters the two stateful looks keep (and the stock ones varResets() clears, with a
+// blackout) start over when such a look starts.
+static inline void _freshCounters(uint8_t hp, ContractEffect eff) {
+  if (eff != CE_SCAN && eff != CE_SPARKLE) return;
+  gUnit[hp].frame = 1; gUnit[hp].frameMs = 0;
+  varResets(hp);
+}
+// A live look: now, or when its S4 hold ends. NEVER writes HP_command (LED-only).
+static inline void _applyPatch(uint8_t hp, ContractLookPatch lp, uint32_t now) {
   FlthyUnit& u = gUnit[hp];
-  u.color       = color;
-  u.speed       = speed;
-  u.brightBase  = _clampBright(bright);
-  u.beatMod     = beatMod;
-  u.accentMode  = am;
-  u.durMs       = durMs;
-  u.startMs     = millis();
-  u.pulseActive = false;
+  ContractUnitState& s = u.s;
+  contractShowBegin(s);                                 // L1: the show's first live A (the look below replaces the dark baseline)
+  lookPatchDefault(lp, s.base);                         // L5: no i= and no look yet => i=solid
+  if (lp.has & LP_COLOR)   s.color = lp.color;
+  if (lp.has & LP_SPEED)   s.speed = lp.speed;
+  if (lp.has & LP_BRIGHT)  s.bright = lp.bright;        // a fraction of the ceiling (S6)
+  if (lp.has & LP_BEATMOD) s.beatMod = lp.beatMod;
+  if (lp.has & LP_AM)      s.accentMode = lp.accentMode;
+  if (lp.has & LP_EVERY)   s.accentEvery = lp.every;
+  s.startMs = now;
+  s.pulseActive = false;
   u.overNative  = false;                                // a look replaces whatever an overlay sat on
-  u.lastEnvBright = -1;                                 // force first repaint
-  LED_command[hp].LEDHalt = -1;                         // a stock |<n> or auto-twitch timer still
-                                                        // running would flush this look to black
-
-  u.nativeLook = false;
-  if (eff == CE_NATIVE) {
-    // escape hatch: hand off to an allow-listed native LED function; NOT a contract render.
-    // Both callers have already dropped any other code (nativeAllowedFlthy).
-    u.active     = false;
-    u.nativeLook = true;
-    u.nativeFn   = (byte)nativeCode;
-    LED_command[hp].LEDFunction = (byte)nativeCode;
-    return;
+  if (lp.has & LP_EFFECT) {
+    s.effect = lp.effect; s.nativeCode = lp.nativeCode;
+    s.base = (lp.effect == CE_NATIVE) ? CB_NATIVE : CB_LOOK;   // the caller dropped any code off the allow-list
+    _freshCounters(hp, lp.effect);
   }
-
-  u.active = true;
-  u.effect = eff;
-  if (freshEffect && (eff == CE_SCAN || eff == CE_SPARKLE)) {
-    u.frame = 1; u.frameMs = 0;
-    varResets(hp);                                      // reset Frame/SC counters once at switch
-  }
-  LED_command[hp].LEDFunction = _fxCode(eff);
+  _showBase(hp);
 }
 
-// build a ScoreEntry from a parsed look (Phase-2 insert)
+// build a ScoreEntry from a parsed scored look
 static inline ScoreEntry _entryFrom(const ContractParams& pr) {
   ScoreEntry e;
   e.atBeat     = pr.atBeat;
   e.effect     = pr.hasEffect ? pr.effect : CE_SOLID;
-  e.color      = pr.color;
+  e.color      = pr.hasColor ? pr.color : ContractRGB{0, 0, 0};
   e.speed      = pr.hasSpeed ? pr.speed : 128;
-  e.beatMod    = pr.beatMod;
-  e.accentMode = pr.accentMode;
-  e.nativeCode = pr.hasEffect ? pr.nativeCode : -1;      // thread native code into the score (parity w/ RSeries)
-  // v1.2 accent overlay. NO ae= on the line => accentFx stays CE_NONE => the beat-edge
-  // trigger bails => a v1.1 entry behaves EXACTLY as it does today (it can never arm the
-  // overlay). accentFx was already allow-gated by the parser (never native, never stateful).
+  e.bright     = pr.hasBright ? pr.bright : 255;         // absent: the ceiling
+  e.beatMod    = pr.hasBeatMod ? pr.beatMod : 0;
+  e.accentMode = pr.hasAm ? pr.accentMode : 0;
+  e.accentEvery = accentEveryFrom(pr);
+  e.nativeCode = pr.hasEffect ? pr.nativeCode : -1;      // thread the native code into the score
+  // The accent the board fires ITSELF on this section's accent beats. No ae= => accentFx stays
+  // CE_NONE and the beat-edge trigger never arms the overlay for it. accentFx was already
+  // allow-gated by the parser (never native, never stateful).
   if (pr.hasAccentFx) {
     e.accentFx    = pr.accentFx;
     // Resolved HERE, not at fire time: the entry deliberately carries no has-flag, so an
     // absent ac= means the accent inherits the SECTION's colour.
     e.accentColor = pr.hasAccentColor ? pr.accentColor : e.color;
-    // Stored /10 ms so the entry grows by 1 byte, not 4 (AVR SRAM). ad= is clamped to <=2550
-    // at parse; ad=0..9 would truncate to a zero-length accent, so it reads as the default.
-    e.accentDur10 = (uint8_t)((pr.hasAccentDur ? pr.accentDurMs : 180u) / 10u);
-    if (e.accentDur10 == 0) e.accentDur10 = 18;          // 180 ms
+    // Stored /10 ms (one byte). ad= is clamped to <=2550 at parse; ad=0..9 would truncate to a
+    // zero-length accent, so it reads as the default.
+    uint16_t t10 = (uint16_t)((pr.hasAccentDur ? pr.accentDurMs : ACCENT_DUR_DEFAULT_MS) / 10u);
+    if (t10 == 0) t10 = (uint16_t)(ACCENT_DUR_DEFAULT_MS / 10u);
+    e.accentDur10 = (uint8_t)(t10 > 255u ? 255u : t10);
   }
   return e;
 }
 
-// switch a unit to a scored section (Phase-2 onBeat), clean-starting the look.
-static inline void _applyScore(uint8_t hp, const ScoreEntry& e) {
-  gUnit[hp].pulseActive = false;
-  _applyLook(hp, e.effect, e.nativeCode, e.color, e.speed, gUnit[hp].brightBase,
-             e.beatMod, e.accentMode, 0, /*freshEffect=*/true);
+// switch a unit to a scored section (on its beat), clean-starting the look.
+static inline void _enterSection(uint8_t hp, int idx, uint32_t now) {
+  FlthyUnit& u = gUnit[hp];
+  ContractUnitState& s = u.s;
+  const ScoreEntry& e = gScore[hp][idx];
+  s.effect = e.effect; s.nativeCode = e.nativeCode; s.color = e.color; s.speed = e.speed;
+  s.bright = e.bright;
+  s.beatMod = e.beatMod; s.accentMode = e.accentMode; s.accentEvery = e.accentEvery;
+  s.curSection = (int8_t)idx; s.startMs = now; s.sectionStart = e.atBeat;
+  // the last section gets a long tail so its span (the am=3 build ramp) is never zero-width
+  s.sectionEnd = (idx + 1 < s.scoreLen) ? gScore[hp][idx + 1].atBeat : (e.atBeat + 9999);
+  s.pulseActive = false;
+  u.overNative  = false;
+  s.base = (e.effect == CE_NATIVE) ? CB_NATIVE : CB_LOOK;
+  _freshCounters(hp, e.effect);
+  _showBase(hp);
 }
 
 // ------------------------------------------------------------- show reset (L1) ---
-// The Flthy half of the one show reset: everything a show can leave behind on a unit.
-static inline void _unitReset(uint8_t hp) {
+// L1: this board has ONE clock for three units. A reset stops it when no unit still holds a
+// score or a look.
+static inline void _stopClockIfUnused() {
+  for (uint8_t hp = 0; hp < HPCOUNT; hp++) if (contractUnitNeedsClock(gUnit[hp].s)) return;
+  gBeat = BeatClock();
+}
+// The three show boundaries: 's' M:v=show, 'x' X, 'i' M:v=idle (and, later, the watchdog and
+// a failed verb V). Each runs the core's ONE reset, then puts the result on the jewel:
+//   show  arms. The servo twitch waits from now. The stock idle look stays until the show's
+//         first C, live A or P (contractShowBegin); a Resend over a running show goes back
+//         to the stock idle look until then.
+//   x     blacks out and stays in its mode. Outside a show the jewel is the stock firmware's
+//         again, dark for one full twitch interval.
+//   idle  gives the jewel back: its off colour, both twitch timers a full interval ahead. A
+//         unit whose LEDs this layer does not have keeps its stock look, so a stray idle
+//         cannot flush what the operator started; if it was armed, only the servo timer is
+//         re-armed, so the overdue servo twitch cannot fire in this pass.
+static inline void _boundary(uint8_t hp, char kind, uint8_t wdSec) {
   FlthyUnit& u = gUnit[hp];
-  scoreClear(gScoreCount[hp], gScoreActive[hp]);
-  if (gInterlocked[hp] && gRide[hp] != 255) neoStrips[hp].setBrightness(gCeil[hp]);   // B never outlives a show
-  gRide[hp] = 255;
-  u.active = false;  u.pulseActive = false;  u.nativeLook = false;
-  u.overNative = false;
-  u.effect = CE_SOLID;  u.color = ContractRGB{0, 0, 0};  u.speed = 128;  u.brightBase = 255;
-  u.beatMod = 0;  u.accentMode = 0;  u.durMs = 0;  u.level = 0;
-  u.sectionStart = 0;  u.sectionEnd = 0;
-  u.lastAccentBeat = BEAT_NONE;
-  u.lastEnvBright  = -1;
-}
-// Does this layer have the unit's LEDs (so a reset must hand them back)?
-static inline bool _heldLeds(uint8_t hp) {
-  return contractHoldsLeds(hp) || _slotIsOurs(hp) ||
-         (gUnit[hp].nativeLook && LED_command[hp].LEDFunction == gUnit[hp].nativeFn);
-}
-// M:v=idle (and, later, the watchdog and a failed verb V) end here. A unit whose LEDs this
-// layer does not have keeps its stock look, so a stray idle cannot flush what the operator started.
-static inline void _idleUnit(uint8_t hp) {
-  bool heldLeds = _heldLeds(hp), armed = gInterlocked[hp];
-  _unitReset(hp);
-  gInterlocked[hp] = false;  gBegun[hp] = false;
-  if (heldLeds)   _nativeLedIdle(hp);                  // off colour, both twitch timers from now
-  else if (armed) resetHPtwitch(hp);                   // armed, never begun: the stock look stays, and
-                                                       // the overdue servo twitch must not fire now
+  ContractUnitState& s = u.s;
+  const bool heldLeds = _heldLeds(hp), armed = s.inShow;
+  _restoreRide(hp);                                     // B never outlives a show
+  const uint8_t ceiling = neoStrips[hp].getBrightness();   // S6: the owner's level, right now
+  if (kind == 's')      contractOnShow(s, ceiling, wdSec);
+  else if (kind == 'x') contractOnStop(s, ceiling);
+  else                  contractOnIdle(s, ceiling);
+  u.overNative = false;  u.level = 0;  u.pulseBright = 255;  u.lastEnvBright = -1;
+  _stopClockIfUnused();
+  if (kind == 'x') {
+    _dark(hp);
+    if (!s.inShow) { s.base = CB_NONE; _rearmTwitch(hp); }
+  } else if (heldLeds) {
+    _nativeLedIdle(hp);
+  } else if (kind == 'i' && armed) {
+    resetHPtwitch(hp);
+  }
 }
 
 // ------------------------------------------------------------- verb dispatch ---
-inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
+inline void applyContractToUnit(uint8_t hp, const ParsedContract& p, uint16_t lineCrc = 0) {
   FlthyUnit& u = gUnit[hp];
+  ContractUnitState& s = u.s;
   const ContractParams& pr = p.params;
   uint32_t now = millis();
 
@@ -625,75 +618,45 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
       // v1.3 S7: a line naming a native code off the allow-list is dropped whole, live or
       // scored (a dropped scored line is not held, so verb V reports the load bad).
       if (pr.hasEffect && pr.effect == CE_NATIVE && !nativeAllowedFlthy(pr.nativeCode)) return;
-      if (pr.hasAt) {                                  // Phase-2: schedule, don't apply now
-        ScoreEntry e = _entryFrom(pr);
-        gScoreCount[hp] = scoreInsert(gScore[hp], gScoreCount[hp], FLTHY_SCORE_CAP, e);
-        gScoreActive[hp] = -1;                         // re-evaluate on next tick
-        u.lastAccentBeat = BEAT_NONE;                  // a NEW show is loading: never inherit
-                                                       // the last one's beat edge, or its first
-                                                       // accent beat gets swallowed
-        return;
+      if (pr.hasAt) {                                  // a scored look: store it, do not apply it now
+        scoreAccept(s, gScore[hp], FLTHY_SCORE_CAP, _entryFrom(pr), lineCrc);   // a full table marks the load bad
+        s.lastAccentBeat = accentEdgeAfterSeed(gBeat, now);   // C1 (BEAT_NONE while no clock runs)
+        return;                                        // the jewel is NOT taken at load: the tick does that on the beat
       }
-      // Phase-1: apply now. Omitting i= patches params of the current look.
-      _showBegin(hp);
-      ContractEffect eff = pr.hasEffect ? pr.effect : u.effect;
-      ContractRGB   col   = pr.hasColor   ? pr.color   : u.color;
-      uint8_t spd = pr.hasSpeed   ? pr.speed   : u.speed;
-      uint8_t bri = pr.hasBright  ? pr.bright  : u.brightBase;
-      uint8_t bm  = pr.hasBeatMod ? pr.beatMod : u.beatMod;
-      uint8_t am  = pr.hasAm      ? pr.accentMode : u.accentMode;
-      const uint32_t d = 0;                            // v1.3 L4: d= on A is retired; a look holds
-      _applyLook(hp, eff, pr.nativeCode, col, spd, bri, bm, am, d,
-                 /*freshEffect=*/pr.hasEffect);
+      // v1.3 L4: d= on A is retired; a look holds until the next look, X or idle.
+      ContractLookPatch lp = lookPatchFrom(pr);
+      if (liveLookOffer(s, lp, now)) _applyPatch(hp, lp, now);   // S4: else held; contractBeatTick() applies it
       break;
     }
 
     case CV_PULSE: {
-      // Phase-1 live accent, from the Pi. v1.2: i= now selects the overlay EFFECT (an i-less
-      // P is still exactly today's solid fill — no v1.1 client ever sent one). Same
-      // _fireAccent() the board-side score edge uses: ONE overlay primitive, two triggers,
-      // so a mirrored show and a delivered blueprint cannot look different.
+      // The accent overlay, live. i= selects the overlay EFFECT (an i-less P is a solid fill).
+      // Same _fireAccent() the board-side score edge uses: ONE overlay primitive, two triggers.
       //
       // ALLOW-GATE THE WIRE'S i= HERE (parity with the Logics and the PSI, which gate at
       // their call sites too). The SCORED accent is gated at PARSE time — ae= never stores a
       // rejected effect — but verb P hands the wire's i= straight to the overlay, so this is
-      // the one path a stateful/native effect can reach it by. Rejected => CE_SOLID, i.e. the
-      // v1.1 solid fill, never "no accent": a P the operator sent must still punctuate.
-      //   * scan/sparkle/meter are STATEFUL — they share u.frame/u.frameMs with the BASE look,
-      //     so a 180 ms swap-and-restore corrupts the base look's state machine mid-song.
-      //   * native:<n> hands the frame to a renderer we do not own. contractRenderHP() — and
-      //     therefore the overlay's EXPIRY CHECK — only runs from LEDFunction 101..FLTHY_FX_MAX,
-      //     so a native overlay could never expire and would LATCH the jewel.
-      // _fireAccent() re-asserts the same gate. BOTH are load-bearing: this one keeps the bad
-      // effect out of the overlay primitive, that one covers every other caller of it. Neither
-      // is redundant belt-and-braces — see the CV_PULSE gate check in test/host/run.sh.
+      // the one path a stateful/native effect can reach it by. Rejected => CE_SOLID, never
+      // "no accent": a P the operator sent must still punctuate. _fireAccent() re-asserts the
+      // same gate; see the CV_PULSE gate check in test/host/run.sh.
       ContractEffect fx = (pr.hasEffect && accentEffectAllowed(pr.effect)) ? pr.effect : CE_SOLID;
-      _showBegin(hp);
+      if (_nativeIsUp(hp)) break;                      // no overlay on a native look (and it does not begin a show)
+      if (contractShowBegin(s)) _dark(hp);             // L1: the show's first P: the baseline goes dark first
       _fireAccent(hp,
                   fx,
                   pr.hasColor  ? pr.color  : ContractRGB{255, 255, 255},
-                  pr.hasBright ? pr.bright : u.brightBase,   // the unit's own CEILING, not a
-                                                             // literal 200: an accent must land
+                  pr.hasBright ? pr.bright : s.bright,       // the unit's own level: an accent must land
                                                              // at the same level on all 3 boards
-                  pr.hasDur    ? pr.durMs  : 120);           // clamped up to the min state inside
+                  pr.hasDur    ? pr.durMs  : 120);           // clamped to 170..2550 ms inside
       break;
     }
 
-    case CV_CLOCK:                                     // seed/re-anchor the beat-clock
-      _showBegin(hp);
-      beatClockSeed(gBeat, pr, now);
-      u.lastAccentBeat = BEAT_NONE;                    // the beat ORIGIN just moved (Studio
-                                                       // re-anchors on every Play/seek), so a
-                                                       // beat index from the OLD timeline must
-                                                       // not gate the new one
-      break;
-
     case CV_BRIGHT: {                                  // master ride, inside an armed show only (S6)
-      if (!gInterlocked[hp]) break;                    // outside a show H<unit>B<level> is the control
-      gRide[hp] = pr.hasBright ? pr.bright : (pr.hasLevel ? pr.level : 255);
+      if (!contractBrightHonoured(s)) break;           // outside a show H<unit>B<level> is the control
+      u.ride = pr.hasBright ? pr.bright : (pr.hasLevel ? pr.level : 255);
       // A fraction of the ceiling, never above it. setBrightness() rescales the RAM buffer at
       // once and lossily, so every look is made to repaint from its own colour.
-      neoStrips[hp].setBrightness((uint8_t)(((uint16_t)gCeil[hp] * gRide[hp]) / 255));
+      neoStrips[hp].setBrightness(contractLevel(s.ceil, u.ride));
       u.lastEnvBright = -1;
       break;
     }
@@ -703,115 +666,98 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
       u.lastEnvBright = -1;
       break;
 
-    case CV_STOP:                                      // L1: reset, black out, stay in this mode
-      _unitReset(hp);
-      LED_command[hp].LEDFunction = 255;               // the stock "idle, dark" value, never 0:
-      LED_command[hp].LEDHalt     = -1;                // 0 is "do nothing", which also blocks the
-      ledOFF(hp);                                      // stock auto twitch for good
-      if (gInterlocked[hp]) gBegun[hp] = true;         // in a show: dark is the baseline now
-      else                  _rearmTwitch(hp);          // outside one: dark for a full twitch interval
+    case CV_STOP:
+      _boundary(hp, 'x', 0);
       break;
 
     case CV_MODE:
-      if (pr.mode == 's') {                            // L1: reset, then arm
-        bool heldLeds = _heldLeds(hp);
-        _unitReset(hp);
-        gInterlocked[hp] = true;                       // the servo twitch waits from now (LED-only)
-        gCeil[hp] = neoStrips[hp].getBrightness();     // S6: the owner's level is the ceiling
-        gBegun[hp] = false;                            // the stock idle look stays until the show begins
-        if (heldLeds) _nativeLedIdle(hp);              // a Resend over a running show: back to stock idle
-      } else if (pr.mode == 'i') {                     // L1: reset, then give the board back
-        _idleUnit(hp);
-      }
+      if (pr.mode == 's')      _boundary(hp, 's', 0);
+      else if (pr.mode == 'i') _boundary(hp, 'i', 0);
       break;
 
     case CV_QUERY: {                                   // targeted ack only (contract §8)
       if (p.unit == '*') break;                        // never broadcast Q
-      // echo the unit that actually answered — this used to hardcode 'f', so !HRQ and
-      // !HTQ both replied "!Hfq:..." and a host could not tell the HPs apart.
       char buf[56];
       snprintf(buf, sizeof(buf), "!H%cq:ver=1.1,phase=2,i=%d,bpm=%u\r\n",
-               _unitChar(hp), (int)u.effect, (unsigned)gBeat.bpm);
+               _unitChar(hp), (int)s.effect, (unsigned)gBeat.bpm);
       wdpFinish();                                     // a WDP announce in flight goes out whole first
       Serial.print(buf);
       break;
     }
 
-    default: break;
+    default: break;                                    // CV_CLOCK is the board's, not a unit's: applyContract()
   }
 }
 
-// Fan a parsed command to the addressed jewel(s) per class/unit (fork spec §4).
-inline void applyContract(const ParsedContract& p) {
+// Fan a parsed command to the addressed jewel(s) per class/unit.
+inline void applyContract(const ParsedContract& p, uint16_t lineCrc = 0) {
   if (p.cls != 'H' && p.cls != '*') return;            // not a Holoprojector board
-  bool all = (p.unit == '*');
-  if (all || p.unit == 'F') applyContractToUnit(0, p);
-  if (all || p.unit == 'R') applyContractToUnit(1, p);
-  if (all || p.unit == 'T') applyContractToUnit(2, p);
-  // L1: this board has ONE clock for three units. A reset stops it when no unit still holds a
-  // score or a live look.
-  if (p.verb == CV_STOP || (p.verb == CV_MODE && (p.params.mode == 's' || p.params.mode == 'i'))) {
-    bool anyLeft = false;
-    for (uint8_t hp = 0; hp < HPCOUNT; hp++)
-      if (gUnit[hp].active || gScoreCount[hp] > 0) anyLeft = true;
-    if (!anyLeft) gBeat.running = false;
+  const bool all = (p.unit == '*');
+  const bool to[HPCOUNT] = {all || p.unit == 'F', all || p.unit == 'R', all || p.unit == 'T'};
+  if (p.verb == CV_CLOCK) {                            // ONE shared clock: seed it once, then every unit follows
+    const uint32_t now = millis();
+    const ContractSeed k = beatClockSeed(gBeat, p.params, now);
+    if (k == CS_IGNORED || k == CS_HOLD) return;       // S1: ignored whole. C6: held — the cursors freeze
+                                                       // because a stopped clock is not ticked
+    for (uint8_t hp = 0; hp < HPCOUNT; hp++) {
+      ContractUnitState& s = gUnit[hp].s;
+      s.lastAccentBeat = accentEdgeAfterSeed(gBeat, now);   // C1: mid-beat, that beat counts as accented
+      s.pinForward = (k == CS_NUDGE);                       // C2: a nudge never moves a section cursor back
+      if (k == CS_SEEK && to[hp] && contractShowBegin(s)) _dark(hp);   // L1: the show's first C
+    }
+    return;
   }
+  for (uint8_t hp = 0; hp < HPCOUNT; hp++)
+    if (to[hp]) applyContractToUnit(hp, p, lineCrc);
 }
 
 // ------------------------------ beat tick + score switch + board-side accent ---
-// Call once per loop(), before the per-hp render block.
+// Call once per loop(), before the per-hp render block. It runs every pass, clock or no clock.
 inline void contractBeatTick() {
-  uint32_t now = millis();
+  const uint32_t now = millis();
   for (uint8_t hp = 0; hp < HPCOUNT; hp++) {
     FlthyUnit& u = gUnit[hp];
+    ContractUnitState& s = u.s;
     _expireOverlay(hp, now);
     // A stock command, or its |<n> timer, took the render slot: the jewel is the stock
     // firmware's again. Stop holding the unit (outside a show its auto twitch would never
     // come back) and re-arm the timers so letting go moves nothing in this pass.
-    if ((u.active || u.pulseActive) && !_slotIsOurs(hp)) {
-      u.active = false;  u.pulseActive = false;  u.overNative = false;
-      if (!gInterlocked[hp]) _rearmTwitch(hp);
+    if ((s.base == CB_LOOK || s.pulseActive) && !_slotIsOurs(hp)) {
+      s.pulseActive = false;  u.overNative = false;
+      if (s.base == CB_LOOK) s.base = s.inShow ? CB_DARK : CB_NONE;
+      if (!s.inShow) _rearmTwitch(hp);
     }
-    if (u.nativeLook && LED_command[hp].LEDFunction != u.nativeFn) u.nativeLook = false;
+    if (s.base == CB_NATIVE && !_nativeIsUp(hp)) s.base = s.inShow ? CB_DARK : CB_NONE;
+    ContractLookPatch lp;
+    if (liveLookDue(s, now, lp)) _applyPatch(hp, lp, now);   // S4: a held live look's window ended
   }
-  if (!gBeat.running) return;
-  BeatPos bp = beatPosAt(gBeat, now);
+  if (!gBeat.running) return;                          // no clock (or held, C6): the score does not move
+  const BeatPos bp = beatPosAt(gBeat, now);
   for (uint8_t hp = 0; hp < HPCOUNT; hp++) {
-    int idx = scoreActiveIndex(gScore[hp], gScoreCount[hp], bp.beatIndex);
-    if (idx >= 0 && idx != gScoreActive[hp]) {
-      gScoreActive[hp] = idx;
-      // span of this section, for the am=3 build ramp (mirrors ContractLogics.h:308-309);
-      // the last section gets a long tail so its span is never zero-width.
-      gUnit[hp].sectionStart = gScore[hp][idx].atBeat;
-      gUnit[hp].sectionEnd   = (idx + 1 < gScoreCount[hp]) ? gScore[hp][idx + 1].atBeat
-                                                           : (gScore[hp][idx].atBeat + 9999);
-      _applyScore(hp, gScore[hp][idx]);
-    }
+    ContractUnitState& s = gUnit[hp].s;
+    if (s.scoreLen == 0) continue;
+    int idx = scoreActiveIndex(gScore[hp], s.scoreLen, bp.beatIndex);
+    idx = scoreCursor(s.curSection, idx, s.pinForward);     // C2
+    if (idx < 0 || idx == s.curSection) continue;
+    _enterSection(hp, idx, now);
+  }
 
-    // ---- v1.2: BOARD-SIDE ACCENT SELF-FIRE (Phase 2, the Pi is silent) ----------------
-    // The gap this closes: before v1.2 a DELIVERED blueprint's only beat expression was the
-    // brightness pump (envBright), so it could not fire the effect-swap accent that a LIVE,
-    // Pi-mirrored show got from verb P. Now the board fires the SAME overlay itself, from
-    // the active section's ae=/ac=/ad=. The section switch above runs FIRST on purpose: a
-    // section that starts on a downbeat gets its accent on that very beat.
-    //
-    // ORDER MATTERS. beatEdge() advances the guard UNCONDITIONALLY, so it must be consumed
-    // before any bail-out below — a beat that does NOT accent still has to consume its edge,
-    // or the next tick (still inside the same beat) re-tests and re-fires on every frame,
-    // turning a 180 ms accent into a permanent latch.
-    if (!beatEdge(gUnit[hp].lastAccentBeat, bp.beatIndex)) continue;   // same beat: done
-    int a = gScoreActive[hp];
-    if (a < 0) continue;                                     // no scored section is playing:
-                                                             // a LIVE look never self-accents
-                                                             // (the Pi's verb P owns Phase 1)
-    const ScoreEntry& e = gScore[hp][a];
-    if (e.accentFx == CE_NONE) continue;                     // v1.1 entry: NEVER accents
-    // The SAME predicate the brightness pump gates on (contract_core's beatAccentFires, which
-    // beatAccentAmount() also calls) — so the pump and the effect accent can NEVER disagree
-    // about which beats carry an accent.
-    if (!beatAccentFires(e.accentMode, bp, gBeat)) continue;
-    _fireAccent(hp, e.accentFx, e.accentColor, gUnit[hp].brightBase,
-                (uint32_t)e.accentDur10 * 10u);
+  // The board fires its OWN effect-swap accent, once per accent beat: this is what makes a
+  // DELIVERED show look like a LIVE-mirrored one. Runs AFTER the section loop so a section
+  // starting on a downbeat accents on that very beat. Gated to the SCORE path only — a live
+  // verb-A never self-accents (the host's verb P owns that), so a live show cannot double-fire.
+  for (uint8_t hp = 0; hp < HPCOUNT; hp++) {
+    ContractUnitState& s = gUnit[hp].s;
+    // Consume the edge FIRST and UNCONDITIONALLY: a beat that does not accent must still
+    // retire its edge, or the next tick (same beat) re-tests and re-fires every frame.
+    if (!beatEdge(s.lastAccentBeat, bp.beatIndex)) continue;
+    if (s.scoreLen == 0 || s.curSection < 0) continue;       // no active section
+    const ScoreEntry& e = gScore[hp][s.curSection];
+    if (e.accentFx == CE_NONE) continue;                     // no ae=: never accents
+    // The SAME predicate the brightness pump gates on, so the pump and the effect accent can
+    // NEVER disagree about which beats carry an accent; both are under the S2 rate floor.
+    if (!beatAccentFires(e.accentMode, bp, gBeat, e.accentEvery)) continue;
+    _fireAccent(hp, e.accentFx, e.accentColor, s.bright, (uint32_t)e.accentDur10 * 10u);
   }
 }
 

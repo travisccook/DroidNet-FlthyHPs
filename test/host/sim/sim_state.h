@@ -3,20 +3,20 @@
 // SPDX-License-Identifier: MIT
 //
 // What the scenarios read of the contract layer's state. The ONLY simulation file that names the
-// layer's own variables, so moving the unit state (plan Task 13: onto the core's ContractUnitState)
-// edits this file and no scenario.
+// layer's own variables (a unit's show state is the core's ContractUnitState, gUnit[hp].s), so a
+// change to where that state lives edits this file and no scenario.
 #pragma once
 namespace sim {
-inline bool armed(int hp)            { return gInterlocked[hp]; }          // M:v=show is in force
-inline bool lookUp(int hp)           { return gUnit[hp].active; }          // a contract look is the base
-inline int  lookEffect(int hp)       { return (int)gUnit[hp].effect; }
-inline int  lookBright(int hp)       { return gUnit[hp].brightBase; }      // b=, 255 = the ceiling
-inline int  lookSpeed(int hp)        { return gUnit[hp].speed; }
-inline int  lookBeatMod(int hp)      { return gUnit[hp].beatMod; }
-inline int  lookAm(int hp)           { return gUnit[hp].accentMode; }
-inline uint32_t accentStartMs(int hp){ return gUnit[hp].pulseStartMs; }    // changes each time an overlay starts
-inline uint32_t accentDurMs(int hp)  { return gUnit[hp].pulseDurMs; }
-inline int  scoreLen(int hp)         { return gScoreCount[hp]; }
+inline bool armed(int hp)            { return gUnit[hp].s.inShow; }       // M:v=show is in force
+inline bool lookUp(int hp)           { return gUnit[hp].s.base == CB_LOOK; }   // a contract look is the base
+inline int  lookEffect(int hp)       { return (int)gUnit[hp].s.effect; }
+inline int  lookBright(int hp)       { return gUnit[hp].s.bright; }        // b=, 255 = the ceiling
+inline int  lookSpeed(int hp)        { return gUnit[hp].s.speed; }
+inline int  lookBeatMod(int hp)      { return gUnit[hp].s.beatMod; }
+inline int  lookAm(int hp)           { return gUnit[hp].s.accentMode; }
+inline uint32_t accentStartMs(int hp){ return gUnit[hp].s.pulseStartMs; }    // changes each time an overlay starts
+inline uint32_t accentDurMs(int hp)  { return gUnit[hp].s.pulseDurMs; }
+inline int  scoreLen(int hp)         { return gUnit[hp].s.scoreLen; }
 inline bool clockRunning()           { return gBeat.running; }
 inline int  clockBpm()               { return gBeat.bpm; }
 inline int  clockBpb()               { return gBeat.bpb; }
