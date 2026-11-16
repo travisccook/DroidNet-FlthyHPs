@@ -162,6 +162,60 @@ SCENARIO(l6_button_also_drops_a_live_look_s4_is_holding) {
   run(3.0); CHECK(!lookUp(0));  CHECK(stockAgain(0));  CHECK_EQ(LED_command[0].LEDFunction, 100);   // the off colour, after the 1 s
 }
 
+// The L3 restore above the ceiling (found by the soak, the minimal case is the reviewer's): a stock
+// Short Circuit that has finished leaves its last frame held, and nothing repaints it. A verb-P
+// overlay saves that frame; the owner lowers the level while the overlay is up; the frame that
+// comes back must be at the new level.
+static int peakChannel(int hp) { int m = 0; for (int i = 0; i < 21; i++) m = std::max(m, (int)neoStrips[hp].shown[i]); return m; }
+SCENARIO(l3_overlay_restore_follows_the_owners_level) {
+  run(8); line("T0075\r", 40.0);
+  for (int i = 0; i < HPCOUNT; i++) enableTwitchLED[i] = 0;          // nothing else repaints it
+  CHECK(peakChannel(2) > 60);                        // the held stock frame, at BRIGHT 100
+  uint8_t held[21]; memcpy(held, neoStrips[2].shown, 21);
+  line("!HTP:c=00ff00,d=400\r", 1.5);                // no level change: the frame comes back byte for byte
+  CHECK(memcmp(held, neoStrips[2].shown, 21) == 0);
+  line("!HTP:c=00ff00,d=2500\r", 0.5);
+  line("HTB020\r", 0.3);                             // the owner lowers the level to 20 while the overlay is up
+  CHECK_EQ(neoStrips[2].getBrightness(), 20);
+  int worst = 0; for (int k = 0; k < 23000; k++) { pass(1000); worst = std::max(worst, peakChannel(2)); }
+  CHECK(worst <= 20);                                // (255 * 21) >> 8: a full channel at level 20
+  CHECK(peakChannel(2) > 0);                         // and the stock frame did come back
+}
+
+// ---- Round 2, finding 2: re-arming the twitch at the end of a hold must not starve it -----------
+// A short hold every 40 s (a pulse from a WCB macro, with no show armed) pushed both timers a full
+// interval ahead every time, and the owner's auto twitch never came due.
+SCENARIO(r2_short_holds_do_not_starve_the_auto_twitch) {
+  run(10); long m0[3], t0 = twitches(); for (int i = 0; i < 3; i++) m0[i] = hpMoves(i);
+  for (int k = 0; k < 90; k++) { say("!H*P:c=ffffff,d=200\r"); run(40.0); }      // one hour
+  long tw[3]; for (int i = 0; i < 3; i++) tw[i] = (hpMoves(i) - m0[i]) / 2;
+  printf("  one hour with a 0.2 s hold every 40 s: servo twitches F/R/T %ld %ld %ld, LED twitches %ld\n", tw[0], tw[1], tw[2], twitches() - t0);
+  CHECK(tw[0] >= 25 && tw[1] >= 18 && tw[2] >= 18);  // stock alone gives about 44 / 32 / 31 in an hour
+  CHECK(twitches() - t0 >= 50);                      // and about 83 LED twitches
+}
+
+// ---- Round 2, finding 3: three units asked, three replies ---------------------------------------
+static bool txLinesWhole();
+static std::string qUnits() { std::string u; size_t p = 0; while ((p = Serial.tx.find("q:ver=", p)) != std::string::npos) { u += Serial.tx[p - 1]; p++; } return u; }
+SCENARIO(r3_three_units_asked_back_to_back_all_answer) {
+  for (int gapMs : {0, 20, 60}) {
+    int bad = trial([gapMs] {
+      run(40); while (gWdp.len != 0) pass(500); drain(); Serial.tx.clear(); Serial.maxStallUs = 0;
+      for (const char* q : {"!HFQ:r=3\r", "!HRQ:r=3\r", "!HTQ:r=3\r"}) { say(q); run(0.0104 + gapMs / 1000.0); }
+      run(1.0); std::string u = qUnits(); std::sort(u.begin(), u.end());
+      if (u != "FRT") { printf("  %d ms between the lines: replies from \"%s\"\n", gapMs, qUnits().c_str()); failures++; }
+      CHECK(txLinesWhole());  CHECK_EQ(Serial.maxStallUs, 0);
+    });
+    CHECK_EQ(bad, 0);
+  }
+  run(8); while (gWdp.len == 0) pass(500);           // and as a WDP announce begins
+  Serial.tx.clear(); for (const char* q : {"!HFQ:r=3\r", "!HRQ:r=3\r", "!HTQ:r=3\r"}) { say(q); run(0.07); }
+  run(1.5); std::string u = qUnits(); std::sort(u.begin(), u.end()); CHECK(u == "FRT");  CHECK(txLinesWhole());
+  // the same unit asked twice before it could answer: one reply, the newer route
+  drain(); while (gWdp.len != 0) pass(500); Serial.tx.clear(); say("!HFQ:r=1\r!HFQ:r=2\r"); run(1.0);
+  CHECK(qUnits() == "F");  CHECK(Serial.tx.find(";W2,;S0!HFq:") != std::string::npos);
+}
+
 // ---- Finding 6: the Q reply never stalls loop(), and is never mixed with a WDP announce ---------
 static int qReplies() { int n = 0; size_t p = 0; while ((p = Serial.tx.find("q:ver=", p)) != std::string::npos) { n++; p++; } return n; }
 static bool txLinesWhole() {                         // every reply and every announce on TX is one unbroken line
@@ -274,11 +328,15 @@ SCENARIO(c6_hold_shows_a_pumped_look_at_its_own_level) {
 // quarter of the ceiling plus one level; swings smaller than that are a look's texture and are not
 // limited. At a low ceiling 27 % is less than a step, so an observer's "lit" line is never drawn
 // closer to its "dark" line than a step and one level.)
-// Only the contract's onsets count: one that happens while the layer has the jewel's LEDs, or within
-// 300 ms of it letting go (so a reset that hands back to a lit off colour counts). The stock
-// firmware's own looks may strobe faster, as they always did (stock function 2, Short Circuit), and
-// light the STOCK firmware adds to a jewel is the owner's: as the logics' stage does at a button
-// press, the observers start counting afresh there. What the contract does after it counts as ever.
+// WHOSE onsets count. Two modes, because the first one alone hid a real path (verb B dimming and
+// relighting STOCK light on an armed unit: nobody "had" the jewel, so nothing was counted):
+//   * STRICT (the path table, and every second hostile stream): every onset counts, whoever drew the
+//     pixels. One thing is set aside: the relight a stock COMMAND causes by itself, for 400 ms after
+//     the board handles the line (the owner's button may light a jewel when the owner likes); the
+//     observers start counting afresh there. These streams send no stock look that strobes by itself.
+//   * ATTRIBUTED (the other streams, which do send the strobing stock looks: stock function 2, Short
+//     Circuit, random twitch sequences): an onset counts while the layer has the jewel's LEDs or let
+//     go of them in the last 300 ms, and light the stock firmware adds starts the count afresh.
 static int fullScale(int level) { return level >= 255 ? 255 : (255 * (level + 1)) >> 8; }
 struct Observer {
   int darkPct, litPct; bool lit = false; std::vector<uint64_t> onsets, recent; int worst = 0;
@@ -298,6 +356,7 @@ struct Photo {
   int hp, ceil; bool started = false; uint64_t lastHad = 0; bool everHad = false;
   Observer obs[3] = {{10, 50}, {19, 75}, {4, 31}};
   int peak = 0, overCeiling = 0, prevS = 0;
+  bool strict = false; uint64_t stockLineAt = 0; bool stockLineSeen = false;   // STRICT mode, and when the board last handled a stock command
   bool paused = false;                               // while the owner's brightness command is on its way (see newCeiling)
   explicit Photo(int h, int c = 100) : hp(h), ceil(c) {}
   // The owner changed the strip level: every frame is rescaled, and "dark" and "lit" are fractions of
@@ -313,8 +372,9 @@ struct Photo {
     if (neoStrips[hp].getBrightness() > ceil) overCeiling++;
     if (simHasLeds(hp)) { lastHad = us; everHad = true; }
     if (!started || reread) { started = true; reread = false; prevS = S; for (auto& o : obs) o.reread(S, FS); return; }
-    const bool counts = everHad && us - lastHad <= 300000ULL;
-    if (!counts && S > prevS) for (auto& o : obs) o.afresh();       // the stock firmware made the jewel brighter
+    const bool afterStockLine = stockLineSeen && us - stockLineAt <= 400000ULL;
+    const bool counts = strict ? !afterStockLine : (everHad && us - lastHad <= 300000ULL);
+    if (strict ? afterStockLine : (!counts && S > prevS)) for (auto& o : obs) o.afresh();   // the owner's own light
     prevS = S;
     for (auto& o : obs) o.see(S, FS, counts, us);
   }
@@ -322,7 +382,7 @@ struct Photo {
 };
 // lines on a timetable (tick = ms), sampled every 1 ms pass
 static int onsetsPerSecond(int hp, double secs, const std::function<void(int)>& everyMs) {
-  Photo p(hp); uint64_t end = us + (uint64_t)(secs * 1e6); int tick = 0;
+  Photo p(hp); p.strict = true; uint64_t end = us + (uint64_t)(secs * 1e6); int tick = 0;
   while (us < end) { everyMs(tick++); pass(1000); p.sample(); }
   return p.maxPerSecond();
 }
@@ -384,6 +444,11 @@ SCENARIO(s9_no_path_relights_a_jewel_more_than_three_times_a_second) {
   S9_CASE("B 0 / 255 over a native look (rainbow)", 0, 8, { line("!**M:v=show\r"); line("!HFA:i=native:6\r"); }, if (t % 50 == 0) say((t / 50) % 2 ? "!HFB:b=0\r" : "!HFB:b=255\r"));
   S9_CASE("the owner's level coming back at idle: show + look + B:b=0, then idle (rear)", 1, 8, ,
           { int k = t % 120; if (k == 0) say("!HRM:v=show\r!HRA:i=solid,c=ffffff\r"); if (k == 40) say("!HRB:b=0\r"); if (k == 80) say("!HRM:v=idle\r"); });
+  // round 2 of the review: verb B over light the contract did not draw (a show armed and not begun keeps the stock look)
+  S9_CASE("B 0 / 255 over the stock off colour, show armed and not begun (rear), every 25 ms", 1, 8, { line("R0055|1\r", 3.0); line("!**M:v=show\r"); }, if (t % 25 == 0) say((t / 25) % 2 ? "!HRB:b=0\r" : "!HRB:b=255\r"));
+  S9_CASE("the same at one B every 100 ms", 1, 8, { line("R0055|1\r", 3.0); line("!**M:v=show\r"); }, if (t % 100 == 0) say((t / 100) % 2 ? "!HRB:b=0\r" : "!HRB:b=255\r"));
+  S9_CASE("B 0 / 255 over the operator's own look (F0059), show armed", 0, 8, { line("F0059\r", 1.0); line("!**M:v=show\r"); }, if (t % 25 == 0) say((t / 25) % 2 ? "!HFB:b=0\r" : "!HFB:b=255\r"));
+  S9_CASE("a ride ended by a boundary: M:v=show + B:b=0, then M:v=idle, every 40 ms (rear)", 1, 8, line("R0055|1\r", 3.0), { if (t % 40 == 0) say("!HRM:v=show\r!HRB:b=0\r"); if (t % 40 == 20) say("!HRM:v=idle\r"); });
   CHECK_EQ(worst, 0);
 }
 
@@ -434,10 +499,19 @@ static std::string mutate(std::string l) {           // one wire fault
 // sequences, servo commands and the brightness command. Returns the owner's new level, or -1.
 static const char* G_STOCK[] = {"F0055", "A0059|3", "R0071", "A006", "T001", "A0022|2", "F0034|4", "A0075", "A096", "A0971", "A098", "A0992",
                                 "S1|4", "S4", "S5", "S7", "S8", "S9", "F1013", "A104", "A105|2", "A198", "A199", "T1042"};
+// The stock commands that do not strobe by themselves and do not switch the LED twitch to random looks.
+static const char* G_CALM[] = {"F0055", "A0059|3", "A006", "T001", "A0055|1", "A096", "A0971", "A098", "S1|4", "S4", "S5", "S7", "S8",
+                               "F1013", "A104", "A105|2", "A198", "A199", "T1042", "X0045|1"};
 struct Stream {                                      // drives the wire and measures the three jewels
   Photo ph[3] = {Photo(0), Photo(1), Photo(2)};
-  uint64_t lo = 1000, hi = 4000;
-  void step() { pass(rnd(lo, hi)); for (auto& p : ph) p.sample(); }
+  uint64_t lo = 1000, hi = 4000; bool strict = false;
+  void setStrict() { strict = true; for (auto& p : ph) p.strict = true; }
+  void step() {
+    const bool stockLine = stringComplete && !inputString.s.empty() && inputString.s[0] != '!' && inputString.s[0] != 'H';
+    pass(rnd(lo, hi));
+    if (stockLine) for (auto& p : ph) { p.stockLineAt = us; p.stockLineSeen = true; }
+    for (auto& p : ph) p.sample();
+  }
   void until(uint64_t t) { while (us < t) step(); }
   void settle() { while (!wireIdle()) step(); }
   void one(bool watched, int faultPct, int stockPct) {
@@ -445,12 +519,28 @@ struct Stream {                                      // drives the wire and meas
       if (R(6) == 0) { int lv = 20 + R(236); char b[16]; snprintf(b, sizeof b, "HAB%03d\r", lv);
         settle(); for (auto& p : ph) p.paused = true;                   // not measured while the level changes under it
         say(b); settle(); until(us + 20000); for (auto& p : ph) p.newCeiling(lv); }
+      else if (strict) say((std::string(G_CALM[R(sizeof G_CALM / sizeof *G_CALM)]) + "\r").c_str());
       else say((std::string(G_STOCK[R(sizeof G_STOCK / sizeof *G_STOCK)]) + "\r").c_str());
     } else { std::string l = genLine(watched); if (R(100) < faultPct) l = mutate(l); sayAs(l + "\r", true); }
   }
+  // A HOSTILE SCRIPT: two lines that undo each other, alternated on one unit 20 to 80 ms apart. Random
+  // lines alone almost never do this, and it is how every path that relit a jewel too often was found.
+  void hostile(bool watched) {
+    static const char* PAIR[][2] = {
+      {"B:b=0", "B:b=255"}, {"L:v=0", "L:v=255"}, {"X", "A:i=solid,c=ffffff"}, {"A:i=off", "A:i=solid,c=ffffff"},
+      {"P:c=ffffff,b=0,d=400", "P:c=ffffff,b=255,d=400"}, {"C:bpm=120,beat=0", "C:bpm=120,beat=20"}, {"M:v=idle", "M:v=show,wd=5"},
+      {"M:v=show,wd=5", "B:b=0"}, {"A:i=meter,c=ffffff", "L:v=0"}, {"A:i=native:6", "X"}, {"B:b=0", "M:v=idle"}, {"A:i=flash,c=ffffff,s=255", "A:i=flash,c=fffffe,s=255"}};
+    const int k = R(sizeof PAIR / sizeof *PAIR); const std::string u = std::string("!") + G_UNIT[R(4)];   // H*, HF, HR or HT
+    (void)watched;
+    for (int n = 6 + R(16); n > 0; n--) for (int half = 0; half < 2; half++) { sayAs(u + PAIR[k][half] + "\r", true); until(us + 20000 + (uint64_t)R(60000)); }
+  }
   void traffic(double secs, bool watched, int faultPct, int stockPct) {
     uint64_t end = us + (uint64_t)(secs * 1e6);
-    while (us < end) { int burst = R(4) ? 1 : 2 + R(12); for (int i = 0; i < burst; i++) one(watched, faultPct, stockPct); until(us + (uint64_t)R(R(5) ? 400000 : 2500000)); }
+    while (us < end) {
+      if (R(12) == 0) hostile(watched);
+      else { int burst = R(4) ? 1 : 2 + R(12); for (int i = 0; i < burst; i++) one(watched, faultPct, stockPct); }
+      until(us + (uint64_t)R(R(5) ? 400000 : 2500000));
+    }
     settle();
   }
   int worstOnsets() const { return std::max(ph[0].maxPerSecond(), std::max(ph[1].maxPerSecond(), ph[2].maxPerSecond())); }
@@ -491,10 +581,11 @@ SCENARIO(s9_property_hostile_streams) {
     fflush(stdout); pid_t pid = fork();
     if (pid == 0) {
       failures = 0; ledOnlyViolations = 0; holdViolations = 0; srand(S9_SEED0 + seed);
-      Stream st; st.until(us + 6000000);
+      Stream st; if ((S9_SEED0 + seed) % 2 == 0) st.setStrict();      // every second stream: every onset counts
+      st.until(us + 6000000);
       // 0: M:v=idle   1: the host dies (watchdog)   2: the operator's button (L6). To run ONE stream of a soak
-      // again: SIM_DEFS="-DS9_SEEDS=1 -DS9_SEED0=<seed0 + n>" and S9_ENDING=<n % 3> in the environment.
-      const int ending = getenv("S9_ENDING") ? atoi(getenv("S9_ENDING")) : seed % 3;
+      // again: SIM_DEFS="-DS9_SEEDS=1 -DS9_SEED0=<seed0 + n>" and S9_ENDING=<(n / 2) % 3> in the environment.
+      const int ending = getenv("S9_ENDING") ? atoi(getenv("S9_ENDING")) : (seed / 2) % 3;
       st.traffic(40.0, ending == 1, 10, 12);
       if (ending == 1) { say("!**M:v=show,wd=3\r"); st.settle(); for (int i = 0; i < 12; i++) { std::string l = genLine(true); if (l.find("M:v=idle") == std::string::npos) sayAs(l + "\r", true); } st.settle(); st.until(us + 8000000); }
       else if (ending == 2) { st.settle(); say("A0055|2\r"); st.settle(); st.until(us + 4000000); }   // solid blue for 2 s on all three, then the off colour
@@ -504,7 +595,7 @@ SCENARIO(s9_property_hostile_streams) {
       if (n > 3 && getenv("S9_TRACE")) for (auto& p : st.ph) for (auto& o : p.obs) if (o.maxPerSecond() > 3) {
         printf("  hp%d observer %d/%d onsets (ms):", p.hp, o.darkPct, o.litPct); for (auto x : o.onsets) printf(" %.0f", x / 1000.0); printf("\n"); }
       if (n > 3 || st.overCeiling() || !stock || ledOnlyViolations || holdViolations)
-        printf("  seed %2d (%s): %d onsets/s, %d frames over the ceiling, LED-only %ld, hold %ld%s%s\n", seed, ending == 0 ? "idle" : ending == 1 ? "host dies" : "button",
+        printf("  seed %2d (%s, %s): %d onsets/s, %d frames over the ceiling, LED-only %ld, hold %ld%s%s\n", seed, ending == 0 ? "idle" : ending == 1 ? "host dies" : "button", st.strict ? "strict" : "attributed",
                n, st.overCeiling(), ledOnlyViolations, holdViolations, stock ? "" : ", NOT back on stock: ", why.c_str());
       fflush(stdout);
       _exit((n > 3 || st.overCeiling() || !stock || ledOnlyViolations || holdViolations) ? std::min(n > 3 ? n : 99, 120) : 0);
