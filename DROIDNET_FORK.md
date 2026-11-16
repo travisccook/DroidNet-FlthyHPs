@@ -70,6 +70,12 @@ announce" below.
   of look or colour, native looks are of two kinds (S10), the same look again does not restart (S11),
   and a verb-`B` raise waits instead of the frames. The property test measures luminance and colour
   as well, with observers a step apart, and the held-frames table below is a scenario.
+- **Open: the long soak is not clean.** The property test's 150 streams pass, and so did 600 others;
+  a soak of 4,000 streams at another seed base breaks on 6 (0.15 %): three with two onsets 288 to
+  291 ms apart for one narrow observer (one of them on sparkle), three with two changes of colour 63
+  to 78 ms apart. The stream numbers and what is known of each are in
+  `test/host/sim/scenarios_review.inc`. Nothing in them is brighter than the ceiling and none touches
+  a servo.
 - **Build:** flash 43,140 B of 253,952; SRAM 4,606 B of 8,192 (the score tables are 2,112 B).
   `stack_report.py`: worst-case stack 451 B of the 3,586 B left, 3,135 B spare. The heap (Arduino
   `String`) shares that space. (The tool takes any two bytes of `.data` equal to a function's address
