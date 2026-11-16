@@ -7,7 +7,8 @@
 // mirror src/main.cpp / Adafruit_NeoPixel (named, not numbered: line numbers there move):
 //   Adafruit_NeoPixel::{setPixelColor(uint16_t,uint32_t),show(),setBrightness(uint8_t)}
 //   neoStrips[HPCOUNT]; LED_command[HPCOUNT].LEDFunction
-//   enableTwitchLED/enableTwitchHP/startEnableTwitchLED/startEnableTwitchHP/offcoloroverride
+//   enableTwitchLED/enableTwitchHP/offcoloroverride (the layer must never write these three)
+//   offcolor[], twitchLEDTime[], LEDTwitchInterval[][], resetHPtwitch(byte)
 //   ledOFF(byte), varResets(byte); millis/random/map/Serial (Arduino core)
 // What the firmware really does with these is test/host/sim's job: it runs the real main.cpp.
 //   micros/analogRead and Serial.write/availableForWrite (Arduino core, for src/wdp/wdp_fork.h,
@@ -97,9 +98,14 @@ struct LEDCmd {
 static LEDCmd  LED_command[HPCOUNT];
 static byte    enableTwitchLED[HPCOUNT]      = {1, 2, 2};
 static boolean enableTwitchHP[HPCOUNT]       = {true, true, true};
-static const byte startEnableTwitchLED[HPCOUNT] = {1, 2, 2};
-static const boolean startEnableTwitchHP[HPCOUNT] = {true, true, true};
 static boolean offcoloroverride[HPCOUNT]     = {false, false, false};
+static const int offcolor[HPCOUNT]           = {4, 9, 5};                 // main.cpp: the per-HP off colour
+static unsigned long twitchLEDTime[HPCOUNT]  = {3800, 3900, 4000};        // main.cpp: next LED auto twitch
+static const unsigned int LEDTwitchInterval[HPCOUNT][2] = {{45, 180}, {45, 180}, {45, 180}};
+// main.cpp's resetHPtwitch() sets twitchHPTime[hp] a full interval ahead and moves nothing. The
+// layer calls it whenever it lets go of a unit, so it is counted, not a servo tripwire.
+static int _mock_hpTwitchRearms = 0;
+inline void resetHPtwitch(byte) { _mock_hpTwitchRearms++; }
 
 // ---- board effect primitives the fork calls ----
 inline void ledOFF(byte) {}

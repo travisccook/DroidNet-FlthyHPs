@@ -93,46 +93,27 @@ int main() {
     }
   }
 
-  // I4 guard (PHYSICAL): the contract must NEVER force-enable the native HP SERVO twitch.
-  // enableTwitchHP[] moves a holoprojector servo; this fork is LED-ONLY (§11) and the idle
-  // branch used to write a literal `true`, silently re-enabling servo motion the operator
-  // had turned off (in the sketch config or via native servo cmd 98) until the next reboot.
-  // Contract: show may take the flag away, idle may only put back EXACTLY what show took,
-  // and an idle that never followed a show must not touch it at all.
+  // I4 guard (PHYSICAL), v1.3: the contract layer never WRITES the operator's three settings.
+  // An armed show holds a unit through contractHolds(), which main.cpp's two auto-twitch gates
+  // ask; enableTwitchHP[] (a servo flag), enableTwitchLED[] and offcoloroverride[] stay exactly
+  // as the operator left them through show, X and idle, whatever they were.
   {
     ParsedContract q;
-    enableTwitchHP[0] = false;                    // operator has the FRONT servo twitch OFF
-    if (contractParse("HFM:v=idle", q)) applyContract(q);
-    if (enableTwitchHP[0]) { printf("FAIL: Flthy idle force-enabled the HP servo twitch (no prior show)\n"); return 1; }
-
-    if (contractParse("HFM:v=show", q)) applyContract(q);
-    if (enableTwitchHP[0]) { printf("FAIL: Flthy show must disable the HP servo twitch (LED-only)\n"); return 1; }
-    if (contractParse("HFM:v=idle", q)) applyContract(q);
-    if (enableTwitchHP[0]) { printf("FAIL: Flthy idle re-enabled a servo twitch the operator disabled\n"); return 1; }
-
-    enableTwitchHP[1] = true;                     // operator has the REAR servo twitch ON
-    if (contractParse("HRM:v=show", q)) applyContract(q);
-    if (enableTwitchHP[1]) { printf("FAIL: Flthy show must disable the HP servo twitch (LED-only)\n"); return 1; }
-    if (contractParse("HRM:v=idle", q)) applyContract(q);
-    if (!enableTwitchHP[1]) { printf("FAIL: Flthy idle did not restore the operator's HP servo twitch\n"); return 1; }
-  }
-
-  // Minor guard: show forces offcoloroverride[] on (so the off state is truly black); idle
-  // must hand the native off-color behavior back. It used to stay overridden after every
-  // show until the operator sent a native 98/99 command.
-  {
-    ParsedContract q;
-    offcoloroverride[2] = false;                  // native off-color ACTIVE on the top HP
-    if (contractParse("HTM:v=show", q)) applyContract(q);
-    if (!offcoloroverride[2]) { printf("FAIL: Flthy show must override the off color (truly black)\n"); return 1; }
-    if (contractParse("HTM:v=idle", q)) applyContract(q);
-    if (offcoloroverride[2]) { printf("FAIL: Flthy idle left the native off color overridden\n"); return 1; }
-
-    offcoloroverride[2] = true;                   // operator had it overridden already (native 96/97)
-    if (contractParse("HTM:v=show", q)) applyContract(q);
-    if (contractParse("HTM:v=idle", q)) applyContract(q);
-    if (!offcoloroverride[2]) { printf("FAIL: Flthy idle clobbered an operator-set off-color override\n"); return 1; }
-    offcoloroverride[2] = false;
+    for (int v = 0; v < 2; v++) {
+      enableTwitchHP[0] = (v == 1);  enableTwitchLED[0] = (byte)(v ? 2 : 0);  offcoloroverride[0] = (v == 1);
+      const char* seq[] = {"HFM:v=idle", "HFM:v=show", "HFA:i=solid,c=FF0000", "HFX", "HFM:v=show", "HFM:v=idle"};
+      for (const char* l : seq) {
+        if (contractParse(l, q)) applyContract(q);
+        if (enableTwitchHP[0] != (v == 1) || enableTwitchLED[0] != (byte)(v ? 2 : 0) || offcoloroverride[0] != (v == 1)) {
+          printf("FAIL: '%s' wrote an operator setting (twitchHP=%d twitchLED=%d offcoloroverride=%d)\n",
+                 l, enableTwitchHP[0], enableTwitchLED[0], offcoloroverride[0]);
+          return 1;
+        }
+        bool wantHold = (strcmp(l, "HFM:v=show") == 0 || strcmp(l, "HFA:i=solid,c=FF0000") == 0 || strcmp(l, "HFX") == 0);
+        if (contractHolds(0) != wantHold) { printf("FAIL: after '%s' contractHolds(0)=%d, want %d\n", l, contractHolds(0), wantHold); return 1; }
+      }
+    }
+    enableTwitchHP[0] = true;  enableTwitchLED[0] = 1;  offcoloroverride[0] = false;
   }
 
   // I3 guard: ending a show must CLEAR the Phase-2 score. Without scoreClear(),
@@ -764,10 +745,10 @@ int main() {
                                                        // the holoprojector SERVO either
     _mock_millis = 900000;
     uint32_t t0 = _mock_millis;                        // 120 BPM => 500 ms/beat
-    SEND("**C:bpm=120,ph=0,bpb=4,beat=0");
     SEND("H*M:v=show");
     SEND("HFA:i=solid,c=FF0000,at=0");
     SEND("HFA:i=solid,c=800080,at=200");
+    SEND("**C:bpm=120,ph=0,bpb=4,beat=0");             // v1.3 C3: the seed FOLLOWS the load (a show reset stops the clock)
     if (gScoreCount[0] != 2) {
       printf("FAIL: show A did not load (count=%d)\n", gScoreCount[0]); return 1;
     }
@@ -789,6 +770,7 @@ int main() {
     }
     SEND("HFA:i=solid,c=00FF00,at=100");
     SEND("HFA:i=solid,c=0000FF,at=300");
+    SEND("**C:bpm=120,ph=0,bpb=4,beat=210");           // ...and the host re-seeds after a Resend too
     if (gScoreCount[0] != 2 || gScore[0][0].atBeat != 100 || gScore[0][0].color.g != 0xFF
         || gScore[0][1].atBeat != 300 || gScore[0][1].color.b != 0xFF) {
       printf("FAIL: the score is not EXACTLY show B's two sections (count=%d, first at=%ld) — "
@@ -813,7 +795,6 @@ int main() {
     SEND("**X");
     _mock_millis = 1000000;
     t0 = _mock_millis;
-    SEND("**C:bpm=120,ph=0,bpb=4,beat=0");
     SEND("H*M:v=show");
     for (int i = 0; i < FLTHY_SCORE_CAP; i++) {
       char c[48]; snprintf(c, sizeof(c), "HFA:i=solid,c=FF0000,at=%d", i * 10);
@@ -825,6 +806,7 @@ int main() {
     SEND("H*M:v=show");                                // ---- the Resend. No stop. ----
     SEND("HFA:i=solid,c=00FF00,at=5");
     SEND("HFA:i=solid,c=0000FF,at=15");
+    SEND("**C:bpm=120,ph=0,bpb=4,beat=0");
     if (gScoreCount[0] != 2) {
       printf("FAIL: after a resend onto a FULL score the table holds %d entries, not show B's "
              "2 — scoreInsert() silently dropped show B at the %d-entry cap\n",

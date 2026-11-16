@@ -25,5 +25,5 @@ inline BeatPos clockPos()            { return beatPosAt(gBeat, millis()); }
 // The firmware's own "the contract holds unit i" test, as the SERVO twitch gate in main.cpp spells
 // it. Used only to excuse a stock servo twitch that was due in a pass anyway.
 #ifndef SIM_HELD
-#define SIM_HELD(i) (gUnit[i].active)
+#define SIM_HELD(i) (contractHolds(i))
 #endif

@@ -572,12 +572,6 @@ unsigned long LEDHaltTime[HPCOUNT];
 unsigned long HPHaltTime[HPCOUNT];   
 
 const byte startEnableTwitchLED[HPCOUNT] = {enableTwitchLED[0],enableTwitchLED[1],enableTwitchLED[2]};
-// DroidNet: boot snapshot of the SERVO auto-twitch config, mirroring startEnableTwitchLED
-// above. The contract fork's show-mode interlock disables enableTwitchHP[] (LED-only, it
-// must never drive a holoprojector servo); idle restores from the fork's saved state, which
-// is seeded from this snapshot (ContractFlthy.h) so idle can never force a servo back on
-// that the operator had off. Native behavior does not read this.
-const boolean startEnableTwitchHP[HPCOUNT] = {enableTwitchHP[0],enableTwitchHP[1],enableTwitchHP[2]};
 
 unsigned long ledtimer = 0;      
 
@@ -1048,7 +1042,7 @@ void loop(){
   }     
   
   for (int i=0; i<HPCOUNT; i++)
-    if (millis() > twitchLEDTime[i] && enableTwitchLED[i]>=1 && LED_command[i].LEDFunction>99 && !gUnit[i].active) {   // DroidNet: never twitch over a live contract look
+    if (millis() > twitchLEDTime[i] && enableTwitchLED[i]>=1 && LED_command[i].LEDFunction>99 && !contractHoldsLeds(i)) {   // DroidNet: never twitch over a contract look or a show that has begun
       twitchLEDTime[i] = (1000L*random(LEDTwitchInterval[i][0],LEDTwitchInterval[i][1]))+millis();
       twitchLEDRunTime[i] = random(LEDTwitchRunInterval[i][0],LEDTwitchRunInterval[i][1]);
       flushCommandArray(i, 0);
@@ -1081,7 +1075,7 @@ void loop(){
 
 
   for (int i=0; i<HPCOUNT; i++) {
-    if (millis() > twitchHPTime[i] && enableTwitchHP[i] && HP_command[i].HPFunction>99 && !gUnit[i].active) {   // DroidNet: LED-only interlock, no servo twitch during a contract show
+    if (millis() > twitchHPTime[i] && enableTwitchHP[i] && HP_command[i].HPFunction>99 && !contractHolds(i)) {   // DroidNet: LED-only interlock, no servo twitch while the contract holds the unit
       twitchHP(i,1);
       resetHPtwitch(i);
     } 

@@ -4,7 +4,12 @@
 //
 // src/contract/ContractFlthy.h — Flthy Holoprojectors firmware layer for the
 // Driveable-Animation Contract. LED-ONLY: the '!' path NEVER writes HP_command[*]
-// and NEVER calls positionHP/twitchHP/wagHP/RCHP — no servo motion, ever.
+// and NEVER calls positionHP/twitchHP/wagHP/RCHP — no servo motion, ever. It never writes
+// the operator's settings either (enableTwitchLED[], enableTwitchHP[], offcoloroverride[]):
+// an armed show HOLDS a unit, and main.cpp's two auto-twitch gates ask contractHolds() and
+// contractHoldsLeds(). Letting go of a unit re-arms both twitch timers first, so the pass
+// that handles a '!' line never starts a servo twitch. test/host/sim checks both on the
+// real main.cpp, on every simulated pass.
 //
 // INCLUDE ORDER (see main.cpp): include this AFTER the board globals + effect
 // primitives it references are declared, and BEFORE loop(). It relies on these
@@ -14,11 +19,10 @@
 //     .show()
 //     .setBrightness(uint8_t)
 //   LEDCmd  LED_command[HPCOUNT];  (.LEDFunction byte)
-//   byte    enableTwitchLED[HPCOUNT];
-//   boolean enableTwitchHP[HPCOUNT];
-//   const byte startEnableTwitchLED[HPCOUNT];
-//   const boolean startEnableTwitchHP[HPCOUNT];        // (DroidNet, added with the fork)
-//   boolean offcoloroverride[HPCOUNT];
+//   (.LEDOption1, .LEDOption2, .LEDHalt: written only to hand the LED side back, as the stock flush does)
+//   const int offcolor[HPCOUNT]; boolean offcoloroverride[HPCOUNT];      (read only)
+//   unsigned long twitchLEDTime[HPCOUNT]; const unsigned int LEDTwitchInterval[HPCOUNT][2];
+//   void resetHPtwitch(byte);    // sets twitchHPTime[hp] a full interval ahead; moves nothing
 //   void ledOFF(byte);
 //   void varResets(byte);
 //   #define HPCOUNT 3 / #define NEO_JEWEL_LEDS 7
@@ -104,26 +108,16 @@ struct FlthyUnit {
 
 static FlthyUnit  gUnit[HPCOUNT];
 static BeatClock  gBeat;
-static bool       gShowMode = false;
 
-// ------------------------------------------- show-mode interlock save-state ---
-// Show mode takes native autonomy away from a unit (it disables the native auto-twitch
-// so the jewel is ours and, critically, so the HOLOPROJECTOR SERVO never moves — this
-// fork is LED-ONLY, §11). Idle must put back EXACTLY what show took and NOTHING ELSE:
-//   * gInterlocked[hp] gates the restore, so an idle that never followed a show cannot
-//     touch the operator's settings at all (a bare !H*M:v=idle is a no-op on them).
-//   * gSavedTwitchHP[hp] holds the servo-twitch flag observed at show entry, seeded from
-//     the boot config startEnableTwitchHP[]. NEVER write `true` here from
-//     a literal: enableTwitchHP drives a PHYSICAL actuator and the operator may have
-//     turned it off in the sketch config or at runtime (native servo cmd 98).
-//   * gSavedOffColor[hp] likewise holds the native "off color" override observed at show
-//     entry (show forces it on so the off state is truly black); without restoring it, the
-//     operator's off-color stayed suppressed after every show until a native 98/99 command.
-static bool    gInterlocked[HPCOUNT]  = {false, false, false};
-static boolean gSavedTwitchHP[HPCOUNT] = {startEnableTwitchHP[0],
-                                          startEnableTwitchHP[1],
-                                          startEnableTwitchHP[2]};
-static boolean gSavedOffColor[HPCOUNT] = {false, false, false};   // the stock default
+// ------------------------------------------------------- show-mode interlock ---
+// An armed show HOLDS a unit: main.cpp's two auto-twitch gates ask contractHolds() and
+// contractHoldsLeds(). The layer never writes enableTwitchLED[], enableTwitchHP[] or
+// offcoloroverride[]: they stay the operator's, so a native 96-99 / S command sent during a
+// show is still in force after it.
+static bool    gInterlocked[HPCOUNT] = {false, false, false};
+// v1.3 L1: an armed show keeps the stock idle look (and its LED twitch) until the show's first
+// C, live A or P. From then on the LED side is the show's too.
+static bool    gBegun[HPCOUNT]       = {false, false, false};
 
 // Phase-2 score (per unit, sorted asc by atBeat via contract_core scoreInsert)
 static ScoreEntry gScore[HPCOUNT][FLTHY_SCORE_CAP];
@@ -133,6 +127,46 @@ static int        gScoreActive[HPCOUNT] = {-1, -1, -1};
 // ---------------------------------------------------------------- helpers ----
 static inline uint8_t _clampBright(int v) {
   return (uint8_t)(v < 0 ? 0 : (v > FLTHY_SAFE_MAX_BRIGHT ? FLTHY_SAFE_MAX_BRIGHT : v));
+}
+// Is the LED render slot one of ours (101..115)?
+static inline bool _slotIsOurs(uint8_t hp) {
+  byte f = LED_command[hp].LEDFunction;
+  return f >= 101 && f <= (byte)(FLTHY_FX_BASE + (uint8_t)CE_TWINKLE);
+}
+// main.cpp's two auto-twitch gates. The SERVO twitch waits from the moment a show is armed
+// (this fork is LED-only); the LED twitch waits once the show has begun or a look is up.
+inline bool contractHolds(uint8_t hp) {
+  return gInterlocked[hp] || gUnit[hp].active;
+}
+inline bool contractHoldsLeds(uint8_t hp) {
+  return (gInterlocked[hp] && gBegun[hp]) || gUnit[hp].active;
+}
+// Both auto-twitch timers a full interval from now. Whenever the layer lets go of a unit the
+// timers are long overdue, and without this the stock loop twitches the LEDs AND THE SERVOS
+// in the same pass. resetHPtwitch() only sets twitchHPTime[hp]; it moves nothing.
+static inline void _rearmTwitch(uint8_t hp) {
+  twitchLEDTime[hp] = (1000L * random(LEDTwitchInterval[hp][0], LEDTwitchInterval[hp][1])) + millis();
+  resetHPtwitch(hp);
+}
+// Give the LED side back to the stock firmware: what its own flush does for the LED command
+// (off colour if one is set and not overridden, else dark), then re-arm the timers.
+static inline void _nativeLedIdle(uint8_t hp) {
+  bool off = (offcolor[hp] >= 0 && !offcoloroverride[hp]);
+  LED_command[hp].LEDFunction = off ? 100 : 255;
+  LED_command[hp].LEDOption1  = off ? (byte)offcolor[hp] : 255;
+  LED_command[hp].LEDOption2  = 255;
+  LED_command[hp].LEDHalt     = -1;
+  ledOFF(hp);
+  _rearmTwitch(hp);
+}
+// L1: the show's first C, live A or P takes the LED side: cancel a stock look still running
+// and the timer that would end it later, and start from dark.
+static inline void _showBegin(uint8_t hp) {
+  if (!gInterlocked[hp] || gBegun[hp]) return;
+  gBegun[hp] = true;
+  LED_command[hp].LEDFunction = 255;
+  LED_command[hp].LEDHalt     = -1;
+  ledOFF(hp);
 }
 // pack an RGB scaled by a 0..255 brightness multiplier into 0xRRGGBB (NEO_GRB
 // ordering is handled inside the library; we always pass logical R,G,B).
@@ -444,6 +478,8 @@ static inline void _applyLook(uint8_t hp, ContractEffect eff, int nativeCode,
   u.startMs     = millis();
   u.pulseActive = false;
   u.lastEnvBright = -1;                                 // force first repaint
+  LED_command[hp].LEDHalt = -1;                         // a stock |<n> or auto-twitch timer still
+                                                        // running would flush this look to black
 
   if (eff == CE_NATIVE && nativeCode >= 0) {
     // escape hatch: hand off to a native LED function (0..7); NOT a contract render
@@ -494,6 +530,31 @@ static inline void _applyScore(uint8_t hp, const ScoreEntry& e) {
              e.beatMod, e.accentMode, 0, /*freshEffect=*/true);
 }
 
+// ------------------------------------------------------------- show reset (L1) ---
+// The Flthy half of the one show reset: everything a show can leave behind on a unit.
+static inline void _unitReset(uint8_t hp) {
+  FlthyUnit& u = gUnit[hp];
+  scoreClear(gScoreCount[hp], gScoreActive[hp]);
+  u.active = false;  u.pulseActive = false;
+  u.effect = CE_SOLID;  u.color = ContractRGB{0, 0, 0};  u.speed = 128;  u.brightBase = FLTHY_SAFE_MAX_BRIGHT;
+  u.beatMod = 0;  u.accentMode = 0;  u.durMs = 0;  u.level = 0;
+  u.sectionStart = 0;  u.sectionEnd = 0;
+  u.lastAccentBeat = BEAT_NONE;
+  u.lastEnvBright  = -1;
+}
+// Does this layer have the unit's LEDs (so a reset must hand them back)?
+static inline bool _heldLeds(uint8_t hp) { return contractHoldsLeds(hp) || _slotIsOurs(hp); }
+// M:v=idle (and, later, the watchdog and a failed verb V) end here. A unit whose LEDs this
+// layer does not have keeps its stock look, so a stray idle cannot flush what the operator started.
+static inline void _idleUnit(uint8_t hp) {
+  bool heldLeds = _heldLeds(hp), armed = gInterlocked[hp];
+  _unitReset(hp);
+  gInterlocked[hp] = false;  gBegun[hp] = false;
+  if (heldLeds)   _nativeLedIdle(hp);                  // off colour, both twitch timers from now
+  else if (armed) resetHPtwitch(hp);                   // armed, never begun: the stock look stays, and
+                                                       // the overdue servo twitch must not fire now
+}
+
 // ------------------------------------------------------------- verb dispatch ---
 inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
   FlthyUnit& u = gUnit[hp];
@@ -512,6 +573,7 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
         return;
       }
       // Phase-1: apply now. Omitting i= patches params of the current look.
+      _showBegin(hp);
       ContractEffect eff = pr.hasEffect ? pr.effect : u.effect;
       ContractRGB   col   = pr.hasColor   ? pr.color   : u.color;
       uint8_t spd = pr.hasSpeed   ? pr.speed   : u.speed;
@@ -544,6 +606,7 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
       // effect out of the overlay primitive, that one covers every other caller of it. Neither
       // is redundant belt-and-braces — see the CV_PULSE gate check in test/host/run.sh.
       ContractEffect fx = (pr.hasEffect && accentEffectAllowed(pr.effect)) ? pr.effect : CE_SOLID;
+      _showBegin(hp);
       _fireAccent(hp,
                   fx,
                   pr.hasColor  ? pr.color  : ContractRGB{255, 255, 255},
@@ -555,6 +618,7 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
     }
 
     case CV_CLOCK:                                     // seed/re-anchor the beat-clock
+      _showBegin(hp);
       beatClockSeed(gBeat, pr, now);
       u.lastAccentBeat = BEAT_NONE;                    // the beat ORIGIN just moved (Studio
                                                        // re-anchors on every Play/seek), so a
@@ -573,45 +637,24 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
       u.lastEnvBright = -1;
       break;
 
-    case CV_STOP:
-      u.active = false; u.pulseActive = false;
-      scoreClear(gScoreCount[hp], gScoreActive[hp]);   // forget the show (contract_core)
-      u.lastAccentBeat = BEAT_NONE;                    // show boundary: drop the beat edge too
-      ledOFF(hp);                                      // blackout
-      LED_command[hp].LEDFunction = 0;                 // do-nothing
-      u.lastEnvBright = -1;
+    case CV_STOP:                                      // L1: reset, black out, stay in this mode
+      _unitReset(hp);
+      LED_command[hp].LEDFunction = 255;               // the stock "idle, dark" value, never 0:
+      LED_command[hp].LEDHalt     = -1;                // 0 is "do nothing", which also blocks the
+      ledOFF(hp);                                      // stock auto twitch for good
+      if (gInterlocked[hp]) gBegun[hp] = true;         // in a show: dark is the baseline now
+      else                  _rearmTwitch(hp);          // outside one: dark for a full twitch interval
       break;
 
     case CV_MODE:
-      if (pr.mode == 's') {                            // show: LED-only interlock
-        if (!gInterlocked[hp]) {                       // snapshot what we are about to take (once)
-          gSavedTwitchHP[hp] = enableTwitchHP[hp];
-          gSavedOffColor[hp] = offcoloroverride[hp];
-          gInterlocked[hp]   = true;
-        }
-        gShowMode = true;
-        enableTwitchLED[hp] = 0;                       // no auto LED twitch
-        enableTwitchHP[hp]  = false;                   // no auto SERVO twitch -> LED-only
-        offcoloroverride[hp] = true;                   // off state truly black
-        u.active = false; u.pulseActive = false;
-        // v=show is the FIRST line of Studio's load burst, and Resend re-sends that burst with
-        // no intervening X — so a new show starts HERE and must not inherit the last one's
-        // sections (they would merge, and past FLTHY_SCORE_CAP the new ones would be dropped).
-        scoreClear(gScoreCount[hp], gScoreActive[hp]);
-        u.lastAccentBeat = BEAT_NONE;                  // ...nor its beat edge
-        ledOFF(hp);
-      } else if (pr.mode == 'i') {                     // idle: restore native autonomy
-        gShowMode = false;
-        enableTwitchLED[hp] = startEnableTwitchLED[hp];//
-        if (gInterlocked[hp]) {                        // ONLY undo what show actually took
-          enableTwitchHP[hp]   = gSavedTwitchHP[hp];   // NEVER a literal true: this moves a servo
-          offcoloroverride[hp] = gSavedOffColor[hp];   // give the native off-color back
-          gInterlocked[hp]     = false;
-        }
-        u.active = false; u.pulseActive = false;
-        scoreClear(gScoreCount[hp], gScoreActive[hp]); // the show is over: forget its sections
-        u.lastAccentBeat = BEAT_NONE;                  // ...and its beat edge
-        LED_command[hp].LEDFunction = 0;
+      if (pr.mode == 's') {                            // L1: reset, then arm
+        bool heldLeds = _heldLeds(hp);
+        _unitReset(hp);
+        gInterlocked[hp] = true;                       // the servo twitch waits from now (LED-only)
+        gBegun[hp] = false;                            // the stock idle look stays until the show begins
+        if (heldLeds) _nativeLedIdle(hp);              // a Resend over a running show: back to stock idle
+      } else if (pr.mode == 'i') {                     // L1: reset, then give the board back
+        _idleUnit(hp);
       }
       break;
 
@@ -638,7 +681,14 @@ inline void applyContract(const ParsedContract& p) {
   if (all || p.unit == 'F') applyContractToUnit(0, p);
   if (all || p.unit == 'R') applyContractToUnit(1, p);
   if (all || p.unit == 'T') applyContractToUnit(2, p);
-  if (p.verb == CV_STOP && all) gBeat.running = false; // !**X also stops the clock
+  // L1: this board has ONE clock for three units. A reset stops it when no unit still holds a
+  // score or a live look.
+  if (p.verb == CV_STOP || (p.verb == CV_MODE && (p.params.mode == 's' || p.params.mode == 'i'))) {
+    bool anyLeft = false;
+    for (uint8_t hp = 0; hp < HPCOUNT; hp++)
+      if (gUnit[hp].active || gScoreCount[hp] > 0) anyLeft = true;
+    if (!anyLeft) gBeat.running = false;
+  }
 }
 
 // ------------------------------ beat tick + score switch + board-side accent ---
