@@ -268,7 +268,9 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB
 
     case CE_PULSE: {                                   // triangle breathe, peak = brightest
       uint32_t period = (uint32_t)map((long)u.speed, 0, 255, 2000, 240);
-      if (period < 2) period = 2;
+      // v1.3 S8: the pulse's full cycle is never shorter than 2 x the min state (340 ms).
+      // Only s >= 242 is affected.
+      if (period < 2 * FLTHY_STROBE_MIN_MS) period = 2 * FLTHY_STROBE_MIN_MS;
       uint32_t ph = (now - startMs) % period;
       uint32_t tri = (ph < period / 2) ? (ph * 2 * 255 / period)
                                        : ((period - ph) * 2 * 255 / period);
@@ -428,13 +430,6 @@ inline void contractRenderHP(uint8_t hp) {
   FlthyUnit& u = gUnit[hp];
   uint32_t now = millis();
 
-  // ms-duration revert (true sub-second holds; parallels the native seconds pipe)
-  if (u.active && u.durMs > 0 && (uint32_t)(now - u.startMs) >= u.durMs) {
-    u.active = false;
-    u.effect = CE_OFF;
-    LED_command[hp].LEDFunction = _fxCode(CE_OFF);
-    u.lastEnvBright = -1;
-  }
 
   // Accent overlay: LAYER it over the base look, auto-restore on ms-expiry.
   // v1.2: it now renders a full EFFECT (pulseFx), not only a solid fill. pulseFx == CE_NONE
@@ -641,7 +636,7 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
       uint8_t bri = pr.hasBright  ? pr.bright  : u.brightBase;
       uint8_t bm  = pr.hasBeatMod ? pr.beatMod : u.beatMod;
       uint8_t am  = pr.hasAm      ? pr.accentMode : u.accentMode;
-      uint32_t d  = pr.hasDur     ? pr.durMs   : u.durMs;
+      const uint32_t d = 0;                            // v1.3 L4: d= on A is retired; a look holds
       _applyLook(hp, eff, pr.nativeCode, col, spd, bri, bm, am, d,
                  /*freshEffect=*/pr.hasEffect);
       break;
