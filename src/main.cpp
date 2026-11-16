@@ -589,16 +589,14 @@ boolean       OEFlag = false;
 ///*****        Command Varaiables, Containers & Flags        *****///
 //////////////////////////////////////////////////////////////////////
 
-// DroidNet contract: grown 10 -> 80 (>=64 B floor + headroom, fork spec §5.1), then
-// 80 -> 96 for contract v1.2. A scored line now also carries the accent overlay
-// (ae=/ac=/ad=), and the worst case is 76 chars + NUL:
-//   !H*A:i=colorcycle,c=3b82f6,at=1234,am=2,m=200,ae=colorcycle,ac=ffffff,ad=250
-// The absolute v1.2 worst case is pinned <= 95 by the shared core's host tests. This
-// buffer TRUNCATES SILENTLY (inputString.toCharArray below) -- a line one byte too long
-// is not an error, it just loses its tail and the board plays a mangled cue. 96 B of the
-// ATmega2560's 8 KB, and at 9600 baud (~1.04 ms/byte) a 96-char line is nowhere near the
-// 64-byte hardware RX ring, which loop() drains every pass.
-#define INPUTBUFFERLEN 96
+// DroidNet contract: the line buffer, grown from the stock 10. The longest contract v1.3 line
+// is 102 characters (a scored A with every key, the every-N accent's an= and ap= included):
+//   !H*A:i=colorcycle,c=3b82f6,b=255,s=128,at=123456,am=2,an=16,ap=15,m=200,ae=colorcycle,ac=ffffff,ad=250
+// This buffer TRUNCATES SILENTLY (toCharArray below): a line too long for it is not an error,
+// it loses its tail and the board plays a mangled cue. So it is 128, with room to spare.
+// reserve() in setup() and the flood guard in serialEvent() follow this define. A line longer
+// than the UART's RX ring is fine: serialEvent() takes the bytes as they arrive.
+#define INPUTBUFFERLEN 128
 #define MAXCOMMANDLENGTH 12
 char inputBuffer[INPUTBUFFERLEN];  
 String inputString = "";                       // a string to hold incoming data
@@ -1578,10 +1576,10 @@ void statusLEDCheck() {
 /////////////////////////////////////////////////////////
       
 void serialEvent() {
-  while (Serial.available()) {                         // Loop through all incoming bytes
+  while (!stringComplete && Serial.available()) {      // DroidNet: stop at the terminator; the next line waits in the UART's RX ring for the next pass
     char inChar = (char)Serial.read();                 // Receive each byte as a character        
     if (inChar == '\r' || inChar == '\n') {            // if the incoming character is a carriage return (\r) or newline (\n), it denotes end of command
-      stringComplete = true;                           // Once done, set a flag so the main loop can do something about it. 
+      if (inputString.length() > 0) stringComplete = true;   // DroidNet: a blank line (the \n of \r\n) is not a command
     } 
     else if ((int)inputString.length() < INPUTBUFFERLEN) {   // DroidNet: flood guard — trailing bytes drop, never wrap (fork spec §5.1)
       inputString += inChar;                           // Add each Character to inputString

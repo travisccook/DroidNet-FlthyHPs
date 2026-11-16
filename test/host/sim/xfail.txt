@@ -1,6 +1,3 @@
-f1_back_to_back_lines
-f1_beheaded_tail_cannot_reach_the_servos
-f1_crlf_and_blank_lines
 f1_led_only_fuzz
 f2_idle_gives_the_leds_back
 f2_idle_moves_no_servo
@@ -25,9 +22,6 @@ l1_show_begin_takes_the_leds
 l3_pulse_over_the_stock_look
 l4_d_on_a_look_is_ignored
 q_reply_is_the_v13_line
-r11_burst_of_400_bytes_loses_no_line
-r11_burst_of_short_lines_loses_none
-r11_longest_v13_line_lands_whole
 s1_bpm_outside_30_to_300_is_ignored
 s2_pump_is_rate_limited_above_176_bpm
 s4_live_looks_are_170_ms_apart

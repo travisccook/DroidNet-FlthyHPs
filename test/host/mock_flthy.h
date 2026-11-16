@@ -24,10 +24,10 @@ typedef bool    boolean;
 #define HPCOUNT 3
 #define NEO_JEWEL_LEDS 7
 // Mirrors src/main.cpp's serial line buffer. The fork's '!' lines are parsed out of it and it
-// TRUNCATES SILENTLY, so a v1.2 scored line (base look + at=/am=/m= + the ae=/ac=/ad= accent)
-// that overruns it is a real, invisible bug. run.sh asserts this has not drifted from the
+// TRUNCATES SILENTLY, so a scored line (base look + at=/am=/m= + the ae=/ac=/ad= accent, and in
+// v1.3 an=/ap=: 102 characters at most) that overruns it is a real, invisible bug. run.sh asserts this has not drifted from the
 // firmware's value — the wire-budget guard only means something if the two agree.
-#define INPUTBUFFERLEN 96
+#define INPUTBUFFERLEN 128
 
 // ---- Arduino core stubs ----
 static unsigned long _mock_millis = 0;
