@@ -1,0 +1,32 @@
+# The host suite on every push, and the real ATmega2560 cross-compile.
+#
+# `host` runs every stage of test/host/run.sh that needs no microcontroller toolchain, including
+# stage 2b, which runs the real src/main.cpp on a fake Arduino core. The runner fails (it does not
+# skip) when no compiler can link ASan/UBSan, so a green run means the fuzz stages ran sanitized.
+#
+# `firmware` is stage 7: `pio run -e FlthyHPs`. REQUIRE_PIO=1 turns "PlatformIO is missing" into
+# a failure here, where on a developer's machine it is a reported skip. A successful link is not
+# a bench test.
+name: host-tests
+on: [push, pull_request]
+jobs:
+  host:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compilers
+        run: sudo apt-get update && sudo apt-get install -y clang g++
+      - name: Host stages
+        run: ONLY="1 1b 1c 2 2b 3 4 5 6" bash test/host/run.sh
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ hashFiles('platformio.ini') }}
+      - name: PlatformIO
+        run: pip install platformio
+      - name: Cross-compile the ATmega2560 image
+        run: REQUIRE_PIO=1 ONLY=7 bash test/host/run.sh

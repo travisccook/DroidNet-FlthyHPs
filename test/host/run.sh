@@ -3,42 +3,96 @@
 # bolted onto Ryan Sondgeroth's FlthyHPs firmware. Copyright (c) 2026 Travis Cook.
 # SPDX-License-Identifier: MIT
 #
-# Host checks for the Flthy HPs fork (stages 1-6 need no hardware and no toolchain; stage 7 is the real cross-compile):
-#   1. contract_core.h parser unit tests
-#      1b. wdp_announce_core.h (WDP device announce) unit tests, shared with the other two forks
-#      1c. wdp_fork.h, this fork's announce adapter and identity
-#   2. ContractFlthy.h firmware-layer type-check against a mock of the board API
-#   3. static source guards (the LED-only invariant, the serial wire budget, and no Serial write
-#      that could land inside a WDP announce)
-#   4. contract parser fuzz + differential (ASan/UBSan)
-#   5. native_ext.h (H<unit>B<level> brightness) parser unit tests
-#   6. native_ext.h fuzz + differential (ASan/UBSan; fork-local, not the shared fuzz_parsers.cpp)
-#   7. REAL cross-compile for the ATmega2560 (optional; needs PlatformIO)
-set -e
+# Host checks for the Flthy HPs fork (stages 1-6 need no hardware and no AVR toolchain; stage 7 is the real cross-compile):
+#   1.  contract_core.h parser unit tests
+#   1b. wdp_announce_core.h (WDP device announce) unit tests, shared with the other two forks
+#   1c. wdp_fork.h, this fork's announce adapter and identity
+#   2.  ContractFlthy.h firmware-layer type-check against a mock of the board API
+#   2b. whole-firmware simulation: the REAL src/main.cpp on a fake Arduino core (test/host/sim)
+#   3.  static source guards (the LED-only invariant, the serial wire budget, and no Serial write
+#       that could land inside a WDP announce)
+#   4.  contract parser fuzz + differential (ASan/UBSan)
+#   5.  native_ext.h (H<unit>B<level> brightness) parser unit tests
+#   6.  native_ext.h fuzz + differential (ASan/UBSan; fork-local, not the shared fuzz_parsers.cpp)
+#   7.  REAL cross-compile for the ATmega2560 (optional; needs PlatformIO)
+#
+# How it runs (the same shape as the RSeries fork's runner):
+#   * Any C++17 compiler: clang++ if present, else g++ (override with CXX=...).
+#   * The fuzz stages need ASan + UBSan. The first of $CXX, clang++, g++ that can BUILD AND RUN a
+#     sanitized binary here is used for them. If none can, the run FAILS (it does not quietly skip
+#     them); ALLOW_NO_SANITIZER=1 runs them unsanitized, with a warning.
+#   * Binaries go to a fresh temporary directory that is removed on exit.
+#   * ONLY="1 4" runs just those stage ids. The last lines list what ran and what was skipped.
+#   * Stage 7 is skipped without PlatformIO; REQUIRE_PIO=1 turns that into a failure.
+set -euo pipefail
 cd "$(dirname "$0")"
-echo "[1/7] contract_core parser unit tests"
-clang++ -std=c++17 -Wall -Wextra -O0 test_contract_core.cpp -o /tmp/flthy_contract_test
-/tmp/flthy_contract_test
-echo "[1b/7] wdp_announce_core WDP device announce unit tests"
+OUT="$(mktemp -d "${TMPDIR:-/tmp}/flthy-host.XXXXXX")"
+STAGE="start"
+trap 'rc=$?; rm -rf "$OUT"; [ $rc -eq 0 ] || echo "run.sh STOPPED in stage [$STAGE] (exit $rc): the later stages did NOT run."' EXIT
+
+CXX="${CXX:-$(command -v clang++ || command -v g++ || true)}"
+[ -n "$CXX" ] || { echo "FAIL: no C++ compiler found (clang++ or g++)"; exit 1; }
+SAN="-fsanitize=address,undefined -fno-sanitize-recover=all"
+san_ok() {   # can this compiler build AND run a sanitized binary here?
+  echo 'int main(){return 0;}' > "$OUT/san.cpp"
+  "$1" $SAN "$OUT/san.cpp" -o "$OUT/san" 2>/dev/null && "$OUT/san"
+}
+SANCXX=""
+for c in "$CXX" clang++ g++; do
+  if command -v "$c" >/dev/null 2>&1 && san_ok "$c"; then SANCXX="$c"; break; fi
+done
+if [ -z "$SANCXX" ] && [ "${ALLOW_NO_SANITIZER:-0}" != 1 ]; then
+  echo "FAIL: no compiler here can link ASan/UBSan, so the fuzz stages cannot run."
+  echo "      Install one (apt: libclang-rt-dev, or g++), or set ALLOW_NO_SANITIZER=1 to run them unsanitized."
+  exit 1
+fi
+if [ -z "$SANCXX" ]; then
+  echo "WARNING: fuzz stages run WITHOUT sanitizers (ALLOW_NO_SANITIZER=1)"; SANCXX="$CXX"; SAN=""
+fi
+echo "compiler: $CXX   sanitized stages: $SANCXX ${SAN:+(ASan+UBSan)}"
+
+RAN=""; SKIPPED=""
+want() { [ -z "${ONLY:-}" ] || case " $ONLY " in *" $1 "*) return 0;; *) return 1;; esac; }
+# stage <id> <title> <compiler> <flags and source...>: build into $OUT, run, record.
+stage() {
+  local id="$1" title="$2" cxx="$3"; shift 3
+  want "$id" || return 0
+  STAGE="$id"; echo "[$id] $title"
+  "$cxx" "$@" -o "$OUT/stage_$id"       # two lines on purpose: `a && b` would hide a failed build from set -e
+  "$OUT/stage_$id"
+  RAN="$RAN $id"
+}
+
+stage 1  "contract_core parser unit tests" "$CXX" -std=c++17 -Wall -Wextra -O0 test_contract_core.cpp
 # Shared byte-identically with the RSeries and PSI forks (src/wdp/wdp_announce_core.h and this test).
 # -std=c++11: avr-gcc builds the same header as gnu++11 here.
-clang++ -std=c++11 -Wall -Wextra -Werror -O0 test_wdp_announce_core.cpp -o /tmp/flthy_wdp_test
-/tmp/flthy_wdp_test
-echo "[1c/7] wdp_fork.h announce adapter + this fork's identity"
+stage 1b "wdp_announce_core WDP device announce unit tests" "$CXX" -std=c++11 -Wall -Wextra -Werror -O0 test_wdp_announce_core.cpp
 # Fork-local. Twice: with the longest fw scripts/wdp_fw.py makes (a 7-character commit + "-dirty",
 # 13 characters, which must still fit WDP_LINE_MAX), and with no WDP_FW at all (a build without the
 # script, e.g. the Arduino IDE), which must announce "unknown".
-clang++ -std=c++11 -Wall -Wextra -Werror -O0 -DWDP_FW='"abcdef0-dirty"' -DWDP_FW_EXPECT='"abcdef0-dirty"' \
-        test_wdp_fork.cpp -o /tmp/flthy_wdp_fork_test
-/tmp/flthy_wdp_fork_test
-clang++ -std=c++11 -Wall -Wextra -Werror -O0 -DWDP_FW_EXPECT='"unknown"' \
-        test_wdp_fork.cpp -o /tmp/flthy_wdp_fork_test
-/tmp/flthy_wdp_fork_test
-echo "[2/7] ContractFlthy.h firmware type-check"
-clang++ -std=c++17 -Wall -Wextra compile_contract.cpp -o /tmp/flthy_fw_syntax
-/tmp/flthy_fw_syntax
+if want 1c; then
+  STAGE="1c"; echo "[1c] wdp_fork.h announce adapter + this fork's identity"
+  # -Wno-unused-variable: the test includes mock_flthy.h for Serial and never names the mock's board
+  # globals, which g++ (not clang++) reports for a header's static variables.
+  "$CXX" -std=c++11 -Wall -Wextra -Werror -Wno-unused-variable -O0 -DWDP_FW='"abcdef0-dirty"' -DWDP_FW_EXPECT='"abcdef0-dirty"' \
+         test_wdp_fork.cpp -o "$OUT/stage_1c"
+  "$OUT/stage_1c"
+  "$CXX" -std=c++11 -Wall -Wextra -Werror -Wno-unused-variable -O0 -DWDP_FW_EXPECT='"unknown"' test_wdp_fork.cpp -o "$OUT/stage_1c"
+  "$OUT/stage_1c"
+  RAN="$RAN 1c"
+fi
+stage 2  "ContractFlthy.h firmware type-check" "$CXX" -std=c++17 -Wall -Wextra compile_contract.cpp
+# The firmware itself, not a mock of it: sim/ compiles the real src/main.cpp against a fake Arduino
+# core and runs every scenario in its own process. A scenario named in sim/xfail.txt records a known
+# defect and must FAIL; it leaves that file only when the change that fixes it lands.
+if want 2b; then
+  STAGE="2b"; echo "[2b] whole-firmware simulation (real main.cpp, fake Arduino core)"
+  CXX="$CXX" ./sim/run_sim.sh
+  RAN="$RAN 2b"
+fi
 
-echo "[3/7] static source guards"
+if want 3; then
+STAGE="3"; echo "[3] static source guards"
 # --- LED-ONLY INVARIANT (README §11) -------------------------------------------------
 # The '!' contract layer must never move a holoprojector SERVO. compile_contract.cpp has a
 # runtime tripwire for this, but that can only catch a servo touch on a path the guard
@@ -164,8 +218,9 @@ for spec in "../../src/main.cpp|^void loop[(]" "../../src/contract/ContractFlthy
   fi
 done
 echo "LED-only invariant (contract + native brightness) + wire budget (INPUTBUFFERLEN=$FW_BUF) + WDP writers OK"
+RAN="$RAN 3"
+fi
 
-echo "[4/7] parser fuzz + differential (ASan/UBSan, deterministic)"
 # The parsers are the one place this project eats bytes off a shared, noisy serial bus, and to
 # save 1,008 B of flash on the PSI they were hand-rolled instead of using strtol/strtoul. This
 # stage is the differential that keeps them honest: ~1.55M checks against an INDEPENDENT model
@@ -173,26 +228,19 @@ echo "[4/7] parser fuzz + differential (ASan/UBSan, deterministic)"
 # overflow -- which is the whole trap), plus hostile/whole-byte-range lines through
 # contractParse() under AddressSanitizer + UndefinedBehaviorSanitizer.
 # Fixed seed: deterministic and reproducible, not a slot machine.
-clang++ -std=c++17 -O1 -fsanitize=address,undefined -fno-sanitize-recover=all \
-        fuzz_parsers.cpp -o /tmp/flthyhps_fuzz
-/tmp/flthyhps_fuzz
-
-echo "[5/7] native_ext parser unit tests (H<unit>B<level> brightness)"
+stage 4  "parser fuzz + differential (deterministic)" "$SANCXX" -std=c++17 -O1 $SAN fuzz_parsers.cpp
 # The fork's one native command. nativeExtParse() is pure (no Arduino), so its whole accept/
 # reject table runs here. -Wconversion -Werror because the same code runs with a 16-bit int
 # on the ATmega2560, where a silent narrowing is a real bug.
-clang++ -std=c++17 -Wall -Wextra -Wconversion -Werror -O0 test_native_ext.cpp -o /tmp/flthy_native_ext_test
-/tmp/flthy_native_ext_test
-
-echo "[6/7] native_ext fuzz + differential (ASan/UBSan, deterministic)"
+stage 5  "native_ext parser unit tests (H<unit>B<level> brightness)" "$CXX" -std=c++17 -Wall -Wextra -Wconversion -Werror -O0 test_native_ext.cpp
 # Fork-local: every line through nativeExtParse() with piped = false and true, against an
 # independent model, each in a heap buffer of exactly strlen()+1 bytes. Fixed seed.
 # (test/host/fuzz_parsers.cpp is shared byte-identically across three forks; it is not touched.)
-clang++ -std=c++17 -Wall -Wextra -O1 -fsanitize=address,undefined -fno-sanitize-recover=all \
-        fuzz_native_ext.cpp -o /tmp/flthy_native_ext_fuzz
-/tmp/flthy_native_ext_fuzz
+# -Wno-comment: g++ warns about a backslash at the end of a // comment in that file's header.
+stage 6  "native_ext fuzz + differential (deterministic)" "$SANCXX" -std=c++17 -Wall -Wextra -Wno-comment -O1 $SAN fuzz_native_ext.cpp
 
-echo "[7/7] REAL cross-compile (ATmega2560 (Arduino Mega ADK)) -- optional"
+if want 7; then
+STAGE="7"; echo "[7] REAL cross-compile (ATmega2560 (Arduino Mega ADK)) -- optional"
 # THIS is the stage that makes "it compiles" a claim about the FIRMWARE rather than a claim
 # about our mock. Stages 1-3 are host checks: they prove the contract logic and they pin the
 # board API against a HAND-WRITTEN MOCK -- and a mock is only ever as honest as its author.
@@ -210,15 +258,27 @@ echo "[7/7] REAL cross-compile (ATmega2560 (Arduino Mega ADK)) -- optional"
 # stages 1-3 still run and still mean something -- just strictly less than they appear to.
 PIO="${PIO:-$HOME/.platformio/penv/bin/pio}"
 [ -x "$PIO" ] || PIO="$(command -v pio 2>/dev/null || true)"
-if [ -z "$PIO" ] || [ ! -x "$PIO" ]; then
+if [ -n "$PIO" ] && [ -x "$PIO" ]; then
+  echo "using $PIO"
+  ( cd ../.. && "$PIO" run -e FlthyHPs )
+  echo "cross-compiles for the real MCU (ATmega2560 (Arduino Mega ADK)) OK"
+  echo "    (a successful LINK is not a bench test: this firmware has never been flashed.)"
+  RAN="$RAN 7"
+elif [ "${REQUIRE_PIO:-0}" = 1 ]; then
+  echo "FAIL: REQUIRE_PIO=1 and PlatformIO was not found (pip install platformio, or PIO=/path/to/pio)"
+  exit 1
+else
   echo "SKIP: PlatformIO not found, so NOTHING here was compiled for the real MCU."
-  echo "      Stages 1-3 passed, but they only type-check against our mock."
+  echo "      Stages 1-6 passed, but only stage 2b runs the firmware's own code, and on a host."
   echo "      Install it and re-run for the real check:  pip install platformio"
   echo "      Or point this at an existing install:      PIO=/path/to/pio $0"
-  exit 0
+  SKIPPED="$SKIPPED 7(no-PlatformIO)"
 fi
-echo "using $PIO"
-( cd ../.. && "$PIO" run -e FlthyHPs )
-echo "cross-compiles for the real MCU (ATmega2560 (Arduino Mega ADK)) OK"
-echo "    (a successful LINK is not a bench test: this firmware has never been flashed.)"
+fi
 
+echo
+echo "stages run:$RAN"
+echo "stages skipped:${SKIPPED:- none}"
+if [ -n "$SKIPPED" ]; then
+  echo "NOTE: a skipped stage proved nothing. Stage 7 is the only real cross-compile."
+fi
