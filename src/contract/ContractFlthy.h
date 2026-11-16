@@ -56,6 +56,11 @@
 static const uint8_t  FLTHY_SAFE_MAX_BRIGHT = 200;   // conservative jewel clamp (fork spec §11)
 static const uint32_t FLTHY_STROBE_MIN_MS   = 170;   // >=170 ms/state => <= ~3 Hz (fork spec §11)
 static const uint8_t  FLTHY_FX_BASE         = 100;   // LEDFunction = 100 + effectId (101..115)
+#ifdef NEO_JEWEL_RGBW
+static const uint8_t  FLTHY_PX_BYTES        = 4;     // raw bytes a pixel
+#else
+static const uint8_t  FLTHY_PX_BYTES        = 3;
+#endif
 static const int      FLTHY_SCORE_CAP       = 8;     // per-unit Phase-2 sections
 
 // contract effectId -> LEDFunction render code (CE_OFF..CE_TWINKLE map to 101..115)
@@ -107,6 +112,10 @@ struct FlthyUnit {
   // A native look this layer started (i=native:<n>, allow-listed). No accent may replace it.
   bool           nativeLook   = false;
   byte           nativeFn     = 255;
+  // L3: a verb P with no show armed overlays the STOCK look and gives it back afterwards.
+  bool           overNative   = false;
+  byte           savedFn      = 255;              // the stock LEDFunction under the overlay
+  uint8_t        savedPx[NEO_JEWEL_LEDS * 4];     // its frame, raw (RGB uses 21 of the 28 bytes)
 };
 
 static FlthyUnit  gUnit[HPCOUNT];
@@ -390,6 +399,23 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB
   }
 }
 
+// Overlay expiry. Over a contract look the base repaints; over the STOCK look (L3) the stock
+// function and its frame come back exactly as they were.
+static inline void _expireOverlay(uint8_t hp, uint32_t now) {
+  FlthyUnit& u = gUnit[hp];
+  if (!u.pulseActive || (uint32_t)(now - u.pulseStartMs) < u.pulseDurMs) return;
+  u.pulseActive   = false;
+  u.lastEnvBright = -1;                                  // force a base repaint
+  if (u.overNative) {
+    u.overNative = false;
+    if (_slotIsOurs(hp)) {                               // still ours: nothing native took it meanwhile
+      LED_command[hp].LEDFunction = u.savedFn;
+      memcpy(neoStrips[hp].getPixels(), u.savedPx, (size_t)NEO_JEWEL_LEDS * FLTHY_PX_BYTES);
+      neoStrips[hp].show();
+    }
+  }
+}
+
 // Called from the LED render switch (cases 101..115) once per loop for unit hp.
 inline void contractRenderHP(uint8_t hp) {
   FlthyUnit& u = gUnit[hp];
@@ -410,18 +436,16 @@ inline void contractRenderHP(uint8_t hp) {
   //   _fillShow(hp, _scale(u.pulseColor, u.pulseBright));
   // The overlay rides the unit's brightness CEILING un-pumped (an accent must not dip with
   // the envelope it exists to punctuate) and starts its own timeline at pulseStartMs.
+  _expireOverlay(hp, now);
+  if (!_slotIsOurs(hp)) return;                          // the overlay just gave the stock look back
   if (u.pulseActive) {
-    if ((uint32_t)(now - u.pulseStartMs) < u.pulseDurMs) {
-      u.lastEnvBright = -1;              // the MEMOISING branches (off/meter/solid) skip a
+    u.lastEnvBright = -1;                // the MEMOISING branches (off/meter/solid) skip a
                                          // repaint when the level is unchanged — without this
                                          // the accent would never actually be drawn over a
                                          // same-level base look
-      _renderLook(hp, (u.pulseFx == CE_NONE) ? CE_SOLID : u.pulseFx,
-                  u.pulseColor, u.pulseBright, u.pulseStartMs);
-      return;
-    }
-    u.pulseActive   = false;             // accent done -> restore the base look next
-    u.lastEnvBright = -1;                // force a base repaint
+    _renderLook(hp, (u.pulseFx == CE_NONE) ? CE_SOLID : u.pulseFx,
+                u.pulseColor, u.pulseBright, u.pulseStartMs);
+    return;
   }
 
   _renderLook(hp, u.effect, u.color, _envBright(hp), u.startMs);
@@ -465,8 +489,15 @@ static inline bool _fireAccent(uint8_t hp, ContractEffect fx, const ContractRGB&
   u.pulseLastMs  = now;
   u.pulseActive  = true;
   u.lastEnvBright = -1;
-  if (LED_command[hp].LEDFunction < 101 || LED_command[hp].LEDFunction > FLTHY_FX_MAX)
-    LED_command[hp].LEDFunction = _fxCode(u.effect);  // ensure a contract render slot runs
+  if (!_slotIsOurs(hp)) {
+    if (!gInterlocked[hp] && !u.overNative) {          // L3: no show armed -> overlay the STOCK look
+      u.overNative = true;
+      u.savedFn    = LED_command[hp].LEDFunction;
+      memcpy(u.savedPx, neoStrips[hp].getPixels(), (size_t)NEO_JEWEL_LEDS * FLTHY_PX_BYTES);
+    }
+    u.effect = CE_OFF;                                  // nothing of ours was running underneath
+    LED_command[hp].LEDFunction = _fxCode(CE_OFF);      // ensure a contract render slot runs
+  }
   return true;
 }
 
@@ -486,6 +517,7 @@ static inline void _applyLook(uint8_t hp, ContractEffect eff, int nativeCode,
   u.durMs       = durMs;
   u.startMs     = millis();
   u.pulseActive = false;
+  u.overNative  = false;                                // a look replaces whatever an overlay sat on
   u.lastEnvBright = -1;                                 // force first repaint
   LED_command[hp].LEDHalt = -1;                         // a stock |<n> or auto-twitch timer still
                                                         // running would flush this look to black
@@ -549,6 +581,7 @@ static inline void _unitReset(uint8_t hp) {
   FlthyUnit& u = gUnit[hp];
   scoreClear(gScoreCount[hp], gScoreActive[hp]);
   u.active = false;  u.pulseActive = false;  u.nativeLook = false;
+  u.overNative = false;
   u.effect = CE_SOLID;  u.color = ContractRGB{0, 0, 0};  u.speed = 128;  u.brightBase = FLTHY_SAFE_MAX_BRIGHT;
   u.beatMod = 0;  u.accentMode = 0;  u.durMs = 0;  u.level = 0;
   u.sectionStart = 0;  u.sectionEnd = 0;
@@ -716,11 +749,12 @@ inline void contractBeatTick() {
   uint32_t now = millis();
   for (uint8_t hp = 0; hp < HPCOUNT; hp++) {
     FlthyUnit& u = gUnit[hp];
+    _expireOverlay(hp, now);
     // A stock command, or its |<n> timer, took the render slot: the jewel is the stock
     // firmware's again. Stop holding the unit (outside a show its auto twitch would never
     // come back) and re-arm the timers so letting go moves nothing in this pass.
     if ((u.active || u.pulseActive) && !_slotIsOurs(hp)) {
-      u.active = false;  u.pulseActive = false;
+      u.active = false;  u.pulseActive = false;  u.overNative = false;
       if (!gInterlocked[hp]) _rearmTwitch(hp);
     }
     if (u.nativeLook && LED_command[hp].LEDFunction != u.nativeFn) u.nativeLook = false;
