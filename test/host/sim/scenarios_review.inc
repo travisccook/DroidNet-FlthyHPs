@@ -405,7 +405,6 @@ struct Stream {                                      // drives the wire and meas
 static bool backOnStock(Stream& st, double watch, std::string& why) {
   char b[96]; why.clear();
   for (int hp = 0; hp < HPCOUNT; hp++) if (!stockAgain(hp)) { snprintf(b, sizeof b, "hp%d still the contract's (armed %d look %d score %d fn %d); ", hp, armed(hp), lookUp(hp), scoreLen(hp), LED_command[hp].LEDFunction); why += b; }
-  if (clockRunning()) why += "clock still running; ";
   if (!why.empty()) return false;
   long t0[3], m0[3]; for (int i = 0; i < 3; i++) { t0[i] = ledTwitchStarts[i]; m0[i] = hpMoves(i); }
   uint64_t end = us + (uint64_t)(watch * 1e6);

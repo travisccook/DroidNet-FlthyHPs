@@ -102,6 +102,13 @@ struct FlthyUnit {
 static FlthyUnit  gUnit[HPCOUNT];
 static BeatClock  gBeat;                  // ONE clock for the three units
 static uint32_t   gLastLineMs = 0;        // L2: millis() of the last well-formed line for this board
+// L2, board-wide: the wd= of the last watched M:v=show. A unit that LEFT that show (the operator's
+// button, a failed verb V) has no watchdog of its own any more, but the host that armed it is the
+// same host, and its next wildcard line can put a look or a score on that unit again. When that
+// host goes silent, every unit holding anything of the contract's is idled, in a show or not.
+// Cleared by the expiry, by M:v=idle once no unit is left in a show (the host ended it itself), and
+// by an M:v=show with no wd= for the whole board (a show nobody watches, such as a WCB macro).
+static uint8_t    gBoardWd = 0;
 // The score table is the fork's (sized by its cap); the cursor and the count are in s.
 static ScoreEntry gScore[HPCOUNT][FLTHY_SCORE_CAP];
 
@@ -640,6 +647,9 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p, uint16_t li
       // scored (a dropped scored line is not held, so verb V reports the load bad).
       if (pr.hasEffect && pr.effect == CE_NATIVE && !nativeAllowedFlthy(pr.nativeCode)) return;
       if (pr.hasAt) {                                  // a scored look: store it, do not apply it now
+        // Section 7: a unit whose load failed verb V drops every scored line until the next M:v=show,
+        // so a late or retried line cannot start a partial show. (CA1.2 may move this into the core.)
+        if (s.loadOk == 2) return;
         scoreAccept(s, gScore[hp], FLTHY_SCORE_CAP, _entryFrom(pr), lineCrc);   // a full table marks the load bad
         s.lastAccentBeat = accentEdgeAfterSeed(gBeat, now);   // C1 (BEAT_NONE while no clock runs)
         return;                                        // the jewel is NOT taken at load: the tick does that on the beat
@@ -738,8 +748,14 @@ inline void applyContract(const ParsedContract& p, uint16_t lineCrc = 0) {
     }
     return;
   }
+  if (p.verb == CV_MODE && p.params.mode == 's') {      // the board-wide watchdog follows the show lines
+    if (p.params.hasWd && p.params.wd) gBoardWd = p.params.wd;
+    else if (all) gBoardWd = 0;
+  }
   for (uint8_t hp = 0; hp < HPCOUNT; hp++)
     if (to[hp]) applyContractToUnit(hp, p, lineCrc);
+  if (p.verb == CV_MODE && p.params.mode == 'i' &&
+      !gUnit[0].s.inShow && !gUnit[1].s.inShow && !gUnit[2].s.inShow) gBoardWd = 0;   // the host ended the show itself
 }
 
 // ------------------------------ beat tick + score switch + board-side accent ---
@@ -764,6 +780,17 @@ inline void contractBeatTick() {
     if (s.base == CB_NATIVE && !_nativeIsUp(hp)) s.base = s.inShow ? CB_DARK : CB_NONE;
     ContractLookPatch lp;
     if (liveLookDue(s, now, lp)) _applyPatch(hp, lp, now);   // S4: a held live look's window ended
+  }
+  // L2, board-wide (see gBoardWd): the host that armed a watched show has gone silent. Every unit
+  // with anything of the contract's on it is idled, except one in a show armed with no watchdog.
+  if (gBoardWd && (uint32_t)(now - gLastLineMs) >= (uint32_t)gBoardWd * 1000UL) {
+    gBoardWd = 0;
+    for (uint8_t hp = 0; hp < HPCOUNT; hp++) {
+      const ContractUnitState& s = gUnit[hp].s;
+      if (s.inShow && s.wdSec == 0) continue;
+      if (s.inShow || s.scoreLen != 0 || s.base != CB_NONE || s.pulseActive || s.holdPending || _slotIsOurs(hp))
+        _boundary(hp, 'i', 0);
+    }
   }
   if (!gBeat.running) return;                          // no clock (or held, C6): the score does not move
   const BeatPos bp = beatPosAt(gBeat, now);
