@@ -382,7 +382,7 @@ struct Photo {
   Observer narrow[4] = {{3, 15}, {40, 52}, {45, 60}, {80, 95}};   // ...and bands about a step wide (S9's tenth of the ceiling)
   Observer lum[3] = {{10, 50}, {19, 75}, {4, 31}};   // (f) Rec.709 luminance, the gate's own integer formula per LED
   ColourObs colour[5] = {{10, 50}, {19, 75}, {4, 31}, {3, 15}, {45, 60}};
-  uint64_t colourClosestUs = ~0ULL; long colourChanges = 0;
+  uint64_t colourClosestUs = ~0ULL, colourBadAt = 0; long colourChanges = 0;
   int peak = 0, overCeiling = 0, prevS = 0;
   bool strict = false; uint64_t stockLineAt = 0; bool stockLineSeen = false;   // STRICT mode, and when the board last handled a stock command
   bool stockNativeWas = false, edgeOnset = false, edgeColour = false;   // S10: a runs-as-stock native look the contract started is up
@@ -429,7 +429,8 @@ struct Photo {
     for (auto& o : obs) o.see(S, FS, cOnset, us);
     for (auto& o : narrow) o.see(S, FS, cOnset, us);
     for (auto& o : lum) o.see((int)sy, FS, cOnset, us);
-    for (auto& c : colour) c.see(S, FS, sr, sg, sb, cColour, us, colourClosestUs, colourChanges);
+    { const uint64_t was = colourClosestUs; for (auto& c : colour) c.see(S, FS, sr, sg, sb, cColour, us, colourClosestUs, colourChanges);
+      if (colourClosestUs < was && colourClosestUs < 165000ULL) colourBadAt = us; }
     size_t n1 = 0; every([&](Observer& o) { n1 += o.onsets.size(); });
     if (n1 != n0) { edgeOnset = false; tailOnset = false; }
     if (colourChanges != c0) { edgeColour = false; tailColour = false; }
@@ -579,8 +580,43 @@ static const char* G_STOCK[] = {"F0055", "A0059|3", "R0071", "A006", "T001", "A0
 // The stock commands whose look holds still (no flicker, no strobe) and that leave the LED auto twitch off.
 static const char* G_CALM[] = {"F0055", "A0059|3", "A0055|1", "R006|2", "A096", "A098", "S4", "S7",
                                "F1013", "A104", "A105|2", "A198", "A199", "T1042", "X0045|1"};
+// One latched frame as the core's gates measure it, for the REPLAY (S9_REPLAY=1): the core's own
+// contractFieldAsk()/contractFieldTell() run again, from a fresh state, on what the jewel showed.
+struct FrameRec { uint32_t ms; uint8_t level, lum, ceil; bool ours; uint32_t sig; byte fn; uint8_t eff; bool pulse; uint8_t chroma[3]; };
 struct Stream {                                      // drives the wire and measures the three jewels
   Photo ph[3] = {Photo(0), Photo(1), Photo(2)};
+  std::vector<FrameRec> rec[3]; uint8_t lastBytes[3][21]; bool recOn = getenv("S9_REPLAY") != 0;
+  void record() {
+    for (int hp = 0; hp < 3; hp++) {
+      const uint8_t* p = neoStrips[hp].shown;
+      if (!rec[hp].empty() && !memcmp(p, lastBytes[hp], 21)) continue;
+      memcpy(lastBytes[hp], p, 21);
+      int sum = 0, sumY = 0; long c[3] = {0, 0, 0};
+      for (int i = 0; i < 7; i++) { const int g = p[i * 3], r = p[i * 3 + 1], b = p[i * 3 + 2]; sum += std::max(r, std::max(g, b)); sumY += (54 * r + 183 * g + 19 * b) >> 8; c[0] += r; c[1] += g; c[2] += b; }
+      const long top = std::max(c[0], std::max(c[1], c[2]));
+      FrameRec f = {(uint32_t)millis(), (uint8_t)(sum / 7), (uint8_t)(sumY / 7), gUnit[hp].s.ceil,
+                    simHasLeds(hp) || (gLatch[hp].touched && millis() - gLatch[hp].touchMs < 340), gUnit[hp].s.lookSig,
+                    LED_command[hp].LEDFunction, (uint8_t)gUnit[hp].s.effect, gUnit[hp].s.pulseActive,
+                    {(uint8_t)(top ? c[0] * 255 / top : 0), (uint8_t)(top ? c[1] * 255 / top : 0), (uint8_t)(top ? c[2] * 255 / top : 0)}};
+      rec[hp].push_back(f);
+    }
+  }
+  // What the core's field gate says of the frames a jewel showed between two times: how many of the
+  // layer's own frames it would have held (asked afresh, from a state told every frame before).
+  void replay(int hp, uint64_t fromUs, uint64_t toUs) const {
+    ContractUnitState rs; int held = 0, shown = 0; uint32_t first = 0;
+    printf("    replay hp%d %.0f..%.0f ms:", hp, fromUs / 1000.0, toUs / 1000.0);
+    for (const FrameRec& f : rec[hp]) {
+      rs.ceil = f.ceil;
+      const bool in = (uint64_t)f.ms * 1000 + 4000 >= fromUs && (uint64_t)f.ms * 1000 <= toUs + 4000;
+      if (f.ours && contractFieldAsk(rs, f.level, f.lum, f.ms) != 255) { if (in) { if (!held) first = f.ms; held++; } }
+      contractFieldTell(rs, f.level, f.lum, f.ms);
+      if (in && shown++ < 12) printf(" [%u L%d Y%d %s fn%d e%d%s sig%06lx c%02x%02x%02x]", f.ms, f.level, f.lum, f.ours ? "ours" : "stock", f.fn, f.eff, f.pulse ? " P" : "",
+                                     (unsigned long)(f.sig & 0xFFFFFF) ^ ((unsigned long)(f.sig >> 24) << 20), f.chroma[0], f.chroma[1], f.chroma[2]);
+    }
+    printf("\n    (the layer's own state now: ceil %d, strip %d, ride %d/%d; the observer's ceiling %d)", gUnit[hp].s.ceil, neoStrips[hp].getBrightness(), gUnit[hp].ride, gUnit[hp].rideWant, ph[hp].ceil);
+    printf("\n    -> the core's gate, replayed on these frames, would have held %d of the layer's (first at %u ms): %s\n", held, first, held ? "LAYER" : "ORACLE");
+  }
   uint64_t lo = 1000, hi = 4000; bool strict = false;
   void setStrict() { strict = true; for (auto& p : ph) p.strict = true; for (int i = 0; i < HPCOUNT; i++) enableTwitchLED[i] = 0; }
   void step() {
@@ -589,6 +625,7 @@ struct Stream {                                      // drives the wire and meas
     pass(rnd(lo, hi));
     if (stockLine) for (auto& p : ph) { p.stockLineAt = us; p.stockLineSeen = true; }
     for (auto& p : ph) p.sample();
+    if (recOn) record();
   }
   void until(uint64_t t) { while (us < t) step(); }
   void settle() { while (!wireIdle()) step(); }
@@ -691,6 +728,12 @@ SCENARIO(s9_property_hostile_streams) {
         printf("  seed %2d (%s, %s): %d onsets/s, %d frames over the ceiling, LED-only %ld, hold %ld%s%s\n", seed, ending == 0 ? "idle" : ending == 1 ? "host dies" : "button", st.strict ? "strict" : "attributed",
                n, st.overCeiling(), ledOnlyViolations, holdViolations, stock ? "" : ", NOT back on stock: ", why.c_str());
       fflush(stdout);
+      if (brk && st.recOn) for (auto& p : st.ph) {
+        p.every([&](Observer& o) { for (size_t i = 1; i < o.onsets.size(); i++) if (o.onsets[i] - o.onsets[i - 1] < 334000ULL) {
+          printf("    hp%d observer %s%d/%d: onsets at %.0f and %.0f ms\n", p.hp, (&o >= p.lum && &o < p.lum + 3) ? "lum " : "", o.darkPct, o.litPct, o.onsets[i - 1] / 1000.0, o.onsets[i] / 1000.0);
+          st.replay(p.hp, o.onsets[i - 1] - 400000, o.onsets[i]); } });
+        if (p.colourClosestUs < 165000ULL) { printf("    hp%d colour changes %.0f ms apart, the second at %.0f ms\n", p.hp, p.colourClosestUs / 1000.0, p.colourBadAt / 1000.0); st.replay(p.hp, p.colourBadAt - 300000, p.colourBadAt); }
+      }
       if (brk) printf("      closest two onsets %.0f ms, closest two changes of colour %.0f ms\n", st.closestOnsetsMs() > 1e9 ? -1.0 : st.closestOnsetsMs(), st.closestColourMs() > 1e9 ? -1.0 : st.closestColourMs());
       fflush(stdout);
       _exit((brk || st.overCeiling() || !stock || ledOnlyViolations || holdViolations) ? std::min(n > 3 ? n : 99, 120) : 0);
@@ -800,7 +843,7 @@ static double heldPct(const char* setup, uint64_t lo, uint64_t hi, double secs =
 SCENARIO(gate_held_frames_table) {
   const char* LOOKS[] = {"solid", "flash", "pulse", "rainbow", "scan", "sparkle", "meter", "comet", "chase", "wipe", "gradient", "colorcycle", "twinkle"};
   const int SPEEDS[] = {0, 128, 255};
-  double worstQuiet = 0, worstSparkle = 0, worstTwinkle = 0;
+  double worstQuiet = 0, worstTwinkle = 0;
   printf("  %% of passes with a frame waiting at the latch (passes 1-4 ms | passes 10-15 ms), white, at s=0 / s=128 / s=255\n");
   for (const char* look : LOOKS) {
     printf("  %-11s", look);
@@ -810,8 +853,7 @@ SCENARIO(gate_held_frames_table) {
         std::string setup = l; if (!strcmp(look, "meter")) setup += "!HFL:v=200\r";
         const double p = pass ? heldPct(setup.c_str(), 10000, 15000) : heldPct(setup.c_str(), 1000, 4000);
         printf(" %5.1f", p);
-        if (!strcmp(look, "sparkle")) worstSparkle = std::max(worstSparkle, p);
-        else if (!strcmp(look, "twinkle")) worstTwinkle = std::max(worstTwinkle, p);
+        if (!strcmp(look, "twinkle")) worstTwinkle = std::max(worstTwinkle, p);
         else worstQuiet = std::max(worstQuiet, p);
       }
       printf(pass ? "\n" : "  |");
@@ -825,12 +867,69 @@ SCENARIO(gate_held_frames_table) {
   }
   const double leia = heldPct("!HFA:i=native:1\r", 1000, 4000), bow = heldPct("!HFA:i=native:6\r", 1000, 4000);
   printf("  native:1 Leia (gated): %5.1f     native:6 rainbow (runs as stock): %5.1f\n", leia, bow);
-  printf("  worst of the eleven other looks: %.1f %%; twinkle: %.1f %%; sparkle: %.1f %%; the beat pump: %.1f %%\n", worstQuiet, worstTwinkle, worstSparkle, worstPump);
-  CHECK(worstQuiet == 0.0);  CHECK(worstPump == 0.0);  CHECK(bow == 0.0);   // never touched
+  printf("  worst of the twelve other looks: %.1f %%; twinkle: %.1f %%; the beat pump: %.1f %%\n", worstQuiet, worstTwinkle, worstPump);
+  CHECK(worstQuiet == 0.0);  CHECK(worstPump == 0.0);  CHECK(bow == 0.0);   // never touched, sparkle included:
+  // it was held on 16 to 37 % of passes until it was redrawn with a constant number of lit pixels
   CHECK(worstTwinkle <= 2.0);                        // at s=255 only, under 1 %
-  // KNOWN, and not hidden: on seven pixels SPARKLE re-rolls enough of the field at once that the gate
-  // holds it often (about 1 % of passes at s=0, a sixth at s=128, over a third at s=255): it runs
-  // visibly calmer than drawn. The bound only keeps it from getting worse unnoticed.
-  CHECK(worstSparkle <= 45.0);
   CHECK(leia > 5.0);                                 // a GATED native look is held, by design (S10)
+}
+
+
+// ---- Sparkle, redrawn for seven pixels: a constant number lit, one moving at a time ---------------
+SCENARIO(sparkle_keeps_a_constant_number_of_pixels_lit) {
+  for (int s : {0, 64, 128, 192, 255}) {
+    int bad = trial([s] {
+      run(6); for (int i = 0; i < HPCOUNT; i++) enableTwitchLED[i] = 0;
+      line("!**M:v=show\r"); char l[64]; snprintf(l, sizeof l, "!HFA:i=sparkle,c=ffffff,s=%d\r", s); line(l, 1.0);
+      const int want = 2 + (s >> 6); long moves = 0, held = 0; uint8_t prev[21]; memcpy(prev, neoStrips[0].shown, 21); std::set<int> seen;
+      for (int k = 0; k < 20000; k++) {
+        pass(1000); held += gLatch[0].pending; int lit = 0, changed = 0;
+        for (int px = 0; px < 7; px++) { RGB3 c = latched(0, px); if (c.r) { lit++; seen.insert(px); CHECK(c.r == c.g && c.g == c.b); }
+          if (memcmp(prev + px * 3, neoStrips[0].shown + px * 3, 3)) changed++; }
+        if (lit != want) { printf("  s=%d: %d pixels lit, want %d\n", s, lit, want); failures++; break; }
+        if (changed) { moves++; if (changed != 2) { printf("  s=%d: %d pixels changed in one step, want 2 (one off, one on)\n", s, changed); failures++; break; } }
+        memcpy(prev, neoStrips[0].shown, 21);
+      }
+      const double stepMs = 150.0 - s * 110.0 / 255.0;
+      printf("  s=%3d: %d of 7 lit at every frame, %ld moves in 20 s (one every %.0f ms asked), every pixel used: %s, frames held: %ld\n", s, want, moves, stepMs, seen.size() == 7 ? "yes" : "NO", held);
+      CHECK(moves > 20000 / (stepMs + 6) && moves <= 20000 / stepMs + 1);  CHECK_EQ((int)seen.size(), 7);  CHECK_EQ(held, 0);
+    });
+    CHECK_EQ(bad, 0);
+  }
+}
+
+// ---- The latch measures finely enough for S9's tenth at a low owner level --------------------------
+// At owner level 100 a tenth is 11 levels, at 40 it is 5, at 20 it is 3. Verb B swings a white field by
+// just over a step (step + 2 levels) every 25 ms: the swing must be seen as an onset and held to three
+// a second at every level. A swing of one level less than a step is texture and passes.
+SCENARIO(s9_gate_resolves_a_tenth_at_owner_levels_100_40_20) {
+  for (int level : {100, 40, 20}) {
+    int bad = trial([level] {
+      run(6); for (int i = 0; i < HPCOUNT; i++) enableTwitchLED[i] = 0;
+      char l[32]; snprintf(l, sizeof l, "HFB%03d\r", level); line(l, 0.5);
+      line("!**M:v=show\r"); line("!HFA:i=solid,c=ffffff\r", 1.0);
+      const int step = level < 10 ? 2 : level / 10 + 1;
+      CHECK_EQ(contractFieldStep(gUnit[0].s.ceil), step);  CHECK_EQ(latched(0).r, fullScale(level));
+      auto rideFor = [&](int levels) { for (int r = 1; r < 256; r++) if (fullScale(contractLevel((uint8_t)level, (uint8_t)r)) >= levels) return r; return 255; };
+      const int big = rideFor(step + 2), small = rideFor(step - 1);
+      // an observer whose two lines are exactly a step apart, at the bottom of the range
+      Observer o{0, 0}; o.lit = true; long onsets = 0; uint64_t closest = ~0ULL, lastOn = 0; int peak = 0;   // the white look is up
+      char up[24], dn[] = "!HFB:b=0\r"; snprintf(up, sizeof up, "!HFB:b=%d\r", big);
+      for (int t = 0; t < 8000; t++) {
+        if (t % 25 == 0) say((t / 25) % 2 ? dn : up);
+        pass(1000); const int lv = latched(0).r; if (t > 100) peak = std::max(peak, lv);
+        if (!o.lit && lv >= step) { o.lit = true; onsets++; if (lastOn) closest = std::min(closest, us - lastOn); lastOn = us; } else if (o.lit && lv == 0) o.lit = false;
+      }
+      printf("  owner level %3d: step %2d levels; B 0 / %d (a swing of %d levels) every 25 ms: %ld onsets in 8 s, the closest two %.0f ms apart\n",
+             level, step, big, peak, onsets, closest / 1000.0);
+      CHECK(peak >= step + 2 && peak <= step + 3);  CHECK(onsets >= 15 && onsets <= 25);  CHECK(closest >= 334000ULL);
+      // one level under a step is texture: every swing passes, 20 a second
+      line("!HFB:b=0\r", 1.0); snprintf(up, sizeof up, "!HFB:b=%d\r", small); long swings = 0; bool hi = false;
+      for (int t = 0; t < 4000; t++) { if (t % 25 == 0) say((t / 25) % 2 ? dn : up); pass(1000); const int lv = latched(0).r;
+        if (!hi && lv >= step - 1 && lv > 0) { hi = true; swings++; } else if (hi && lv == 0) hi = false; }
+      printf("                   B 0 / %d (%d levels, under a step): %ld swings in 4 s, none held\n", small, step - 1, swings);
+      if (step - 1 >= 1) CHECK(swings >= 70);
+    });
+    CHECK_EQ(bad, 0);
+  }
 }

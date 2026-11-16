@@ -531,15 +531,34 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB
       break;
     }
 
-    case CE_SPARKLE: {                                 // re-roll per-px brightness/off, keep hue
-      uint32_t step = (uint32_t)map((long)u.s.speed, 0, 255, 150, 40);
-      if ((uint32_t)(now - u.frameMs) > step) {
+    case CE_SPARKLE: {                                 // a fixed number of pixels lit; ONE moves at a time
+      // Redrawn for seven pixels. Re-rolling every pixel's brightness swung the whole field by more
+      // than a tenth of the ceiling most frames, and the S9 gate then held over a third of them.
+      // Now the count of lit pixels is constant (s picks it: 2, 3, 4 or 5) and all are at the same
+      // level, so the field's level does not move at all; what moves is where the light is, which
+      // is the look. s also picks how often a pixel moves (every 150 ms down to 40 ms).
+      const uint8_t want = (uint8_t)(2 + (u.s.speed >> 6));
+      const uint32_t step = (uint32_t)map((long)u.s.speed, 0, 255, 150, 40);
+      uint8_t lit = 0;
+      for (uint8_t i = 0; i < NEO_JEWEL_LEDS; i++) if (u.frame & (1u << i)) lit++;
+      bool repaint = u.lastEnvBright != (int)envB;
+      if (lit != want) {                               // the look has just started: place the lit pixels
+        u.frame = 0;
+        for (lit = 0; lit < want; ) { const uint8_t p = (uint8_t)random(0, NEO_JEWEL_LEDS); if (!(u.frame & (1u << p))) { u.frame |= (uint8_t)(1u << p); lit++; } }
+        u.frameMs = now; repaint = true;
+      } else if ((uint32_t)(now - u.frameMs) > step) { // move one: a lit pixel goes dark, a dark one lights
         u.frameMs = now;
-        for (uint16_t i = 0; i < NEO_JEWEL_LEDS; i++) {
-          long roll = random(0, 4);                    // 1/4 dark, else varied brightness
-          uint8_t b = (roll == 0) ? 0 : (uint8_t)((uint16_t)envB * (uint16_t)random(96, 256) / 255);
-          neoStrips[hp].setPixelColor(i, _scale(color, b));
+        uint8_t offPick = (uint8_t)random(0, want), onPick = (uint8_t)random(0, NEO_JEWEL_LEDS - want), offIdx = 0, onIdx = 0;
+        for (uint8_t i = 0; i < NEO_JEWEL_LEDS; i++) {   // the offPick-th lit pixel and the onPick-th dark one
+          if (u.frame & (1u << i)) { if (offPick == 0) offIdx = i; offPick--; }
+          else                     { if (onPick == 0) onIdx = i;  onPick--; }
         }
+        u.frame = (uint8_t)((u.frame & ~(1u << offIdx)) | (1u << onIdx));
+        repaint = true;
+      }
+      if (repaint) {
+        u.lastEnvBright = envB;
+        for (uint16_t i = 0; i < NEO_JEWEL_LEDS; i++) neoStrips[hp].setPixelColor(i, (u.frame & (1u << i)) ? _scale(color, envB) : 0x000000);
         neoStrips[hp].show();
       }
       break;
