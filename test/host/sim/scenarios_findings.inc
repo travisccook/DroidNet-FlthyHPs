@@ -9,22 +9,25 @@ static void untilTwitchInFlight(int hp) {            // a stock auto twitch runn
 }
 
 // ---- F1: back-to-back lines (the WCB writes a '^' batch with no gap) -------------------------
+// Pass times are RANDOM inside each window: a fixed pass time phase-locks with the 9600-baud wire and
+// hides what a varying one produces.
+static const uint64_t BURST_WINDOWS[][2] = {{300, 700}, {300, 2000}, {1000, 4000}, {2000, 6000}, {4000, 10000}};
 SCENARIO(f1_back_to_back_lines) {
-  const uint64_t passes[] = {300, 700, 1000, 1500, 2000, 3000, 4000, 6000};
-  for (uint64_t p : passes) {
+  for (auto& w : BURST_WINDOWS) {
     int bad = 0, n = 0;
-    for (uint64_t phase = 0; phase < p && n < 40; phase += 97, n++)
+    for (; n < 40; n++)
       bad += trial([=] {
-        run(1.0, p); us += phase;
-        say("!**M:v=show\r!HFA:i=solid,c=ff0000\r!HRA:i=comet,c=00ff00\r!HTA:i=twinkle,c=0000ff\r"); run(1.0, p);
+        srand(900 + n); const uint64_t lo = w[0], hi = w[1];
+        runRand(1.0, lo, hi);
+        say("!**M:v=show\r!HFA:i=solid,c=ff0000\r!HRA:i=comet,c=00ff00\r!HTA:i=twinkle,c=0000ff\r"); runRand(1.0, lo, hi);
         CHECK(armed(0) && armed(1) && armed(2));
         CHECK(lookUp(0) && lookEffect(0) == CE_SOLID);
         CHECK(lookUp(1) && lookEffect(1) == CE_COMET);
         CHECK(lookUp(2) && lookEffect(2) == CE_TWINKLE);
-        say("!**X\r!**M:v=idle\r"); run(1.0, p);
+        say("!**X\r!**M:v=idle\r"); runRand(1.0, lo, hi);
         CHECK(!armed(0) && !armed(1) && !armed(2));
       });
-    printf("  loop pass %4llu us: %d of %d phases lost a line\n", (unsigned long long)p, bad, n);
+    printf("  loop passes %5llu-%5llu us: %d of %d runs lost a line\n", (unsigned long long)w[0], (unsigned long long)w[1], bad, n);
     CHECK_EQ(bad, 0);
   }
 }
@@ -33,36 +36,55 @@ SCENARIO(f1_crlf_and_blank_lines) {                  // \r\n and stray terminato
   say("!**M:v=show\r\n!HFA:i=solid,c=ff0000\r\n\r\n\n!HRA:i=comet,c=00ff00\r\n"); run(1.0, 3000);
   CHECK(armed(0));  CHECK(lookUp(0) && lookEffect(0) == CE_SOLID);  CHECK(lookUp(1) && lookEffect(1) == CE_COMET);
 }
+// What these two prove is bounded by the pass times they use: random passes of UP TO 10 ms. How long
+// a pass is on the board has not been measured (the probe build exists for that), and beyond the
+// bound the short-line burst does lose bytes: r11_margin_report prints where.
+static int burst408(uint64_t lo, uint64_t hi, int seed, bool loud = true) {
+  return trial([=] {
+    srand(seed); runRand(1.0, lo, hi); say("!**M:v=show\r"); runRand(0.5, lo, hi);
+    std::string burst;
+    for (int i = 0; i < 4; i++) for (const char* u : {"F", "R", "T"}) {
+      char b[48]; snprintf(b, sizeof b, "!H%sA:i=solid,c=ff0000,at=%d,am=2\r", u, 100 + i * 8); burst += b;   // 34 bytes each
+    }
+    CHECK_EQ(burst.size(), 408);
+    say(burst.c_str()); runRand(1.5, lo, hi);
+    if (!loud) { if (scoreLen(0) != 4 || scoreLen(1) != 4 || scoreLen(2) != 4 || rxOverruns) failures++; return; }
+    for (int hp = 0; hp < HPCOUNT; hp++) CHECK_EQ(scoreLen(hp), 4);
+    CHECK_EQ(rxOverruns, 0);
+  });
+}
+static int burstShort(uint64_t lo, uint64_t hi, int seed, bool loud = true) {
+  return trial([=] {
+    srand(seed); runRand(1.0, lo, hi); long n0 = linesHandled;
+    std::string burst; for (int i = 0; i < 80; i++) burst += "!HFX\r";   // 400 bytes
+    say(burst.c_str()); runRand(2.5, lo, hi);
+    if (!loud) { if (linesHandled - n0 != 80 || rxOverruns) failures++; return; }
+    CHECK_EQ(linesHandled - n0, 80);  CHECK_EQ(rxOverruns, 0);
+  });
+}
 SCENARIO(r11_burst_of_400_bytes_loses_no_line) {     // spec section 11: 408 bytes, no gap, at 9600 baud
-  const uint64_t passes[] = {300, 1000, 2000, 4000, 6000};
-  for (uint64_t p : passes) {
-    int bad = trial([=] {
-      run(1.0, p); say("!**M:v=show\r"); run(0.5, p);
-      std::string burst;
-      for (int i = 0; i < 4; i++) for (const char* u : {"F", "R", "T"}) {
-        char b[48]; snprintf(b, sizeof b, "!H%sA:i=solid,c=ff0000,at=%d,am=2\r", u, 100 + i * 8); burst += b;   // 34 bytes each
-      }
-      CHECK_EQ(burst.size(), 408);
-      say(burst.c_str()); run(1.5, p);
-      for (int hp = 0; hp < HPCOUNT; hp++) CHECK_EQ(scoreLen(hp), 4);
-      CHECK_EQ(rxOverruns, 0);
-    });
-    printf("  loop pass %4llu us: %s\n", (unsigned long long)p, bad ? "LOST A LINE" : "all 12 lines landed");
+  for (auto& w : BURST_WINDOWS) {
+    int bad = 0; for (int k = 0; k < 20; k++) bad += burst408(w[0], w[1], 300 + k);
+    printf("  loop passes %5llu-%5llu us: %d of 20 runs lost a line\n", (unsigned long long)w[0], (unsigned long long)w[1], bad);
     CHECK_EQ(bad, 0);
   }
 }
 SCENARIO(r11_burst_of_short_lines_loses_none) {      // the worst case for one line a pass: 80 five-byte lines
-  const uint64_t passes[] = {300, 1000, 2000, 4000, 6000, 10000};
-  for (uint64_t p : passes) {
-    int bad = trial([=] {
-      run(1.0, p); long n0 = linesHandled;
-      std::string burst; for (int i = 0; i < 80; i++) burst += "!HFX\r";   // 400 bytes
-      say(burst.c_str()); run(1.5, p);
-      CHECK_EQ(linesHandled - n0, 80);  CHECK_EQ(rxOverruns, 0);
-    });
-    printf("  loop pass %5llu us: %s\n", (unsigned long long)p, bad ? "LOST BYTES" : "all 80 lines landed");
+  for (auto& w : BURST_WINDOWS) {
+    int bad = 0; for (int k = 0; k < 20; k++) bad += burstShort(w[0], w[1], 500 + k);
+    printf("  loop passes %5llu-%5llu us: %d of 20 runs lost bytes\n", (unsigned long long)w[0], (unsigned long long)w[1], bad);
     CHECK_EQ(bad, 0);
   }
+}
+SCENARIO(r11_margin_report) {                        // not a pass/fail of section 11: where it stops holding
+  const uint64_t W[][2] = {{6000, 12000}, {8000, 15000}, {10000, 20000}, {15000, 30000}};
+  for (auto& w : W) {
+    int a = 0, b = 0; for (int k = 0; k < 20; k++) { a += burst408(w[0], w[1], 700 + k, false); b += burstShort(w[0], w[1], 800 + k, false); }
+    printf("  loop passes %5llu-%5llu us: the 408-byte score burst lost a line in %2d of 20 runs, 80 five-byte lines lost bytes in %2d of 20\n",
+           (unsigned long long)w[0], (unsigned long long)w[1], a, b);
+  }
+  int a = 0; for (int k = 0; k < 20; k++) a += burst408(4000, 10000, 700 + k);
+  CHECK_EQ(a, 0);                                    // the stated bound itself holds
 }
 SCENARIO(r11_longest_v13_line_lands_whole) {         // 102 characters (core plan, amendment 16)
   const char* l = "!H*A:i=colorcycle,c=3b82f6,b=255,s=128,at=123456,am=2,an=16,ap=15,m=200,ae=colorcycle,ac=ffffff,ad=250";

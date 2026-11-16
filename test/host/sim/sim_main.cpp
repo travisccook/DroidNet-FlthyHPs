@@ -9,6 +9,7 @@ using namespace sim;
 #include "scenarios_contract.inc"
 #include "scenarios_findings.inc"
 #include "scenarios_v13.inc"
+#include "scenarios_review.inc"
 
 int main(int argc, char** argv) {
   if (argc < 2) { printf("usage: %s --list | <scenario>\n", argv[0]); return 2; }
@@ -19,5 +20,6 @@ int main(int argc, char** argv) {
   setup();
   it->second();
   if (ledOnlyChecked && ledOnlyViolations) { printf("  FAIL LED-only invariant: %ld violating pass(es)\n", ledOnlyViolations); failures++; }
+  if (holdChecked && holdViolations) { printf("  FAIL hold invariant: %ld pass(es) moved a servo the contract had just let go of\n", holdViolations); failures++; }
   return failures ? 1 : 0;
 }

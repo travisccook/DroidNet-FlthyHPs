@@ -22,6 +22,10 @@ typedef uint8_t byte; typedef bool boolean; typedef unsigned int uint; typedef u
 #define LOW 0
 extern uint32_t g_ms;   // fake clock
 extern long g_pulseIn;
+// Calls that BLOCK on the board (a write to a full TX ring, pulseIn) let simulated time pass through
+// this hook, so bytes keep arriving on RX while loop() is stuck, as they do on the Mega.
+extern void (*g_simBlock)(uint64_t us);
+extern uint64_t (*g_simNowUs)();
 inline unsigned long millis() { return g_ms; }
 inline unsigned long micros() { return (unsigned long)g_ms * 1000UL; }
 inline int analogRead(uint8_t) { return 123; }
@@ -33,7 +37,15 @@ inline void pinMode(int, int) {}
 inline void noInterrupts() {}
 inline void interrupts() {}
 inline void digitalWrite(int, int) {}
-inline unsigned long pulseIn(int, int) { return g_pulseIn; }
+// pulseIn() as RCHP() calls it (no timeout argument: the core's default is 1 s). With no signal it
+// blocks for the whole second. With one, it waits for the next pulse and measures it: the bound
+// modelled here is the worst case, one full 20 ms RC frame plus the pulse.
+#define SIM_RC_FRAME_US 20000UL
+inline unsigned long pulseIn(int, int, unsigned long timeout = 1000000UL) {
+  if (g_pulseIn <= 0) { g_simBlock(timeout); return 0; }
+  g_simBlock(SIM_RC_FRAME_US + (uint64_t)g_pulseIn);
+  return (unsigned long)g_pulseIn;
+}
 struct String {
   std::string s;
   String() {}
@@ -50,19 +62,32 @@ struct String {
   String& operator=(const char* c) { s = c; return *this; }
   String& operator+=(char c) { s += c; return *this; }
 };
+// Serial as an AVR HardwareSerial: the TX ring holds 63 bytes and drains at 9600 baud (10 bits a
+// byte). A write that finds it full BLOCKS until a byte has left, exactly as the core's write() does.
 struct FakeSerial {
   std::deque<char> rx; std::string tx;
+  double txDoneAt = 0;                                  // when the last queued byte will have left
+  uint64_t blockedUs = 0, maxStallUs = 0;               // time write() spent waiting: total, longest single call
+  static constexpr double BYTE_US = 1e6 * 10.0 / 9600.0;
   void begin(long) {}
   int available() { return (int)rx.size(); }
   int read() { if (rx.empty()) return -1; char c = rx.front(); rx.pop_front(); return (unsigned char)c; }
-  int availableForWrite() { return 63; }
-  size_t write(const uint8_t* b, size_t n) { tx.append((const char*)b, n); return n; }
-  void print(const char* c) { tx += c; }
-  void print(int v) { tx += std::to_string(v); }
-  void print(const String& x) { tx += x.s; }
-  void println(const char* c) { tx += c; tx += "\r\n"; }
-  void println(int v) { tx += std::to_string(v); tx += "\r\n"; }
-  void println(const String& x) { tx += x.s; tx += "\r\n"; }
+  int pending() { double n = (txDoneAt - (double)g_simNowUs()) / BYTE_US; return n <= 0 ? 0 : (int)ceil(n); }
+  int availableForWrite() { int p = pending(); return p >= 63 ? 0 : 63 - p; }
+  uint64_t put(char c) {
+    uint64_t waited = 0;
+    while (pending() >= 64) { g_simBlock(200); waited += 200; }    // 63 in the ring + the one being shifted out
+    double now = (double)g_simNowUs(); if (txDoneAt < now) txDoneAt = now;
+    txDoneAt += BYTE_US; tx += c; blockedUs += waited;
+    return waited;
+  }
+  size_t write(const uint8_t* b, size_t n) { uint64_t w = 0; for (size_t i = 0; i < n; i++) w += put((char)b[i]); if (w > maxStallUs) maxStallUs = w; return n; }
+  void print(const char* c) { write((const uint8_t*)c, strlen(c)); }
+  void print(int v) { print(std::to_string(v).c_str()); }
+  void print(const String& x) { print(x.s.c_str()); }
+  void println(const char* c) { print(c); print("\r\n"); }
+  void println(int v) { print(v); print("\r\n"); }
+  void println(const String& x) { print(x); print("\r\n"); }
 };
 extern FakeSerial Serial;
 #define AVRDIV(a,b) ((b)==0 ? -1 : (a)/(b))   /* avr-libc __divmodhi4: x/0 == -1, no trap */
