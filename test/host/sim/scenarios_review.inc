@@ -211,9 +211,10 @@ SCENARIO(r3_three_units_asked_back_to_back_all_answer) {
   run(8); while (gWdp.len == 0) pass(500);           // and as a WDP announce begins
   Serial.tx.clear(); for (const char* q : {"!HFQ:r=3\r", "!HRQ:r=3\r", "!HTQ:r=3\r"}) { say(q); run(0.07); }
   run(1.5); std::string u = qUnits(); std::sort(u.begin(), u.end()); CHECK(u == "FRT");  CHECK(txLinesWhole());
-  // the same unit asked twice before it could answer: one reply, the newer route
-  drain(); while (gWdp.len != 0) pass(500); Serial.tx.clear(); say("!HFQ:r=1\r!HFQ:r=2\r"); run(1.0);
-  CHECK(qUnits() == "F");  CHECK(Serial.tx.find(";W2,;S0!HFq:") != std::string::npos);
+  // the same unit asked twice before it could answer (an announce is leaving): one reply, the newer route
+  drain(); run(20); while (gWdp.len == 0) pass(500);
+  Serial.tx.clear(); say("!HFQ:r=1\r!HFQ:r=2\r"); run(1.5);
+  CHECK(qUnits() == "F");  CHECK(Serial.tx.find(";W2,;S0!HFq:") != std::string::npos);  CHECK(txLinesWhole());
 }
 
 // ---- Finding 6: the Q reply never stalls loop(), and is never mixed with a WDP announce ---------

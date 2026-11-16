@@ -111,11 +111,13 @@ static uint32_t   gLastLineMs = 0;        // L2: millis() of the last well-forme
 // Cleared by the expiry, by M:v=idle once no unit is left in a show (the host ended it itself), and
 // by an M:v=show with no wd= for the whole board (a show nobody watches, such as a WCB macro).
 static uint8_t    gBoardWd = 0;
-// Section 10: the verb-Q reply waits here (one slot, the newest Q wins) and contractBeatTick()
-// sends it. The line handler never writes to Serial: a write that finds the 63-byte TX ring full
+// Section 10: a verb-Q waits here for its reply and contractBeatTick() sends it, one reply a pass.
+// One slot per unit (a newer Q to the same unit replaces its route), so F, R and T asked back to
+// back are all answered, and the reply is formatted when it is sent, so it reports the state of
+// that moment. The line handler never writes to Serial: a write that finds the 63-byte TX ring full
 // blocks loop(), servo stepping included, for as long as the bytes take to leave at 9600 baud.
-static char       gQueryLine[CONTRACT_REPLY_MAX];
-static uint8_t    gQueryLen = 0;
+static uint8_t    gQueryRoute[HPCOUNT];   // the r= to answer on
+static uint8_t    gQueryAsked = 0;        // bit hp: that unit owes a reply
 // The score table is the fork's (sized by its cap); the cursor and the count are in s.
 static ScoreEntry gScore[HPCOUNT][FLTHY_SCORE_CAP];
 
@@ -261,7 +263,8 @@ inline void DnStrip::show() {
 }
 // Each auto-twitch timer that is OVERDUE, a full interval from now. When the layer lets go of a unit
 // after a show the timers are long overdue, and without this the stock loop twitches the LEDs AND
-// THE SERVOS in the same pass. A timer that is not due yet is left alone (see the twitch gates). resetHPtwitch() only sets twitchHPTime[hp]; it moves nothing.
+// THE SERVOS in the same pass. A timer that is not due yet is left alone (see the twitch gates).
+// resetHPtwitch() only sets the servo timer; it moves nothing.
 static inline void _rearmTwitch(uint8_t hp) {
   if (millis() > twitchLEDTime[hp])
     twitchLEDTime[hp] = (1000L * random(LEDTwitchInterval[hp][0], LEDTwitchInterval[hp][1])) + millis();
@@ -842,8 +845,8 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p, uint16_t li
       // is routed (";S0!..." or ";W<n>,;S0!...") so the WCB never broadcasts it. Any other Q is
       // silent (it has already fed the watchdog: it is the host's keepalive).
       if (!contractQueryAnswerable(p)) break;
-      gQueryLen = contractFormatQuery(gQueryLine, sizeof(gQueryLine), pr.route, 'H', _unitChar(hp), FLTHY_SCORE_CAP,
-                                      s.scoreLen, s.loadOk, gBeat.running ? gBeat.bpm : 0);
+      gQueryRoute[hp] = pr.route;
+      gQueryAsked |= (uint8_t)(1u << hp);
       break;                                           // contractBeatTick() sends it
     }
 
@@ -885,11 +888,16 @@ inline void applyContract(const ParsedContract& p, uint16_t lineCrc = 0) {
 // Call once per loop(), before the per-hp render block. It runs every pass, clock or no clock.
 inline void contractBeatTick() {
   const uint32_t now = millis();
-  // The waiting Q reply: whole, in one write that cannot wait (the TX ring has room for all of
-  // it), and only when no WDP announce is partly sent, so neither line lands inside the other.
-  if (gQueryLen && !wdpInFlight() && Serial.availableForWrite() >= (int)gQueryLen) {
-    Serial.write((const uint8_t*)gQueryLine, gQueryLen);   // after the wdpInFlight() test above
-    gQueryLen = 0;
+  // One waiting Q reply a pass: whole, in one write that cannot wait (the TX ring has room for the
+  // longest reply), and only when no WDP announce is partly sent, so neither line lands inside the other.
+  if (gQueryAsked && !wdpInFlight() && Serial.availableForWrite() >= (int)CONTRACT_REPLY_MAX) {
+    uint8_t hp = 0;
+    while (!(gQueryAsked & (1u << hp))) hp++;
+    gQueryAsked &= (uint8_t)~(1u << hp);
+    char buf[CONTRACT_REPLY_MAX];
+    const uint8_t n = contractFormatQuery(buf, sizeof(buf), gQueryRoute[hp], 'H', _unitChar(hp), FLTHY_SCORE_CAP,
+                                          gUnit[hp].s.scoreLen, gUnit[hp].s.loadOk, gBeat.running ? gBeat.bpm : 0);
+    if (!wdpInFlight()) Serial.write((const uint8_t*)buf, n);
   }
   for (uint8_t hp = 0; hp < HPCOUNT; hp++) {
     FlthyUnit& u = gUnit[hp];
