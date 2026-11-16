@@ -678,24 +678,28 @@ int main() {
     _mock_millis = 0;
   }
 
-  // Minor guard: the verb-Q ack must echo the unit that answered. It hardcoded 'f', so
+  // Minor guard: the verb-Q reply must echo the unit that answered. It hardcoded 'f', so
   // !HRQ and !HTQ both replied "!Hfq:..." and a host could not tell which HP responded.
+  // v1.3 section 10: the reply is routed (";S0!H<unit>q:...") and only a Q with r= gets one.
   {
     ParsedContract q;
-    const char* want[3] = {"!HFq:", "!HRq:", "!HTq:"};
-    const char* cmd[3]  = {"HFQ", "HRQ", "HTQ"};
+    const char* want[3] = {";S0!HFq:", ";S0!HRq:", ";S0!HTq:"};
+    const char* cmd[3]  = {"HFQ:r=0", "HRQ:r=0", "HTQ:r=0"};
     for (int i = 0; i < 3; i++) {
       Serial.clear();
       if (contractParse(cmd[i], q)) applyContract(q);
-      if (strncmp(Serial.last, want[i], 5) != 0) {
-        printf("FAIL: Flthy %s ack did not echo its unit (wanted \"%s...\", got \"%s\")\n",
+      if (strncmp(Serial.last, want[i], 8) != 0) {
+        printf("FAIL: Flthy %s reply did not echo its unit (wanted \"%s...\", got \"%s\")\n",
                cmd[i], want[i], Serial.last);
         return 1;
       }
     }
-    Serial.clear();                                    // broadcast Q must stay silent (§8)
-    if (contractParse("H*Q", q)) applyContract(q);
-    if (Serial.last[0] != 0) { printf("FAIL: Flthy answered a broadcast Q (\"%s\")\n", Serial.last); return 1; }
+    const char* silent[3] = {"H*Q", "H*Q:r=0", "HFQ"};   // a wildcard Q, with or without r=, and a Q with no r=
+    for (int i = 0; i < 3; i++) {
+      Serial.clear();
+      if (contractParse(silent[i], q)) applyContract(q);
+      if (Serial.last[0] != 0) { printf("FAIL: Flthy answered %s (\"%s\")\n", silent[i], Serial.last); return 1; }
+    }
   }
 
   // WDP: the verb-Q ack must never land INSIDE a WDP device announce. The announce leaves in
@@ -714,9 +718,9 @@ int main() {
       printf("FAIL: no WDP announce in flight to test against (got \"%s\")\n", Serial.last);
       return 1;
     }
-    if (contractParse("HRQ", q)) applyContract(q);
-    if (strlen(Serial.last) < len + 5 || strncmp(Serial.last, line, len) != 0 ||
-        strncmp(Serial.last + len, "!HRq:", 5) != 0) {
+    if (contractParse("HRQ:r=0", q)) applyContract(q);
+    if (strlen(Serial.last) < len + 8 || strncmp(Serial.last, line, len) != 0 ||
+        strncmp(Serial.last + len, ";S0!HRq:", 8) != 0) {
       printf("FAIL: the verb-Q ack landed inside a WDP announce (got \"%s\")\n", Serial.last);
       return 1;
     }

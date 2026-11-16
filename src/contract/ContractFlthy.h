@@ -61,8 +61,7 @@
 #define CONTRACT_READ_BYTE(p) pgm_read_byte(p)
 #endif
 #include "contract_core.h"
-#include "../wdp/wdp_fork.h" // wdpFinish() (verb Q ack line)
-#include <stdio.h>          // snprintf (verb Q ack line)
+#include "../wdp/wdp_fork.h" // wdpFinish() (verb Q reply)
 
 // -------------------------------------------------------------- constants ----
 static const uint8_t  FLTHY_FX_BASE         = 100;   // LEDFunction = 100 + effectId (101..115)
@@ -71,7 +70,7 @@ static const uint8_t  FLTHY_PX_BYTES        = 4;     // raw bytes a pixel
 #else
 static const uint8_t  FLTHY_PX_BYTES        = 3;
 #endif
-static const uint8_t  FLTHY_SCORE_CAP       = 8;     // scored sections a unit holds
+static const uint8_t  FLTHY_SCORE_CAP       = 32;    // scored sections a unit holds (spec section 6); Q reports it as cap=
 
 // contract effectId -> LEDFunction render code (CE_OFF..CE_TWINKLE map to 101..115)
 static inline byte _fxCode(ContractEffect e) { return (byte)(FLTHY_FX_BASE + (uint8_t)e); }
@@ -559,7 +558,7 @@ static inline void _stopClockIfUnused() {
   for (uint8_t hp = 0; hp < HPCOUNT; hp++) if (contractUnitNeedsClock(gUnit[hp].s)) return;
   gBeat = BeatClock();
 }
-// The three show boundaries: 's' M:v=show, 'x' X, 'i' M:v=idle (also the watchdog, and later
+// The three show boundaries: 's' M:v=show, 'x' X, 'i' M:v=idle (also the watchdog and
 // a failed verb V). Each runs the core's ONE reset, then puts the result on the jewel:
 //   show  arms. The servo twitch waits from now. The stock idle look stays until the show's
 //         first C, live A or P (contractShowBegin); a Resend over a running show goes back
@@ -673,13 +672,21 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p, uint16_t li
       else if (pr.mode == 'i') _boundary(hp, 'i', 0);
       break;
 
-    case CV_QUERY: {                                   // targeted ack only (contract §8)
-      if (p.unit == '*') break;                        // never broadcast Q
-      char buf[56];
-      snprintf(buf, sizeof(buf), "!H%cq:ver=1.1,phase=2,i=%d,bpm=%u\r\n",
-               _unitChar(hp), (int)s.effect, (unsigned)gBeat.bpm);
+    case CV_VERIFY:                                    // section 7: is the score this unit holds the one the host sent?
+      if (!pr.hasN || !pr.hasK) break;
+      if (scoreVerify(s, gScore[hp], pr.n, pr.k) == 2) _boundary(hp, 'i', 0);   // no: back to the stock look,
+      break;                                                                    // visibly (the reset keeps ok=2 for Q)
+
+    case CV_QUERY: {                                   // section 10
+      // Answered only when addressed to this class AND one unit AND carrying r=<route>; the reply
+      // is routed (";S0!..." or ";W<n>,;S0!...") so the WCB never broadcasts it. Any other Q is
+      // silent (it has already fed the watchdog: it is the host's keepalive).
+      if (!contractQueryAnswerable(p)) break;
+      char buf[CONTRACT_REPLY_MAX];
+      const uint8_t n = contractFormatQuery(buf, sizeof(buf), pr.route, 'H', _unitChar(hp), FLTHY_SCORE_CAP,
+                                            s.scoreLen, s.loadOk, gBeat.running ? gBeat.bpm : 0);
       wdpFinish();                                     // a WDP announce in flight goes out whole first
-      Serial.print(buf);
+      Serial.write((const uint8_t*)buf, n);
       break;
     }
 
@@ -767,5 +774,7 @@ inline void contractBeatTick() {
 // The single fork command entry point. main.cpp passes the bytes AFTER '!'.
 inline void contractHandle(const char* afterBang) {
   ParsedContract p;
-  if (contractParse(afterBang, p)) applyContract(p);
+  if (!contractParse(afterBang, p)) return;
+  // A scored line is held with the CRC of its own text: verb V compares the XOR of them (section 7).
+  applyContract(p, (p.verb == CV_ANIMATE && p.params.hasAt) ? contractCrc16(afterBang) : 0);
 }

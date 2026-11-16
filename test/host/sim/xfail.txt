@@ -1,4 +1,0 @@
-q_reply_is_the_v13_line
-score_holds_32_and_carries_b
-score_overflow_is_a_bad_load
-v_good_load_plays_and_bad_load_idles
