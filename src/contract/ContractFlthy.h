@@ -8,27 +8,28 @@
 //
 // INCLUDE ORDER (see main.cpp): include this AFTER the board globals + effect
 // primitives it references are declared, and BEFORE loop(). It relies on these
-// being already declared (all verified against src/main.cpp 2026-07-12):
-//   Adafruit_NeoPixel neoStrips[HPCOUNT];             // main.cpp:667
-//     .setPixelColor(uint16_t,uint32_t)               // main.cpp:1206,1212,1226
-//     .show()                                          // main.cpp:1207
-//     .setBrightness(uint8_t)                          // main.cpp:748
-//   LEDCmd  LED_command[HPCOUNT];  (.LEDFunction byte) // main.cpp:600-608,925
-//   byte    enableTwitchLED[HPCOUNT];                  // main.cpp:315
-//   boolean enableTwitchHP[HPCOUNT];                   // main.cpp:335
-//   const byte startEnableTwitchLED[HPCOUNT];          // main.cpp:574
-//   const boolean startEnableTwitchHP[HPCOUNT];        // main.cpp:575 (DroidNet, added w/ the fork)
-//   boolean offcoloroverride[HPCOUNT];                 // main.cpp:619
-//   void ledOFF(byte);                                 // main.cpp:1205
-//   void varResets(byte);                              // main.cpp:1460
-//   #define HPCOUNT 3 / #define NEO_JEWEL_LEDS 7       // main.cpp:173,659
+// being already declared in src/main.cpp (named, not numbered: line numbers there move):
+//   Adafruit_NeoPixel neoStrips[HPCOUNT];
+//     .setPixelColor(uint16_t,uint32_t)
+//     .show()
+//     .setBrightness(uint8_t)
+//   LEDCmd  LED_command[HPCOUNT];  (.LEDFunction byte)
+//   byte    enableTwitchLED[HPCOUNT];
+//   boolean enableTwitchHP[HPCOUNT];
+//   const byte startEnableTwitchLED[HPCOUNT];
+//   const boolean startEnableTwitchHP[HPCOUNT];        // (DroidNet, added with the fork)
+//   boolean offcoloroverride[HPCOUNT];
+//   void ledOFF(byte);
+//   void varResets(byte);
+//   #define HPCOUNT 3 / #define NEO_JEWEL_LEDS 7
 //   millis(), random(), Serial                         // Arduino core
 //
 // DESIGN: arbitrary RGB is injected straight into the NEO_GRB jewels via
-// setPixelColor(i, 0xRRGGBB) (the library takes a packed uint32_t — main.cpp:1374),
+// setPixelColor(i, 0xRRGGBB) (the library takes a packed uint32_t),
 // bypassing the palette table entirely (basicColors/dimColorVal). Each contract
-// effect writes 0xRRGGBB pre-scaled by a per-write brightness multiplier (never
-// setBrightness, which only re-scales at show() — fork spec §9). The per-unit look
+// effect writes 0xRRGGBB pre-scaled by a per-write brightness multiplier. The envelope never
+// uses setBrightness(): that rescales the whole RAM buffer at once, lossily, and
+// setPixelColor() already scales every write by the strip's brightness. The per-unit look
 // renders through LED_command[hp].LEDFunction = 100 + effectId (cases 101..115,
 // added to the render switch); an ACCENT layers a second look OVER the base and
 // auto-restores on ms-expiry (never ledOFF / never flushCommandArray — the native
@@ -112,9 +113,9 @@ static bool       gShowMode = false;
 //   * gInterlocked[hp] gates the restore, so an idle that never followed a show cannot
 //     touch the operator's settings at all (a bare !H*M:v=idle is a no-op on them).
 //   * gSavedTwitchHP[hp] holds the servo-twitch flag observed at show entry, seeded from
-//     the boot config startEnableTwitchHP[] (main.cpp:575). NEVER write `true` here from
+//     the boot config startEnableTwitchHP[]. NEVER write `true` here from
 //     a literal: enableTwitchHP drives a PHYSICAL actuator and the operator may have
-//     turned it off in the sketch config or at runtime (native servo cmd 98, main.cpp:984).
+//     turned it off in the sketch config or at runtime (native servo cmd 98).
 //   * gSavedOffColor[hp] likewise holds the native "off color" override observed at show
 //     entry (show forces it on so the off state is truly black); without restoring it, the
 //     operator's off-color stayed suppressed after every show until a native 98/99 command.
@@ -122,7 +123,7 @@ static bool    gInterlocked[HPCOUNT]  = {false, false, false};
 static boolean gSavedTwitchHP[HPCOUNT] = {startEnableTwitchHP[0],
                                           startEnableTwitchHP[1],
                                           startEnableTwitchHP[2]};
-static boolean gSavedOffColor[HPCOUNT] = {false, false, false};   // main.cpp:619 default
+static boolean gSavedOffColor[HPCOUNT] = {false, false, false};   // the stock default
 
 // Phase-2 score (per unit, sorted asc by atBeat via contract_core scoreInsert)
 static ScoreEntry gScore[HPCOUNT][FLTHY_SCORE_CAP];
@@ -145,7 +146,7 @@ static inline void _fillShow(uint8_t hp, uint32_t color) {
   for (uint16_t i = 0; i < NEO_JEWEL_LEDS; i++) neoStrips[hp].setPixelColor(i, color);
   neoStrips[hp].show();
 }
-// self-contained rainbow wheel (mirrors native Wheel(), main.cpp:1328) so a verb-P
+// self-contained rainbow wheel (mirrors native Wheel()) so a verb-P
 // overlay still composites over rainbow through the single contract render path.
 static inline uint32_t _wheel(uint8_t pos, uint8_t bri) {
   ContractRGB c{0, 0, 0};
@@ -243,7 +244,7 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB
       uint32_t step = (uint32_t)map((long)u.speed, 0, 255, 160, 30);
       if ((uint32_t)(now - u.frameMs) > step) {
         u.frameMs = now;
-        neoStrips[hp].setPixelColor(0, 0x000000);      // center always off (main.cpp:1285)
+        neoStrips[hp].setPixelColor(0, 0x000000);      // center always off
         if (u.frame >= NEO_JEWEL_LEDS) u.frame = 1;
         if (u.frame < 1) u.frame = 1;
         for (uint16_t i = 1; i < NEO_JEWEL_LEDS; i++)
@@ -455,7 +456,7 @@ static inline void _applyLook(uint8_t hp, ContractEffect eff, int nativeCode,
   u.effect = eff;
   if (freshEffect && (eff == CE_SCAN || eff == CE_SPARKLE)) {
     u.frame = 1; u.frameMs = 0;
-    varResets(hp);                                      // reset Frame/SC counters once at switch (main.cpp:1460)
+    varResets(hp);                                      // reset Frame/SC counters once at switch
   }
   LED_command[hp].LEDFunction = _fxCode(eff);
 }
@@ -563,7 +564,7 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
 
     case CV_BRIGHT: {                                  // master volatile ride (never EEPROM)
       uint8_t b = _clampBright(pr.hasBright ? pr.bright : (pr.hasLevel ? pr.level : u.brightBase));
-      neoStrips[hp].setBrightness(b);                  // runtime, re-scales at next show() (main.cpp:748)
+      neoStrips[hp].setBrightness(b);                  // RAM only: rescales the pixel buffer at once (lossy)
       break;
     }
 
@@ -576,7 +577,7 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
       u.active = false; u.pulseActive = false;
       scoreClear(gScoreCount[hp], gScoreActive[hp]);   // forget the show (contract_core)
       u.lastAccentBeat = BEAT_NONE;                    // show boundary: drop the beat edge too
-      ledOFF(hp);                                      // blackout (main.cpp:1205)
+      ledOFF(hp);                                      // blackout
       LED_command[hp].LEDFunction = 0;                 // do-nothing
       u.lastEnvBright = -1;
       break;
@@ -589,8 +590,8 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
           gInterlocked[hp]   = true;
         }
         gShowMode = true;
-        enableTwitchLED[hp] = 0;                       // no auto LED twitch (main.cpp:968)
-        enableTwitchHP[hp]  = false;                   // no auto SERVO twitch (main.cpp:1001) -> LED-only
+        enableTwitchLED[hp] = 0;                       // no auto LED twitch
+        enableTwitchHP[hp]  = false;                   // no auto SERVO twitch -> LED-only
         offcoloroverride[hp] = true;                   // off state truly black
         u.active = false; u.pulseActive = false;
         // v=show is the FIRST line of Studio's load burst, and Resend re-sends that burst with
@@ -601,7 +602,7 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p) {
         ledOFF(hp);
       } else if (pr.mode == 'i') {                     // idle: restore native autonomy
         gShowMode = false;
-        enableTwitchLED[hp] = startEnableTwitchLED[hp];// (main.cpp:574)
+        enableTwitchLED[hp] = startEnableTwitchLED[hp];//
         if (gInterlocked[hp]) {                        // ONLY undo what show actually took
           enableTwitchHP[hp]   = gSavedTwitchHP[hp];   // NEVER a literal true: this moves a servo
           offcoloroverride[hp] = gSavedOffColor[hp];   // give the native off-color back
@@ -641,7 +642,7 @@ inline void applyContract(const ParsedContract& p) {
 }
 
 // ------------------------------ beat tick + score switch + board-side accent ---
-// Call once per loop(), before the per-hp render block (main.cpp ~916).
+// Call once per loop(), before the per-hp render block.
 inline void contractBeatTick() {
   if (!gBeat.running) return;
   BeatPos bp = beatPosAt(gBeat, millis());

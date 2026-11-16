@@ -345,7 +345,7 @@ inline void contractOwnerBrightness(uint8_t hp, uint8_t level) {
 // pack an RGB scaled by a 0..255 brightness multiplier into 0xRRGGBB (NEO_GRB""")
     rep("""    case CV_BRIGHT: {                                  // master volatile ride (never EEPROM)
       uint8_t b = _clampBright(pr.hasBright ? pr.bright : (pr.hasLevel ? pr.level : u.brightBase));
-      neoStrips[hp].setBrightness(b);                  // runtime, re-scales at next show() (main.cpp:748)
+      neoStrips[hp].setBrightness(b);                  // RAM only: rescales the pixel buffer at once (lossy)
       break;
     }""",
 """    case CV_BRIGHT: {                                  // master ride, inside an armed show only (S6)

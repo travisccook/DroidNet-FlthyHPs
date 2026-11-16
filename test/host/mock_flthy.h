@@ -4,12 +4,12 @@
 //
 // Minimal host mock of the Flthy board API surface that ContractFlthy.h uses, to
 // TYPE-CHECK the firmware layer on the host (NOT a behavioral sim). Signatures
-// mirror src/main.cpp / Adafruit_NeoPixel as verified 2026-07-12:
+// mirror src/main.cpp / Adafruit_NeoPixel (named, not numbered: line numbers there move):
 //   Adafruit_NeoPixel::{setPixelColor(uint16_t,uint32_t),show(),setBrightness(uint8_t)}
-//   neoStrips[HPCOUNT] (main.cpp:667); LED_command[HPCOUNT].LEDFunction (main.cpp:608)
+//   neoStrips[HPCOUNT]; LED_command[HPCOUNT].LEDFunction
 //   enableTwitchLED/enableTwitchHP/startEnableTwitchLED/startEnableTwitchHP/offcoloroverride
-//     (315/335/574/575/619)
-//   ledOFF(byte) (1205), varResets(byte) (1460); millis/random/map/Serial (Arduino core)
+//   ledOFF(byte), varResets(byte); millis/random/map/Serial (Arduino core)
+// What the firmware really does with these is test/host/sim's job: it runs the real main.cpp.
 //   micros/analogRead and Serial.write/availableForWrite (Arduino core, for src/wdp/wdp_fork.h,
 //     which ContractFlthy.h includes for wdpFinish())
 #pragma once
@@ -98,7 +98,7 @@ static LEDCmd  LED_command[HPCOUNT];
 static byte    enableTwitchLED[HPCOUNT]      = {1, 2, 2};
 static boolean enableTwitchHP[HPCOUNT]       = {true, true, true};
 static const byte startEnableTwitchLED[HPCOUNT] = {1, 2, 2};
-static const boolean startEnableTwitchHP[HPCOUNT] = {true, true, true};   // main.cpp:575
+static const boolean startEnableTwitchHP[HPCOUNT] = {true, true, true};
 static boolean offcoloroverride[HPCOUNT]     = {false, false, false};
 
 // ---- board effect primitives the fork calls ----
@@ -108,8 +108,8 @@ inline void varResets(byte) {}
 // ================== SERVO TRIPWIRES — the LED-ONLY invariant ==================
 // This fork promises, in its README and in ContractFlthy.h's header, that the '!' path is
 // LED-EFFECTS-ONLY: it must NEVER move a holoprojector servo. main.cpp reaches the servos
-// exactly two ways — by writing HP_command[] (dispatched in the HP switch at main.cpp:982)
-// and by calling positionHP/twitchHP/wagHP/RCHP directly (main.cpp:1082/1138/1164/1203).
+// exactly two ways — by writing HP_command[] (dispatched in loop()'s HP switch)
+// and by calling positionHP/twitchHP/wagHP/RCHP directly.
 // flushCommandArray(hp, 1) also clears an HP (servo) command array.
 //
 // So every one of them is mocked here as a TRIPWIRE that bumps _mock_servoTouches. That
@@ -128,17 +128,17 @@ struct _ServoInt {                                   // HP_command's int field (
   _ServoInt& operator=(int x) { v = x; _mock_servoTouches++; return *this; }
   operator int() const { return v; }
 };
-struct HPCmd {                                       // mirrors main.cpp:616-621
+struct HPCmd {                                       // mirrors main.cpp's HPCmd
   _ServoByte HPFunction;
   _ServoByte HPOption1;
   _ServoInt  HPHalt;
 };
 static HPCmd HP_command[HPCOUNT];
 
-inline void positionHP(byte, byte, int)  { _mock_servoTouches++; }   // main.cpp:1082
-inline void twitchHP(byte, byte)         { _mock_servoTouches++; }   // main.cpp:1138
-inline void RCHP(byte, byte)             { _mock_servoTouches++; }   // main.cpp:1164
-inline void wagHP(byte, byte)            { _mock_servoTouches++; }   // main.cpp:1203
-inline void flushCommandArray(byte, byte type) {                     // main.cpp:1463
+inline void positionHP(byte, byte, int)  { _mock_servoTouches++; }
+inline void twitchHP(byte, byte)         { _mock_servoTouches++; }
+inline void RCHP(byte, byte)             { _mock_servoTouches++; }
+inline void wagHP(byte, byte)            { _mock_servoTouches++; }
+inline void flushCommandArray(byte, byte type) {
   if (type == 1) _mock_servoTouches++;               // type 1 == the HP (servo) command array
 }

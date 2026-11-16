@@ -37,6 +37,10 @@ announce" below.
   type-check of `ContractFlthy.h` against `test/host/mock_flthy.h`, 1,554,686 contract fuzz checks,
   77/77 native brightness parser checks and 2,965,122 native brightness fuzz checks, 37,506 WDP
   announce core checks and 19 adapter checks (run twice).
+- **Whole-firmware simulation: known defects recorded.** Stage 2b of `run.sh` (`test/host/sim`) runs the
+  real `src/main.cpp` on a fake Arduino core. The scenarios named in `test/host/sim/xfail.txt` fail on
+  this firmware today: they are the findings of the 2026-11-15 review and the v1.3 contract rules not
+  yet met. Each must keep failing until the change that fixes it removes its line.
 - **Hardware verification: NONE.** This has never been flashed to a board. Not once. Nothing
   about flash fit, loop stability, LED timing, or how any of it actually looks has been
   confirmed on real hardware. Bench-compile and bench-test before this goes anywhere near a
@@ -73,8 +77,7 @@ the three forks too (copied from DroidNet-RSeriesLogics 6645689).
   `setPixelColor()`, bypassing the native `basicColors` palette. The contract's envelope
   brightness is pre-scaled per write. Note that `setBrightness()` does **not** wait for `show()`:
   in Adafruit NeoPixel 1.15.x it rescales the RAM pixel buffer immediately (and lossily), and
-  `show()` only transmits. (The "re-scales at show()" comments in `ContractFlthy.h` say otherwise
-  and are wrong; the contract file is left untouched.)
+  `show()` only transmits.
 - The per-unit look renders through `LED_command[hp].LEDFunction = 100 + effectId`, i.e. the
   `case 101..115` block added to the native render switch.
 - `INPUTBUFFERLEN` was grown 10 → 96 (the contract's params need more than 10 bytes), and

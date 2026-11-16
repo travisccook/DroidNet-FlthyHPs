@@ -51,7 +51,7 @@ copyright (c) 2013, GPL-3.0-or-later.
 
 ## Status
 
-**Work in progress.** This DroidNet build is provided as is, without warranty of any kind. Use it at your own risk. To go back, flash the upstream firmware (Ryan's original firmware, linked at the top of this page).
+**Work in progress.** This DroidNet build is provided as is, without warranty of any kind. Use it at your own risk. It has never been flashed to a board; see [`firmware/README.md`](firmware/README.md). To go back, flash the upstream firmware (Ryan's original firmware, linked at the top of this page).
 
 **Testing.** It cross-compiles for the real microcontroller. `pio run` builds a complete
 firmware image with the real avr-gcc for the real ATmega2560, and the real linker signs off on it.
@@ -79,10 +79,8 @@ SRAM at 2,578 B of 8,192 B (31.5%). Nowhere near either ceiling.
 
 The stack has been bounded statically too (`test/host/stack_report.py`): **394 B of the 5,614 B
 available (7%)**, with no recursion, no `alloca`/VLA, and — unlike the PSI — **no interrupt-nesting
-hazard**. That last point is down to Ryan's choice of library, and it is worth crediting:
-Adafruit_NeoPixel's `show()` saves and *restores* `SREG` rather than blindly re-enabling interrupts,
-so even though this firmware also renders LEDs from inside its I2C interrupt, that interrupt cannot
-re-enter itself. The sister PSI fork, which uses FastLED, is not so lucky. (One caveat: this board
+hazard**: no interrupt handler reaches a `sei`, so interrupts cannot nest. (The I2C handler does not
+render LEDs. It builds the command `String` that `loop()` also uses, which is a race of its own.) (One caveat: this board
 *does* link the heap — Arduino `String` pulls in `malloc`/`free` — and the heap grows up toward the
 stack. With 5.2 KB free that is not an overflow risk, but long-run fragmentation is not something a
 static analysis can rule out.)
@@ -278,16 +276,19 @@ The host suite needs nothing but a C++ compiler:
 
 ```bash
 bash test/host/run.sh
-# [1/7] contract_core parser unit tests            -> 341/341 checks
-# [1b/7] wdp_announce_core unit tests              -> 37,506/37,506 checks
-# [1c/7] wdp_fork.h announce adapter + identity    -> 19/19 checks, with fw "abcdef0-dirty" and "unknown"
-# [2/7] ContractFlthy.h firmware type-check
-# [3/7] static source guards (LED-only invariant for the contract and the brightness branch,
-#       wire budget, no Serial write that could land inside a WDP announce)
-# [4/7] contract parser fuzz + differential        -> 1,554,686 checks (ASan/UBSan)
-# [5/7] native_ext brightness parser unit tests    -> 77/77 checks
-# [6/7] native_ext fuzz + differential             -> 2,965,122 checks (ASan/UBSan)
-# [7/7] REAL cross-compile (ATmega2560)            <- needs PlatformIO; skips cleanly without it
+# [1]  contract_core parser unit tests             -> 341/341 checks
+# [1b] wdp_announce_core unit tests                -> 37,506/37,506 checks
+# [1c] wdp_fork.h announce adapter + identity      -> 19/19 checks, with fw "abcdef0-dirty" and "unknown"
+# [2]  ContractFlthy.h firmware type-check, against a mock
+# [2b] whole-firmware simulation                   -> the real src/main.cpp on a fake Arduino core;
+#      scenarios in test/host/sim/xfail.txt record known defects and must fail until they are fixed
+# [3]  static source guards (LED-only invariant for the contract and the brightness branch,
+#      wire budget, no Serial write that could land inside a WDP announce)
+# [4]  contract parser fuzz + differential         -> 1,554,686 checks (ASan/UBSan)
+# [5]  native_ext brightness parser unit tests     -> 77/77 checks
+# [6]  native_ext fuzz + differential              -> 2,965,122 checks (ASan/UBSan)
+# [7]  REAL cross-compile (ATmega2560)             <- needs PlatformIO; skipped (and reported) without it
+# ONLY="1 4" runs just those stages. The fuzz stages need a compiler that can link ASan/UBSan.
 ```
 
 `python3 test/host/stack_report.py --elf .pio/build/FlthyHPs/firmware.elf --mcu atmega2560 --objdump
