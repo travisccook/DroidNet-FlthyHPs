@@ -86,7 +86,7 @@ SCENARIO(r1_single_fault_sweep_touches_no_servo_state) {
 // The RX ring overflowing mid-line splices lines: the ring ends on a terminator and the next byte it
 // accepts is the verb. Fixed pass times phase-lock and never produce it; random ones do.
 SCENARIO(r1_random_pass_splices_touch_no_servo_state) {
-  int bad = 0, spliced = 0; const int RUNS = 60;
+  int bad = 0, spliced = 0; const int RUNS = 300;
   for (int k = 0; k < RUNS; k++) {
     fflush(stdout); pid_t pid = fork();
     if (pid == 0) {

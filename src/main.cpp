@@ -862,6 +862,10 @@ void loop(){
         inputBuffer[0]=='Z' ||      // Rear & Top HPs
         inputBuffer[0]=='A' )       // All three HP
     {  
+      // DroidNet: a line too short to carry a type or a function has none. Stock kept the LAST command's
+      // values, so a bare "X" or "A" (both are contract verbs: one wire fault in "!**X" leaves one alone
+      // on a line) replayed the last stock servo command. 255 is no type and no function.
+      typeState = 255; functionState = 255;
       if(commandLength >= 2)
         typeState = inputBuffer[1]-'0';
       if(commandLength >= 4)
