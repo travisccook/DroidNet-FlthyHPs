@@ -89,8 +89,8 @@ SCENARIO(s2_pump_is_rate_limited_above_176_bpm) {
   CHECK(peaks / 6.0 <= 2.95);                        // every 2nd beat (600 ms), not every beat (300 ms)
 }
 SCENARIO(s4_live_looks_are_170_ms_apart) {
-  run(6); line("!**M:v=show\r");
-  say("!HFA:i=solid,c=ff0000\r"); run(0.06);
+  run(6); line("!**M:v=show\r"); line("!HFA:i=solid,c=ffffff\r", 1.0);   // a steady lit field first: a look that RELIGHTS a jewel
+  say("!HFA:i=solid,c=ff0000\r"); run(0.06);                              // is S9's to delay, and this scenario is about S4
   say("!HFA:i=solid,c=00ff00\r"); run(0.06);
   say("!HFA:i=solid,c=0000ff\r"); run(0.03);         // three looks inside 150 ms
   CHECK(latched(0).r > 0 && latched(0).g == 0 && latched(0).b == 0);   // the first shows; the others are held

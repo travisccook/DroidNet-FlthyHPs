@@ -254,22 +254,41 @@ SCENARIO(c6_hold_shows_a_pumped_look_at_its_own_level) {
 }
 
 // ===== S9: one limit for every path, tested as a property on the latched frames ==================
-// What an eye at the dome sees of one jewel: the mean, over its seven pixels, of each pixel's
-// brightest channel, as a fraction of the owner's ceiling (the strip's level; BRIGHT 100 at boot).
-// DARK is a mean of 5 % or less, LIT is 25 % or more; a dark-to-lit step is an ONSET. S9: at most
-// three onsets in any second, whatever lines arrive, and never brighter than the ceiling.
+// What an eye at the dome sees of one jewel: the FIELD LEVEL, the mean over its seven pixels of each
+// pixel's brightest channel, as a fraction of the owner's ceiling (the strip's level; BRIGHT 100 at
+// boot). An observer calls the field dark below one level and lit above another; a dark-to-lit step
+// is an ONSET. S9: at most three onsets in any second, whatever lines arrive, and never brighter
+// than the ceiling. The limit must not depend on where an observer draws the two lines, so three
+// observers count, the same three as the logics fork's property stage: 10 % and 50 % of the ceiling,
+// 19 % and 75 %, 4 % and 31 %. (The core's gate promises this for any pair at least a quarter of the
+// ceiling apart; swings smaller than that are a look's texture and are not limited.)
 // Only the contract's onsets count: one that happens while the layer has the jewel's LEDs, or within
 // 300 ms of it letting go (so a reset that hands back to a lit off colour counts). The stock
-// firmware's own looks may strobe faster, as they always did (stock function 2, Short Circuit).
+// firmware's own looks may strobe faster, as they always did (stock function 2, Short Circuit), and
+// light the STOCK firmware adds to a jewel is the owner's: as the logics' stage does at a button
+// press, the observers start counting afresh there. What the contract does after it counts as ever.
 static int fullScale(int level) { return level >= 255 ? 255 : (255 * (level + 1)) >> 8; }
+struct Observer {
+  int darkPct, litPct; bool lit = false; std::vector<uint64_t> onsets, recent; int worst = 0;
+  void see(int S, int FS, bool counts, uint64_t now) {
+    if (!lit && S * 100 >= FS * litPct) {
+      lit = true;
+      if (counts) { onsets.push_back(now); recent.push_back(now); int n = 0; for (uint64_t x : recent) if (x + 1000000ULL > now) n++; worst = std::max(worst, n); }
+    } else if (lit && S * 100 <= FS * darkPct) lit = false;
+  }
+  void reread(int S, int FS) { if (S * 100 >= FS * litPct) lit = true; else if (S * 100 <= FS * darkPct) lit = false; }
+  void afresh() { recent.clear(); }
+  int maxPerSecond() const { return worst; }
+};
 struct Photo {
-  int hp, ceil; bool isDark = true, started = false; std::vector<uint64_t> onsets; uint64_t lastHad = 0; bool everHad = false;
-  int peak = 0, overCeiling = 0;
+  int hp, ceil; bool started = false; uint64_t lastHad = 0; bool everHad = false;
+  Observer obs[3] = {{10, 50}, {19, 75}, {4, 31}};
+  int peak = 0, overCeiling = 0, prevS = 0;
   bool paused = false;                               // while the owner's brightness command is on its way (see newCeiling)
   explicit Photo(int h, int c = 100) : hp(h), ceil(c) {}
   // The owner changed the strip level: every frame is rescaled, and "dark" and "lit" are fractions of
   // the NEW ceiling from here. That step is the owner's, not an onset: the next frame only re-reads
-  // the state (lit, dark, or in between and so unchanged).
+  // each observer's state (lit, dark, or in between and so unchanged).
   bool reread = false;
   void newCeiling(int c) { ceil = c; reread = true; paused = false; }
   void sample() {
@@ -278,17 +297,13 @@ struct Photo {
     for (int i = 0; i < 7; i++) { int m = std::max(p[i * 3], std::max(p[i * 3 + 1], p[i * 3 + 2])); S += m; peak = std::max(peak, m); if (m > fullScale(ceil)) overCeiling++; }
     if (neoStrips[hp].getBrightness() > ceil) overCeiling++;
     if (simHasLeds(hp)) { lastHad = us; everHad = true; }
-    const bool lit = S * 4 >= FS, dark = S * 20 <= FS;
-    if (!started) { started = true; isDark = !lit; return; }
-    if (reread) { reread = false; if (lit) isDark = false; else if (dark) isDark = true; return; }
-    if (isDark && lit) { isDark = false; if (everHad && us - lastHad <= 300000ULL) onsets.push_back(us); }
-    else if (!isDark && dark) isDark = true;
+    if (!started || reread) { started = true; reread = false; prevS = S; for (auto& o : obs) o.reread(S, FS); return; }
+    const bool counts = everHad && us - lastHad <= 300000ULL;
+    if (!counts && S > prevS) for (auto& o : obs) o.afresh();       // the stock firmware made the jewel brighter
+    prevS = S;
+    for (auto& o : obs) o.see(S, FS, counts, us);
   }
-  int maxPerSecond() const {
-    int best = 0;
-    for (size_t i = 0; i < onsets.size(); i++) { int n = 0; for (size_t j = i; j < onsets.size() && onsets[j] < onsets[i] + 1000000ULL; j++) n++; best = std::max(best, n); }
-    return best;
-  }
+  int maxPerSecond() const { return std::max(obs[0].maxPerSecond(), std::max(obs[1].maxPerSecond(), obs[2].maxPerSecond())); }
 };
 // lines on a timetable (tick = ms), sampled every 1 ms pass
 static int onsetsPerSecond(int hp, double secs, const std::function<void(int)>& everyMs) {
@@ -337,6 +352,23 @@ SCENARIO(s9_no_path_relights_a_jewel_more_than_three_times_a_second) {
           { int k = t % 340; if (k == 0) say("!HFP:c=ffffff,d=170\r"); if (k == 60) say("!HFX\r"); if (k == 175) say("!HFA:i=solid,c=ffffff\r"); if (k == 235) say("!HFX\r"); });
   S9_CASE("P i=off every 340 ms over solid white, with a B dip between", 0, 8, { line("!**M:v=show\r"); line("!HFA:i=solid,c=ffffff\r"); },
           { int k = t % 340; if (k == 0) say("!HFP:i=off,d=170\r"); if (k == 200) say("!HFB:b=0\r"); if (k == 250) say("!HFB:b=255\r"); });
+  // the logics fork's hostile profiles that the table above lacked, and the two things its property stage found
+  S9_CASE("P b=0 / b=255 over solid white every 50 ms (b= on P is the overlay's alone)", 0, 8, { line("!**M:v=show\r"); line("!HFA:i=solid,c=ffffff\r"); },
+          { if (t % 100 == 0) say("!HFP:i=solid,c=ffffff,b=0\r"); if (t % 100 == 50) say("!HFP:i=solid,c=ffffff,b=255\r"); });
+  S9_CASE("A cancelling an overlay, with P", 0, 8, { line("!**M:v=show\r"); line("!HFA:i=off\r"); },
+          { int k = t % 680; if (k == 0) say("!HFP:i=solid,c=ffffff\r"); if (k == 90) say("!HFA:i=off\r"); if (k == 260) say("!HFA:i=solid,c=ffffff\r");
+            if (k == 340) say("!HFP:i=off\r"); if (k == 430) say("!HFA:i=solid,c=ffffff\r"); if (k == 600) say("!HFA:i=off\r"); });
+  S9_CASE("X and M:v=idle alternation (dark, then the off colour), rear", 1, 8, line("!HRA:i=solid,c=ffffff\r"),
+          { if (t % 100 == 0) say("!HRX\r"); if (t % 100 == 50) say("!HRM:v=idle\r"); });
+  S9_CASE("live A restarting a pulse every 170 ms", 0, 8, line("!**M:v=show\r"), if (t % 170 == 0) say("!HFA:i=pulse,c=ffffff,s=255\r"));
+  S9_CASE("live A between white, X and a native look", 0, 8, line("!**M:v=show\r"),
+          { int k = t % 240; if (k == 0) say("!HFA:i=solid,c=ffffff\r"); if (k == 50) say("!HFX\r"); if (k == 60) say("!HFA:i=native:6\r"); if (k == 120) say("!HFA:i=solid,c=ffffff\r"); });
+  S9_CASE("a scored flash section delivered again and again", 0, 8, { line("!**M:v=show\r"); line("!HFA:i=flash,c=ffffff,s=255,at=0\r"); line("!**C:bpm=120\r"); },
+          if (t % 200 == 0) say("!HFA:i=flash,c=ffffff,s=255,at=0\r"));
+  S9_CASE("C:bpm=300 re-seed restarting the pump every 150 ms", 0, 8, { line("!**M:v=show\r"); line("!HFA:i=solid,c=ffffff,am=2,m=255\r"); }, if (t % 150 == 0) say("!**C:bpm=300\r"));
+  S9_CASE("B 0 / 255 over a native look (rainbow)", 0, 8, { line("!**M:v=show\r"); line("!HFA:i=native:6\r"); }, if (t % 50 == 0) say((t / 50) % 2 ? "!HFB:b=0\r" : "!HFB:b=255\r"));
+  S9_CASE("the owner's level coming back at idle: show + look + B:b=0, then idle (rear)", 1, 8, ,
+          { int k = t % 120; if (k == 0) say("!HRM:v=show\r!HRA:i=solid,c=ffffff\r"); if (k == 40) say("!HRB:b=0\r"); if (k == 80) say("!HRM:v=idle\r"); });
   CHECK_EQ(worst, 0);
 }
 
@@ -447,7 +479,8 @@ SCENARIO(s9_property_hostile_streams) {
       else { say("!**M:v=idle\r"); st.settle(); st.until(us + 500000); }
       std::string why; bool stock = backOnStock(st, 400.0, why);
       int n = st.worstOnsets();
-      if (n > 3 && getenv("S9_TRACE")) for (auto& p : st.ph) if (p.maxPerSecond() > 3) { printf("  hp%d onsets (ms):", p.hp); for (auto o : p.onsets) printf(" %.0f", o / 1000.0); printf("\n"); }
+      if (n > 3 && getenv("S9_TRACE")) for (auto& p : st.ph) for (auto& o : p.obs) if (o.maxPerSecond() > 3) {
+        printf("  hp%d observer %d/%d onsets (ms):", p.hp, o.darkPct, o.litPct); for (auto x : o.onsets) printf(" %.0f", x / 1000.0); printf("\n"); }
       if (n > 3 || st.overCeiling() || !stock || ledOnlyViolations || holdViolations)
         printf("  seed %2d (%s): %d onsets/s, %d frames over the ceiling, LED-only %ld, hold %ld%s%s\n", seed, ending == 0 ? "idle" : ending == 1 ? "host dies" : "button",
                n, st.overCeiling(), ledOnlyViolations, holdViolations, stock ? "" : ", NOT back on stock: ", why.c_str());

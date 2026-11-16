@@ -87,7 +87,6 @@ struct FlthyUnit {
   // ---- this board's own
   uint8_t  ride        = 255;             // verb B: a fraction of s.ceil on the STRIP's brightness
   uint8_t  level       = 0;               // last verb-L value (meter substitute)
-  uint8_t  pulseBright = 255;             // the overlay's level, a fraction like s.bright
   int      lastEnvBright = -1;            // memo for the looks that repaint only on a change
   uint32_t frameMs     = 0;               // scan/sparkle self-throttle
   uint8_t  frame       = 0;
@@ -174,33 +173,32 @@ inline bool contractLedTwitchHeld(uint8_t hp) {
 // Does this layer have the unit's LEDs (so a reset must hand them back)?
 static inline bool _heldLeds(uint8_t hp) { return contractHoldsLeds(hp) || _slotIsOurs(hp) || _nativeIsUp(hp); }
 
-// ------------------------------------------------- S9: the onset gate, at the latch ---
+// ------------------------------------------------- S9: the field gate, at the latch ---
 // v1.3 S9: whatever lines arrive, in whatever order, a jewel goes from dark to lit across its
 // whole field at most three times a second. Rules per path (S2, S4, S8) cannot promise that: verb
 // B, a meter following L, X between looks, a reset that hands back to a lit off colour, a C seek
-// across a seam and a tempo re-seed each relight a jewel on their own. So the limit is kept in ONE
-// place, where every frame is latched: DnStrip::show() (src/droidnet/dn_strip.h), which the stock
-// firmware and this layer both go through.
-//   * The field is measured as the eye sees it: the sum, over the seven pixels, of each pixel's
-//     brightest channel, against seven pixels at the ceiling (the owner's strip level).
-//     DARK is 5 % or less, LIT is 25 % or more; a frame in between changes nothing.
-//   * A LIT frame after a DARK one is an ONSET. If the last onset, of any origin, was under 340 ms
-//     ago (2 * STROBE_MIN_STATE_MS), the frame is NOT latched: the jewel stays as it is (dark, or
-//     dim on the way up) and the frame waits in the pixel buffer; the tick latches it as soon as
-//     the 340 ms are over. Four onsets 340 ms apart do not fit in one second.
-//   * A blackout is never delayed: a frame that is not an onset always passes.
-//   * Only this layer's relights are held back: a jewel it has now, or let go of in the last 340 ms
-//     (so the off colour coming back after a reset counts). The stock firmware's own looks run as
-//     Ryan wrote them, strobing ones included.
-// The gate is this fork's own. The shared core has no latch to hang it on; when the core gains a
-// per-unit onset anchor (revision CA1.2), FlthyLatch::lastOnsetMs is the field it replaces.
-static const uint16_t FLTHY_ONSET_GAP_MS = 2 * STROBE_MIN_STATE_MS;   // 340
+// across a seam and a tempo re-seed each relight a jewel on their own. The rule is the shared
+// core's, one definition for the three boards: contractFieldGate() (contract_core.h, "the field
+// gate"). This board's part is WHERE it is asked: at the one place every frame is latched,
+// DnStrip::show() (src/droidnet/dn_strip.h), which the stock firmware and this layer both go
+// through. So it needs no ask-then-tell for native looks either: Leia and the rainbow are drawn
+// by the stock code, but they reach the LEDs through the same latch.
+//   * The field level is what the core asks for: the mean, over the seven pixels, of each pixel's
+//     brightest channel, as latched (the strip's own level is already in the bytes, so the ceiling
+//     the gate compares with, s.ceil, is the owner's strip level).
+//   * A frame of a jewel this layer has, or let go of in the last 340 ms (so the off colour coming
+//     back after a reset counts), is passed through the gate. When the gate allows less than the
+//     frame's level, the frame is NOT latched: what is on the jewel already is at or below what
+//     the gate allows (it passed the gate itself), the frame waits in the pixel buffer, and the
+//     tick offers it again every pass. A fall is never delayed.
+//   * Any other frame is the stock firmware's own light, which runs as Ryan wrote it, strobing
+//     looks included. The gate is TOLD about it (contractFieldForced), so that what the contract
+//     does next keeps its distance from it.
+static const uint16_t FLTHY_ONSET_GAP_MS = 2 * STROBE_MIN_STATE_MS;   // 340: how long a hand-back stays this layer's
 struct FlthyLatch {
-  uint32_t lastOnsetMs = 0;               // the last dark-to-lit latch, whoever asked for it
-  uint32_t touchMs     = 0;               // the last pass this layer had the jewel, or handed it back
-  bool     dark        = true;            // the latched frame is DARK (hysteresis: see above)
-  bool     touched     = false;           // touchMs is meaningful
-  bool     pending     = false;           // a frame was held back and waits in the pixel buffer
+  uint32_t touchMs = 0;                   // the last pass this layer had the jewel, or handed it back
+  bool     touched = false;               // touchMs is meaningful
+  bool     pending = false;               // a frame was held back and waits in the pixel buffer
 };
 static FlthyLatch gLatch[HPCOUNT];
 static inline void _touch(uint8_t hp) { gLatch[hp].touchMs = millis(); gLatch[hp].touched = true; }
@@ -210,6 +208,7 @@ inline void DnStrip::show() {
   const uint8_t hp = (uint8_t)(this - neoStrips);
   if (hp >= HPCOUNT) { Adafruit_NeoPixel::show(); return; }
   FlthyLatch& g = gLatch[hp];
+  ContractUnitState& s = gUnit[hp].s;
   const uint8_t* px = getPixels();
   uint16_t sum = 0;
   for (uint8_t i = 0; i < NEO_JEWEL_LEDS; i++) {
@@ -217,21 +216,12 @@ inline void DnStrip::show() {
     for (uint8_t k = 0; k < FLTHY_PX_BYTES; k++) { const uint8_t v = px[i * FLTHY_PX_BYTES + k]; if (v > m) m = v; }
     sum += m;
   }
-  // the ceiling: the owner's level. A verb-B ride lowers the strip below it; the ceiling stays.
-  const uint8_t level = (gUnit[hp].ride != 255) ? gUnit[hp].s.ceil : getBrightness();
-  const uint16_t full = (uint16_t)NEO_JEWEL_LEDS * ((level == 255) ? 255u : (uint16_t)((255u * (level + 1u)) >> 8));
-  const bool lit = sum != 0 && (uint32_t)sum * 4u >= full, dark = (uint32_t)sum * 20u <= full;
+  const uint8_t level = (uint8_t)(sum / NEO_JEWEL_LEDS);
+  if (gUnit[hp].ride == 255) s.ceil = getBrightness();  // the ceiling is the owner's strip level; a verb-B ride sits below it
   const uint32_t now = millis();
-  if (g.dark && lit) {                                  // an onset
-    const bool ours = _hasLeds(hp) || (g.touched && (uint32_t)(now - g.touchMs) < FLTHY_ONSET_GAP_MS);
-    if (ours && (uint32_t)(now - g.lastOnsetMs) < FLTHY_ONSET_GAP_MS) {
-      g.pending = true;                                 // too soon: latch nothing; what is on the jewel is below LIT
-      return;
-    }
-    g.lastOnsetMs = now; g.dark = false;
-  } else if (dark) {
-    g.dark = true;
-  }
+  const bool ours = _hasLeds(hp) || (g.touched && (uint32_t)(now - g.touchMs) < FLTHY_ONSET_GAP_MS);
+  if (!ours) contractFieldForced(s, level, now);        // stock light: recorded, never held back
+  else if (contractFieldGate(s, level, now) < level) { g.pending = true; return; }   // too soon: keep what is on the jewel
   g.pending = false;
   Adafruit_NeoPixel::show();
 }
@@ -280,7 +270,7 @@ inline void contractOwnerBrightness(uint8_t hp, uint8_t level) {
   gUnit[hp].s.ceil = level;
   gUnit[hp].ride = 255;
   gUnit[hp].lastEnvBright = -1;                         // memoised looks repaint at the new level
-  // A frame the onset gate is holding back means the jewel still shows an older, dim frame scaled
+  // A frame the field gate is holding back means the jewel still shows an older, dim frame scaled
   // for the OLD level, and it cannot be rescaled. Black it out (a blackout is always allowed); the
   // held frame follows at the new level when its 340 ms are over.
   if (gLatch[hp].pending) {
@@ -289,7 +279,7 @@ inline void contractOwnerBrightness(uint8_t hp, uint8_t level) {
     memcpy(keep, px, n); memset(px, 0, n);
     neoStrips[hp].Adafruit_NeoPixel::show();
     memcpy(px, keep, n);
-    gLatch[hp].dark = true;
+    contractFieldGate(gUnit[hp].s, 0, millis());        // tell the gate: the field is dark
   }
 }
 // Put the unit's base on its jewel (no overlay up).
@@ -353,7 +343,7 @@ static inline uint8_t _envBright(uint8_t hp) {
 // vocabulary costs ZERO extra flash and can never drift from the base look's.
 // Only the four inputs differ between the two callers:
 //   base    : (s.effect,  s.color,      _envBright(hp)  — beat-pumped, s.startMs)
-//   overlay : (s.pulseFx, s.pulseColor, u.pulseBright   — un-pumped,
+//   overlay : (s.pulseFx, s.pulseColor, s.pulseBright   — un-pumped,
 //              s.pulseStartMs — the overlay owns its own time origin)
 // speed/level/frame counters always come from the unit (an overlay never owns them, which
 // is exactly why the STATEFUL effects — scan/sparkle/meter — are barred from ae= in
@@ -510,8 +500,7 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB
 static inline void _expireOverlay(uint8_t hp, uint32_t now) {
   FlthyUnit& u = gUnit[hp];
   ContractUnitState& s = u.s;
-  if (!s.pulseActive || (uint32_t)(now - s.pulseStartMs) < s.pulseDurMs) return;
-  s.pulseActive   = false;
+  if (!s.pulseActive || contractOverlayUp(s, now)) return;   // the core's one expiry rule; it takes the overlay down
   u.lastEnvBright = -1;                                  // force a base repaint
   if (!_slotIsOurs(hp)) { u.overNative = false; return; }   // the stock firmware took the jewel meanwhile
   if (u.overNative) {
@@ -542,7 +531,7 @@ inline void contractRenderHP(uint8_t hp) {
                                          // the accent would never actually be drawn over a
                                          // same-level base look
     _renderLook(hp, (s.pulseFx == CE_NONE) ? CE_SOLID : s.pulseFx,
-                s.pulseColor, u.pulseBright, s.pulseStartMs);
+                s.pulseColor, s.pulseBright, s.pulseStartMs);
     return;
   }
   if (s.base != CB_LOOK) { _showBase(hp); return; }      // a contract slot with no contract look: put the base back
@@ -578,7 +567,7 @@ static inline bool _fireAccent(uint8_t hp, ContractEffect fx, const ContractRGB&
   // parser applies — re-asserted here because verb P reaches this straight from the wire's i=.
   s.pulseFx      = accentEffectAllowed(fx) ? fx : CE_SOLID;
   s.pulseColor   = color;
-  u.pulseBright  = bright;
+  s.pulseBright  = bright;                               // the overlay's own level: never the base look's (S9)
   s.pulseDurMs   = accentDurClamp(durMs);                // a state shorter than the min state IS a strobe
   s.pulseStartMs = now;                                  // ALWAYS retrigger (defeats a re-send no-op)
   s.pulseLastMs  = now;                                  // the cool-down anchor: set on every accent that ARMS
@@ -700,7 +689,7 @@ static inline void _boundary(uint8_t hp, char kind, uint8_t wdSec) {
   if (kind == 's')      contractOnShow(s, ceiling, wdSec);
   else if (kind == 'x') contractOnStop(s, ceiling);
   else                  contractOnIdle(s, ceiling);
-  u.overNative = false;  u.level = 0;  u.pulseBright = 255;  u.lastEnvBright = -1;
+  u.overNative = false;  u.level = 0;  u.lastEnvBright = -1;
   if (kind != 'x') u.twitchFreed = false;               // a new show holds again; X stays in its mode
   _stopClockIfUnused();
   if (kind == 'x') {
@@ -739,9 +728,11 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p, uint16_t li
       // scored (a dropped scored line is not held, so verb V reports the load bad).
       if (pr.hasEffect && pr.effect == CE_NATIVE && !nativeAllowedFlthy(pr.nativeCode)) return;
       if (pr.hasAt) {                                  // a scored look: store it, do not apply it now
-        // Section 7: a unit whose load failed verb V drops every scored line until the next M:v=show,
-        // so a late or retried line cannot start a partial show. (CA1.2 may move this into the core.)
-        if (s.loadOk == 2) return;
+        // Section 7: a scored A carries its look. With no i= (or one this firmware does not know)
+        // the line is dropped: an entry is a whole section, not a patch.
+        if (!pr.hasEffect) return;
+        // (Section 7, in the core's scoreAccept(): a unit whose load failed verb V takes no scored line
+        // until the next M:v=show, and a line delivered twice changes nothing.)
         scoreAccept(s, gScore[hp], FLTHY_SCORE_CAP, _entryFrom(pr), lineCrc);   // a full table marks the load bad
         s.lastAccentBeat = accentEdgeAfterSeed(gBeat, now);   // C1 (BEAT_NONE while no clock runs)
         return;                                        // the jewel is NOT taken at load: the tick does that on the beat
@@ -860,10 +851,10 @@ inline void contractBeatTick() {
   for (uint8_t hp = 0; hp < HPCOUNT; hp++) {
     FlthyUnit& u = gUnit[hp];
     ContractUnitState& s = u.s;
-    // S9: this pass the layer has the jewel; and a frame the onset gate held back is latched as
-    // soon as its 340 ms are over (a look that paints once would otherwise stay dark).
+    // S9: this pass the layer has the jewel; and a frame the field gate held back is offered to
+    // it again every pass (a look that paints once would otherwise stay dark).
     if (_hasLeds(hp)) _touch(hp);
-    if (gLatch[hp].pending && (uint32_t)(now - gLatch[hp].lastOnsetMs) >= FLTHY_ONSET_GAP_MS) neoStrips[hp].show();
+    if (gLatch[hp].pending) neoStrips[hp].show();
     // L2: the host armed a watchdog (M:v=show,wd=<s>) and has been silent that long: the unit
     // idles itself, exactly as M:v=idle would. X does not disarm it; idle and a new show do.
     if (contractWatchdogExpired(s, gLastLineMs, now)) _boundary(hp, 'i', 0);
