@@ -14,7 +14,10 @@ mkdir -p "$OUT/src" && cp -r "$SRC"/. "$OUT/src/"
 sed -i.bak 's#\([0-9][0-9]*\)/brightness#AVRDIV(\1,brightness)#g' "$OUT/src/main.cpp"
 grep -q 'AVRDIV(255,brightness)' "$OUT/src/main.cpp" || { echo "FAIL: the x/0 substitution matched nothing in main.cpp"; exit 1; }
 CXX="${CXX:-g++}"
-"$CXX" -std=c++17 -O1 -g -w ${SIM_DEFS:-} -I "${SIM_FAKE:-../fake}" -I "$INC" -I "$OUT/src" -I . sim_main.cpp -o "$OUT/sim" || { echo "FAIL: the simulation did not build"; exit 1; }
+# The UART RX ring: SERIAL_RX_BUFFER_SIZE from platformio.ini's build_flags, 64 when it is not set.
+RING="$(sed -n 's/.*-DSERIAL_RX_BUFFER_SIZE=\([0-9][0-9]*\).*/\1/p' "${SIM_PIO_INI:-$SRC/../platformio.ini}" 2>/dev/null | head -1)"
+RING=$(( ${RING:-64} - 1 ))
+"$CXX" -std=c++17 -O1 -g -w -DSIM_RX_RING="${SIM_RX_RING:-$RING}" ${SIM_DEFS:-} -I "${SIM_FAKE:-../fake}" -I "$INC" -I "$OUT/src" -I . sim_main.cpp -o "$OUT/sim" || { echo "FAIL: the simulation did not build"; exit 1; }
 pass=0; fail=0; xfail=0; bad=""
 for s in $("$OUT/sim" --list); do
   if "$OUT/sim" "$s" > "$OUT/log" 2>&1; then rc=0; else rc=1; fi

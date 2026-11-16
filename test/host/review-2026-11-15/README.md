@@ -63,13 +63,17 @@ The probe (`harness.cpp`, `extra.inc`) asserts nothing. Each scenario prints sta
 ## sim-prototype
 
 The same harness reshaped into assertions, as plan Part 0 wants it: `sim.h` (the world, the wire, the
-behavioural LED-only invariant, `SCENARIO` and `CHECK`), `sim_main.cpp`, four scenario files and `run_sim.sh`,
+behavioural LED-only invariant, `SCENARIO` and `CHECK`), `sim_state.h`, `sim_main.cpp`, four scenario files and
+`run_sim.sh`,
 which runs one process per scenario and treats the names in `xfail.txt` as expected failures.
 
-- On the firmware as reviewed: 11 pass, 38 fail (all 38 are in `xfail.txt`).
+- On the firmware as reviewed: 11 pass, 39 fail (all 39 are in `xfail.txt`).
 - The scenarios follow the v1.3 spec as amended on 2026-11-16: an armed show keeps the stock idle look until its
   first `C`, live `A` or `P`; `d=` on `A` is ignored; `Q` is answered only with `r=`.
-- The wire model drops bytes when the UART's 63-byte ring is full and counts them (`rxOverruns`).
+- The wire model drops bytes when the UART's RX ring is full and counts them (`rxOverruns`). The ring is 63
+  bytes unless `platformio.ini` sets `-DSERIAL_RX_BUFFER_SIZE=<n>` (`run_sim.sh` reads it) or `SIM_RX_RING` is set.
+- `sim_state.h` is the only file that names the contract layer's own variables. The scenarios read state
+  through it (`armed()`, `lookUp()`, `scoreLen()`, ...), so moving the unit state edits one file.
 - The LED-only invariant is behavioural: the pass that handles a line sent as `!...` (whole, spliced or
   beheaded) must call no `moveTo()` and write no `HP_command`. A stock servo twitch that was due in that pass
   anyway is excused.
@@ -85,7 +89,8 @@ A prototype of the Flthy-side R1 fixes, used to check the plan's code. It is not
 - `patch_main.py`, `patch_cf.py`: the changes to `src/main.cpp` and `src/contract/ContractFlthy.h` as exact
   text replacements, in levels that match the plan's tasks.
 - `try.sh "<main levels>" "<ContractFlthy levels>"`: applies the levels to a temporary copy and runs the
-  simulation. `./try.sh 12AD AGBCDE` is everything: 38 pass, and the 11 that need the core's R1 fail.
+  simulation. `./try.sh 12AD AGBCDE` is everything: 39 pass, and the 11 that need the core's R1 fail. Level `1`
+  runs with a 255-byte ring, because plan Task 5 also sets `-DSERIAL_RX_BUFFER_SIZE=256`.
 - `r1-prototype.patch`: all levels as one diff against commit `f462a89` (`main.cpp` hunks carry CRLF).
 - `host-guards.patch`: what `test/host/mock_flthy.h` and `test/host/compile_contract.cpp` need so the existing
   mock guards pass against the prototype.
@@ -94,7 +99,7 @@ Scenarios that turn green at each level (cumulative, measured):
 
 | Level | Newly passing |
 | ----- | ------------- |
-| main `1` | `f1_back_to_back_lines`, `f1_beheaded_tail_cannot_reach_the_servos`, `f1_crlf_and_blank_lines`, `r11_burst_of_400_bytes_loses_no_line`, `r11_longest_v13_line_lands_whole` |
+| main `1` | `f1_back_to_back_lines`, `f1_beheaded_tail_cannot_reach_the_servos`, `f1_crlf_and_blank_lines`, `r11_burst_of_400_bytes_loses_no_line`, `r11_burst_of_short_lines_loses_none`, `r11_longest_v13_line_lands_whole` |
 | main `2` | `i2c_does_not_wipe_a_serial_line` |
 | main `A`, contract `A` | `f1_led_only_fuzz`, the five `f2_*`, `f4_stale_halt_does_not_kill_a_look`, both `f7_*`, the three `l1_*` |
 | contract `G` | `f4_a_stock_command_takes_the_jewel_back` |

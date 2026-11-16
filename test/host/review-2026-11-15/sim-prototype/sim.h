@@ -6,6 +6,7 @@
 uint32_t g_ms = 0; long g_pulseIn = 0; long g_servoMoves = 0;
 FakeSerial Serial; FakeWire Wire;
 #include "main.cpp"                      // the firmware under test
+#include "sim_state.h"                   // how the scenarios read the contract layer
 #include <functional>
 #include <map>
 #include <vector>
@@ -27,11 +28,12 @@ static bool ledOnlyChecked = true;                       // a scenario may switc
 static long ledTwitchStarts[HPCOUNT] = {0, 0, 0};        // stock LED auto twitches begun, per jewel
 static byte prevFn[HPCOUNT] = {255, 255, 255};
 
-// SIM_HELD(i): the firmware's own "the contract holds unit i" test, as the auto-twitch gate
-// in main.cpp spells it. Used only to excuse a stock twitch that was due in this pass anyway.
-#ifndef SIM_HELD
-#define SIM_HELD(i) (gUnit[i].active)
+// HardwareSerial's RX ring holds SERIAL_RX_BUFFER_SIZE - 1 bytes (63 on a stock Mega). run_sim.sh
+// reads the size from platformio.ini, so the simulation loses the bytes the board would lose.
+#ifndef SIM_RX_RING
+#define SIM_RX_RING 63
 #endif
+static long linesHandled = 0;                            // serial lines loop() has taken
 
 // Queue text on the wire, back to back at 9600 baud, no earlier than now. A line that starts
 // with '!' is tagged contract-origin, and so are its bytes if the firmware beheads it.
@@ -59,7 +61,7 @@ inline void pass(uint64_t pass_us = PASS) {              // one loop() pass, the
   for (int i = 0; i < HPCOUNT; i++)
     if (millis() > twitchHPTime[i] && enableTwitchHP[i] && HP_command[i].HPFunction > 99 && !SIM_HELD(i)) twitchDue = true;
   long moves0 = g_servoMoves; HPCmd hp0[HPCOUNT]; memcpy(hp0, HP_command, sizeof hp0);
-  if (stringComplete) lineContract = lineOther = false;
+  if (stringComplete) { lineContract = lineOther = false; linesHandled++; }
   loop();
   // THE LED-ONLY INVARIANT, behavioural: the pass that handles a contract-origin line (whole,
   // spliced or beheaded) starts no servo move and writes no HP_command.
@@ -75,8 +77,8 @@ inline void pass(uint64_t pass_us = PASS) {              // one loop() pass, the
     prevFn[i] = f;
   }
   us += pass_us; g_ms = (uint32_t)(us / 1000);
-  for (; wi < wire.size() && wire[wi].at <= us; wi++) {   // HardwareSerial's RX ring holds 63 bytes; the rest are lost
-    if (Serial.rx.size() >= 63) { rxOverruns++; continue; }
+  for (; wi < wire.size() && wire[wi].at <= us; wi++) {   // a byte that finds the RX ring full is lost
+    if (Serial.rx.size() >= SIM_RX_RING) { rxOverruns++; continue; }
     Serial.rx.push_back(wire[wi].c); rxContract.push_back(wire[wi].contract);
   }
   size_t before = Serial.rx.size();

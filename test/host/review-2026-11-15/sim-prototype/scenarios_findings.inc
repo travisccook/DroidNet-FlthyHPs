@@ -13,12 +13,12 @@ SCENARIO(f1_back_to_back_lines) {
       bad += trial([=] {
         run(1.0, p); us += phase;
         say("!**M:v=show\r!HFA:i=solid,c=ff0000\r!HRA:i=comet,c=00ff00\r!HTA:i=twinkle,c=0000ff\r"); run(1.0, p);
-        CHECK(gInterlocked[0] && gInterlocked[1] && gInterlocked[2]);
-        CHECK(gUnit[0].active && gUnit[0].effect == CE_SOLID);
-        CHECK(gUnit[1].active && gUnit[1].effect == CE_COMET);
-        CHECK(gUnit[2].active && gUnit[2].effect == CE_TWINKLE);
+        CHECK(armed(0) && armed(1) && armed(2));
+        CHECK(lookUp(0) && lookEffect(0) == CE_SOLID);
+        CHECK(lookUp(1) && lookEffect(1) == CE_COMET);
+        CHECK(lookUp(2) && lookEffect(2) == CE_TWINKLE);
         say("!**X\r!**M:v=idle\r"); run(1.0, p);
-        CHECK(!gInterlocked[0] && !gInterlocked[1] && !gInterlocked[2]);
+        CHECK(!armed(0) && !armed(1) && !armed(2));
       });
     printf("  loop pass %4llu us: %d of %d phases lost a line\n", (unsigned long long)p, bad, n);
     CHECK_EQ(bad, 0);
@@ -27,7 +27,7 @@ SCENARIO(f1_back_to_back_lines) {
 SCENARIO(f1_crlf_and_blank_lines) {                  // \r\n and stray terminators cost nothing and lose nothing
   run(6);
   say("!**M:v=show\r\n!HFA:i=solid,c=ff0000\r\n\r\n\n!HRA:i=comet,c=00ff00\r\n"); run(1.0, 3000);
-  CHECK(gInterlocked[0]);  CHECK(gUnit[0].active && gUnit[0].effect == CE_SOLID);  CHECK(gUnit[1].active && gUnit[1].effect == CE_COMET);
+  CHECK(armed(0));  CHECK(lookUp(0) && lookEffect(0) == CE_SOLID);  CHECK(lookUp(1) && lookEffect(1) == CE_COMET);
 }
 SCENARIO(r11_burst_of_400_bytes_loses_no_line) {     // spec section 11: 408 bytes, no gap, at 9600 baud
   const uint64_t passes[] = {300, 1000, 2000, 4000, 6000};
@@ -40,10 +40,23 @@ SCENARIO(r11_burst_of_400_bytes_loses_no_line) {     // spec section 11: 408 byt
       }
       CHECK_EQ(burst.size(), 408);
       say(burst.c_str()); run(1.5, p);
-      for (int hp = 0; hp < HPCOUNT; hp++) CHECK_EQ(gScoreCount[hp], 4);
+      for (int hp = 0; hp < HPCOUNT; hp++) CHECK_EQ(scoreLen(hp), 4);
       CHECK_EQ(rxOverruns, 0);
     });
     printf("  loop pass %4llu us: %s\n", (unsigned long long)p, bad ? "LOST A LINE" : "all 12 lines landed");
+    CHECK_EQ(bad, 0);
+  }
+}
+SCENARIO(r11_burst_of_short_lines_loses_none) {      // the worst case for one line a pass: 80 five-byte lines
+  const uint64_t passes[] = {300, 1000, 2000, 4000, 6000, 10000};
+  for (uint64_t p : passes) {
+    int bad = trial([=] {
+      run(1.0, p); long n0 = linesHandled;
+      std::string burst; for (int i = 0; i < 80; i++) burst += "!HFX\r";   // 400 bytes
+      say(burst.c_str()); run(1.5, p);
+      CHECK_EQ(linesHandled - n0, 80);  CHECK_EQ(rxOverruns, 0);
+    });
+    printf("  loop pass %5llu us: %s\n", (unsigned long long)p, bad ? "LOST BYTES" : "all 80 lines landed");
     CHECK_EQ(bad, 0);
   }
 }
@@ -51,7 +64,7 @@ SCENARIO(r11_longest_v13_line_lands_whole) {         // 102 characters (core pla
   const char* l = "!H*A:i=colorcycle,c=3b82f6,b=255,s=128,at=123456,am=2,an=16,ap=15,m=200,ae=colorcycle,ac=ffffff,ad=250";
   CHECK_EQ(strlen(l), 102);
   run(6); line("!**M:v=show\r"); say(l); say("\r"); run(0.5);
-  CHECK_EQ(gScoreCount[2], 1);  CHECK_EQ(gScore[2][0].atBeat, 123456);  CHECK_EQ(gScore[2][0].accentDur10, 25);
+  CHECK_EQ(scoreLen(2), 1);  CHECK_EQ(gScore[2][0].atBeat, 123456);  CHECK_EQ(gScore[2][0].accentDur10, 25);
 }
 SCENARIO(f1_beheaded_tail_cannot_reach_the_servos) { // the hand-placed interleaving from the review
   ledOnlyChecked = false;                            // loop() is driven by hand here; the checks are explicit
@@ -126,11 +139,11 @@ SCENARIO(f3_native_allow_list) {
   for (const char* n : refused) {
     std::string l = std::string("!HFA:i=native:") + n + ",c=0000ff\r"; line(l.c_str());
     CHECK_EQ(LED_command[0].LEDFunction, 102);       // ignored whole: the red solid is still there
-    CHECK(gUnit[0].active);
+    CHECK(lookUp(0));
   }
   line("!HFA:i=native:1\r");  CHECK_EQ(LED_command[0].LEDFunction, 1);    // Leia
   line("!HFA:i=native:6\r");  CHECK_EQ(LED_command[0].LEDFunction, 6);    // rainbow
-  line("!HFA:i=native:3,at=4\r");  CHECK_EQ(gScoreCount[0], 0);          // refused in a score too
+  line("!HFA:i=native:3,at=4\r");  CHECK_EQ(scoreLen(0), 0);          // refused in a score too
 }
 SCENARIO(f3_no_accent_replaces_a_native_look) {
   run(6); line("!**M:v=show\r"); line("!HFA:i=comet,c=00ff00\r", 1.0); line("!HFA:i=native:1,c=0000ff\r", 1.0);
@@ -180,7 +193,7 @@ SCENARIO(l1_idle_after_an_armed_show_that_never_began) {
 SCENARIO(f4_a_stock_command_takes_the_jewel_back) {  // outside a show the operator's command wins, and the hold ends
   run(600); line("!HFA:i=solid,c=ff0000\r", 300.0);
   long m = g_servoMoves; line("F0055|2\r", 0.3);
-  CHECK(!gUnit[0].active);  CHECK_EQ(g_servoMoves - m, 0);
+  CHECK(!lookUp(0));  CHECK_EQ(g_servoMoves - m, 0);
   long t = ledTwitchStarts[0]; run(1800); CHECK(ledTwitchStarts[0] - t >= 5);
 }
 
@@ -243,9 +256,9 @@ SCENARIO(f9_pulse_obeys_the_rate_floor) {
 SCENARIO(l4_d_on_a_look_is_ignored) {                // v1.3 hosts never send it; a v1.3 board ignores it
   run(6); line("!**M:v=show\r");
   line("!HFA:i=solid,c=ff0000,d=500\r", 1.5);
-  CHECK(gUnit[0].active);  CHECK(latched(0).r > 0);
+  CHECK(lookUp(0));  CHECK(latched(0).r > 0);
   line("!HFA:i=solid,c=00ff00\r", 1.5);
-  CHECK(gUnit[0].active);  CHECK(latched(0).g > 0);
+  CHECK(lookUp(0));  CHECK(latched(0).g > 0);
 }
 
 // ---- L3: a pulse with no show armed overlays the stock look and returns to it ----------------
@@ -269,6 +282,6 @@ SCENARIO(i2c_does_not_wipe_a_serial_line) {
   while (wi < 10) pass(500);                         // half of the serial line has arrived
   i2c("R0053");                                      // a stock command lands on I2C right now
   run(0.5);
-  CHECK(gUnit[0].active && gUnit[0].effect == CE_SOLID);             // the serial line survived
+  CHECK(lookUp(0) && lookEffect(0) == CE_SOLID);             // the serial line survived
   CHECK_EQ(LED_command[1].LEDFunction, 5);  CHECK(latched(1) == (RGB3{0, 100, 0}));   // and the I2C command ran
 }

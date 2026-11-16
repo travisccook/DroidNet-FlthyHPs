@@ -14,5 +14,7 @@ cp -r ../../../../src "$OUT/src"
 [ -z "${1:-}" ] || python3 patch_main.py "$OUT/src/main.cpp" "$1"
 [ -z "${2:-}" ] || python3 patch_cf.py "$OUT/src/contract/ContractFlthy.h" "$2"
 DEFS=""; case "${1:-}" in *A*) DEFS='-DSIM_HELD(i)=contractHolds(i)' ;; esac
+# main level 1 goes with -DSERIAL_RX_BUFFER_SIZE=256 in platformio.ini (plan Task 5): a 255-byte ring
+case "${1:-}" in *1*) export SIM_RX_RING=255 ;; esac
 cp ../sim-prototype/xfail.txt "$OUT/xfail.all"
 ( cd ../sim-prototype && : > "$OUT/empty" && SIM_XFAIL="$OUT/empty" SIM_DEFS="$DEFS" ./run_sim.sh "$OUT/src" ) || true
