@@ -65,7 +65,7 @@ non-latching render primitive a no-op). Verified here:
   time with stand-ins for the flash-string hooks this board uses. Both run on a normal computer.
 - `test/host/sim` — the **real `src/main.cpp`** on a fake Arduino core, with a 9600-baud wire in
   both directions (the receive ring that loses bytes when full, the transmit ring that blocks a write
-  when full) and loop passes of random length: 91 scenarios, from the
+  when full) and loop passes of random length: 104 scenarios (two record known limits), from the
   stock commands and the auto twitch to bursts, a pushed score, the watchdog and the load check.
   Three things are checked on
   every simulated pass: a pass that handles a `!` line (whole, spliced or corrupted) starts no servo
@@ -89,11 +89,11 @@ non-latching render primitive a no-op). Verified here:
   identity and its `Serial` adapter, with a 13-character `-dirty` fw and with none.
 - `bash test/host/run.sh` now finishes by cross-compiling the firmware for real.
 
-Flash is comfortable on this board, unlike its PSI sibling: **44,372 B of 253,952 B (17.5%)**, with
-SRAM at 4,673 B of 8,192 B (57.0%); 2,112 B of that is the three 32-section score tables.
+Flash is comfortable on this board, unlike its PSI sibling: **44,900 B of 253,952 B (17.7%)**, with
+SRAM at 4,676 B of 8,192 B (57.1%); 2,112 B of that is the three 32-section score tables.
 
-The stack has been bounded statically too (`test/host/stack_report.py`): **440 B of the 3,519 B
-available (13%)**, with no recursion, no `alloca`/VLA, and — unlike the PSI — **no interrupt-nesting
+The stack has been bounded statically too (`test/host/stack_report.py`): **476 B of the 3,516 B
+available (14%)**, with no recursion, no `alloca`/VLA, and — unlike the PSI — **no interrupt-nesting
 hazard**: no interrupt handler reaches a `sei`, so interrupts cannot nest. The I2C handler does not
 render LEDs and does not touch a `String`: it copies the bytes into its own fixed buffer, and `loop()`
 takes the line from there with interrupts off. (The tool takes any two bytes of initialised data that
@@ -219,15 +219,18 @@ in the WDP announce). What that means on the holoprojectors:
 - **A part of the jewel (S12).** Seven pixels make a small field: two of them are a quarter of it. So
   that no pair or half of the jewel goes dark and lit more than three times a second, four looks are
   drawn for the jewel on a glowing bed, where no pixel of the look goes under two fifths of the
-  look's level: **sparkle** (two to five pixels at full, one moving at a time), **twinkle** (each
-  pixel between the bed and full), **chase** (the two bright pixels turn round a ring that glows)
-  and **comet** (the head and tail travel round a ring that glows; a lap is never under 680 ms).
-  The centre pixel of chase and comet stays off. `native:1` (Leia) is slower through the contract
-  than from a button: a frame that makes any pixel brighter follows the last such frame by 340 ms
-  at the least, so about three re-rolls a second. Verb `L` takes a higher level at most once in
-  340 ms. Scan and sparkle no longer black the jewel out when they start. **Not closed:** in
-  hostile random streams about one in two hundred still lights one part of a jewel four times in a
-  second (a look's own drawing lights it once, and three changes of the whole jewel follow).
+  look's level: **sparkle** (two to five pixels at full, one moving every third to half of a
+  second), **twinkle** (each pixel between the bed and full), **chase** (the two bright pixels
+  turn round a ring that glows, a step every 130 ms at the least) and **comet** (head and tail
+  round a ring that glows, a lap in 680 ms at the least). The centre pixel of chase and comet
+  stays off. A scan laps the ring in 680 ms at the least. `native:1` (Leia) is slower through the
+  contract than from a button: about three re-rolls a second. Verb `L`, a look's `b=` and verb `B`
+  go up at most once in 340 ms between them, and down at once. A look sent again in another colour
+  changes colour where it is and does not start again.
+- **Known limits.** The full list is in [`DROIDNET_FORK.md`](DROIDNET_FORK.md#known-limits-release-1).
+  The main one: the limits are kept for the jewel as a whole. Two looks that each light part of
+  the jewel, sent by turns as fast as the contract lets them, can still light one part of it four
+  to six times in a second by the strictest count.
 - **Pause.** `C:bpm=0` holds the clock and the score. A look that was pumping with the beat is shown
   still, at its own `b=` level, while held.
 - **Lines and bursts.** A line may be 128 bytes. A PlatformIO build has a 256-byte UART receive ring;
@@ -406,7 +409,7 @@ bash test/host/run.sh
 # [1b] wdp_announce_core unit tests                -> 37,506/37,506 checks
 # [1c] wdp_fork.h announce adapter + identity      -> 19/19 checks, with fw "abcdef0-dirty" and "unknown"
 # [2]  ContractFlthy.h firmware type-check, against a mock
-# [2b] whole-firmware simulation                   -> 91 scenarios: the real src/main.cpp on a fake
+# [2b] whole-firmware simulation                   -> 104 scenarios: the real src/main.cpp on a fake
 #      Arduino core; a scenario named in test/host/sim/xfail.txt must fail (the file is empty)
 # [3]  static source guards (LED-only invariant for the contract and the brightness branch,
 #      wire budget, no Serial write that could land inside a WDP announce)

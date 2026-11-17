@@ -48,7 +48,7 @@ announce" below.
   `ContractFlthy.h` against `test/host/mock_flthy.h`, 1,617,274 contract fuzz checks, 77/77 native
   brightness parser checks and 2,965,122 native brightness fuzz checks, 37,506 WDP announce core
   checks and 19 adapter checks (run twice).
-- **Whole-firmware simulation: 91 scenarios pass.** Stage 2b of `run.sh`
+- **Whole-firmware simulation: 102 scenarios pass and 2 fail as expected (known limits, S12).** Stage 2b of `run.sh`
   (`test/host/sim`) runs the real `src/main.cpp` on a fake Arduino core: the 9600-baud wire with its
   receive ring (bytes are lost when it is full) and its transmit ring (a write blocks when it is
   full), `pulseIn()` blocking as it does in RC mode, and loop passes of random length. Origin is
@@ -93,8 +93,17 @@ announce" below.
   logics fork records as a known failure (a comet and a full look by turns) is closed on the jewel
   by the comet's bed. Soak: no stream of 12,000 breaks S9 or S4; 63 light one part 4 times in a
   second (see "A part of the jewel" below).
-- **Build:** flash 44,372 B of 253,952; SRAM 4,673 B of 8,192 (the score tables are 2,112 B).
-  `stack_report.py`: worst-case stack 440 B of the 3,519 B left, 3,079 B spare. The heap (Arduino
+- **CA1.7 round.** Core `fe1c8ad`: a chase steps every 130 ms at the least and a scan laps the ring in
+  680 ms; a change of colour alone recolours a look in place; `b=` on a look goes up at most once
+  in 340 ms, in verb `L`'s window, and this board's verb-`B` ride shares that window. The core's
+  `test_fx_regions.cpp` is stage 1j. The regions are also counted the gate's way; sparkle is slowed
+  for it. The logics fork's known-failure scripts run on the jewel: two of the five read 4 by the
+  gate's count and are recorded. The first soak on this core broke on 3 of 12,000 streams: one
+  fault of the layer (the lit peak kept in sevenths was not cleared when a held frame was blacked
+  out; `s9_the_lit_peak_starts_afresh_at_every_onset`) and two of the oracle (its colour test now
+  allows for the LEDs' rounding). See "Known limits" below.
+- **Build:** flash 44,900 B of 253,952; SRAM 4,676 B of 8,192 (the score tables are 2,112 B).
+  `stack_report.py`: worst-case stack 476 B of the 3,516 B left, 3,040 B spare. The heap (Arduino
   `String`) shares that space. (The tool takes any two bytes of `.data` equal to a function's address
   for a function pointer; on one build of the fix round two letters of "Flthy HP Controller" matched
   `RCHP()` and it called the bound "not sound" over an interrupt path that does not exist.)
@@ -229,54 +238,81 @@ What `ContractFlthy.h` does on top of the shared core. The spec's rule numbers a
   by luminance. The latch passes both figures, measured on the look's first lit frame, to
   `contractNativeStarted(s, code, level, lum, now)`, and `contractNativeLevel(s, level, lum, now)`
   at a verb-`B` step (`nativeFullY`).
-- **Verb `L`.** `contractLevelOffer()` in the handler and `contractLevelDue()` there and once a pass;
+- **Verb `L`.** `contractLevelOffer()` in the handler, `contractLevelDue()` there, and
+  `contractHoldsDue()` once a pass (it moves `L` and `b=` in one window);
   the meter look reads `s.level`. A fall is at once, a raise at most once in 340 ms.
 - **One rise is one onset (CA1.6).** The core's `fieldRise`. The latch's own care for the lit peak in
   sevenths moves the gate's times only and does not touch the flag. Pulse and wipe in red, green,
   blue, `116530` and white are never held (`gate_held_frames_table`).
 - **A part of the jewel (S12).** The property test watches twenty-two regions of each jewel: the
   whole; the centre with each half of the ring and each half alone (six rotations each); the three
-  opposite pairs; the six pairs of neighbours. A region is lit when its level reaches an observer's
-  "lit" and two of its pixels (a quarter of the field) are not dark; the limit is three onsets of
-  one region in a second. Nothing gates regions. What failed by its own design was redrawn or
-  slowed:
+  opposite pairs; the six pairs of neighbours. Two observers count a region's onsets, and the limit
+  for each is three in a second. **The bands:** a region is lit when its level reaches an observer's
+  "lit" and two of its pixels (a quarter of the field) are not dark, and dark again at its "dark"
+  (10 and 50 %, 19 and 75 %, 4 and 31 % of the ceiling). **The gate's count** (core revision CA1.7,
+  `test_fx_regions.cpp`): a rise of more than a tenth of the ceiling above the region's last
+  trough. Nothing gates regions. Every look alone, `s=255`, white and `116530`, 30 s
+  (`s12_region_rates_each_look_alone_at_its_fastest`, asserted for both observers):
 
-  | Look alone, `s=255` | One region in a second, before | Now | What changed |
-  | ---- | ---- | ---- | ---- |
-  | sparkle | 10 (an opposite pair) | 1 | drawn on a bed: no pixel under two fifths of the look's level |
-  | chase | 12 (the opposite pair that is lit) | 1 | the ring between the two bright pixels at the bed |
-  | twinkle | 4 | 1 | each pixel from the bed to full |
-  | comet | 2 | 0 | the ring behind the comet at the bed; the core: a lap is 684 ms |
-  | `native:1` Leia | 4 (a half of the ring) | 3 | frames that brighten a pixel are 340 ms apart |
-  | flash | 3 (the whole) | 3 | |
-  | pulse, wipe | 2 (the whole) | 2 | |
-  | rainbow, `native:6` | 1 | 1 | |
-  | solid, scan, meter, gradient, colorcycle | 0 | 0 | |
+  | Look | Bands, as first drawn | Bands now | The gate's count now | What changed |
+  | ---- | ---- | ---- | ---- | ---- |
+  | sparkle | 10 | 1 | 2 | on a bed, and one spark moves every 477 to 350 ms |
+  | chase | 12 | 1 | 3 | on a bed; the core: a step is 130 ms at the least |
+  | twinkle | 4 | 1 | 3 | each pixel from the bed to full |
+  | comet | 2 | 1 | 3 | on a bed; the core: a lap is 684 ms |
+  | `native:1` Leia | 4 | 3 | 3 | frames that brighten a pixel are 340 ms apart |
+  | scan | 0 | 0 | 3 | the core: a lap of the ring is 684 ms |
+  | flash | 3 | 3 | 3 | |
+  | pulse, wipe | 2 | 2 | 2 | |
+  | rainbow | 1 | 1 | 2 | |
+  | solid, meter, gradient, colorcycle, `native:6` | 0 or 1 | 0 or 1 | 0 | |
 
-  (`s12_region_rates_each_look_alone_at_its_fastest`, white and `116530`, 30 s a look; a single
-  onset is the look's start.) The bed (`FLTHY_BED`, 102 of 255) works for any observer whose "dark"
-  is under two fifths of its "lit": the look's own motion moves a part of the jewel by a factor of
-  two and a half at the most, so what lights a part is a change of the whole field, which the field
-  gate times. Leia sits at the limit by itself; the look that follows it waits for Leia's last
-  brightening frame, as above.
+  **The bed** (`FLTHY_BED`, 102 of 255): sparkle, twinkle, chase and comet keep every pixel of the
+  look at two fifths of its level or more (the centre of chase and comet stays off). The look's own
+  motion then moves a part of the jewel by a factor of two and a half at the most, which no band
+  observer whose "dark" is under two fifths of its "lit" sees as dark and lit. The core's floors of
+  CA1.7 (chase 130 ms a step, scan and comet 680 ms a lap) keep each look alone to three by the
+  gate's count, and they came after the bed. The bed stays because a ring of six and a centre is
+  not a strand of six: the chase's two bright pixels are always an opposite pair, a quarter of the
+  field that the core's test of neighbouring windows does not look at, and by turns with a full
+  look a chase or a comet without the bed lights a pair again and again (below). **Sparkle** is
+  this fork's own drawing, so the core's test does not cover it: by the gate's count it read 10 at
+  a move every 40 ms, and one spark now moves every 350 ms at the least.
 
   **By turns with light on the whole jewel**
   (`s12_region_rates_each_look_by_turns_with_full_light`): every look by turns with a solid look
   (510 ms and 170 ms), under a white pulse every 50 ms, and sent again in another colour every
-  170 ms, at `s=255` and `s=0`. The worst region: flash 3, pulse 3, scan 3, wipe 3, and 0 for the
-  rest. The first of these scripts is the defect the logics fork records as a known failure (a comet
-  and a full look by turns); on the jewel it read 4, and a comet under pulses 5 and 6 in the first
-  soak. The comet on the bed closes it here: nothing is expected to fail.
+  170 ms, at `s=255` and `s=0`. By the bands (asserted): flash, pulse, scan and wipe 3 at the most,
+  0 for the rest. By the gate's count (reported, not asserted): 4 to 6 for scan, comet, chase and
+  twinkle, 4 for rainbow and sparkle.
 
-  The random streams measure the regions and do not assert them. In the last soak (three
-  fresh seed bases, 4,000 streams each, hostile scripts and stock traffic mixed in) no stream broke
-  S9 or S4, and 63 of the 12,000 lit one part of a jewel 4 times in a second, never more. Every one
-  has the same shape: a part is lit once by a look's own drawing and not by a change of the whole
-  field (after the jewel was dark, a look on the bed starts under an observer's "lit" line and its
-  comet head or a spark arrives up to 300 ms later; a rainbow's drift; an accent drawn as a wipe),
-  and the whole jewel is then lit three times at the gate's pace of 340 ms. Closing it takes a gate
-  that knows parts of the field; it is not fixed. (`S9_REPLAY=1` prints a `REGION` line with the LED
-  function and effect at each onset, and `S9_ONLY=<n>,<n>` runs chosen streams of a soak again.)
+  **The scripts the logics fork records as known failures**, 20 s each on the jewel
+  (`s12_known_*`, one scenario for each observer):
+
+  | Script | Logics | Jewel, bands | Jewel, the gate's count |
+  | ---- | ---- | ---- | ---- |
+  | a scan and a chase by turns every 170 ms | 6 | 3 | 3 |
+  | a scan and a full look by turns every 170 ms | 6 | 3 | 3 |
+  | `C` seeks across sections of solid, scan, comet and wipe | 5 | 3 | **4** |
+  | a wipe with a wipe accent over it every 340 ms | 5 | 3 | 3 |
+  | a comet and a full look by turns (510 ms and 170 ms) | 4 | 0 | **4** |
+
+  The two figures of 4 are in `xfail.txt`. The comet case is closed on the jewel for the bands (the
+  ring behind the comet never goes dark, so the full look does not light it "again") and not for
+  the gate's count (from the bed to full is more than a tenth).
+
+  The random streams measure the regions and do not assert them. In the last soak (three fresh
+  seed bases, 4,000 streams each, hostile scripts and stock traffic mixed in) no stream broke S9 or
+  S4. By the bands, 68 of the 12,000 lit one part of a jewel 4 times in a second, never more, all
+  of one shape: a part is lit once by a look's own drawing and not by a change of the whole field
+  (after the jewel was dark, a look on the bed starts under an observer's "lit" line and its comet
+  head or a spark arrives up to 300 ms later; a rainbow's drift; an accent drawn as a wipe), and the
+  whole jewel is then lit three times at the gate's pace of 340 ms. By the gate's count, 4,577 of
+  the 12,000 (38 %) lit one part more than three times in a second, 8 times or more at the worst:
+  that count sees every hand-over between two looks that light different parts, and the streams
+  are made of those. Closing either takes a gate that knows parts of the field. (`S9_REPLAY=1`
+  prints a `REGION` line with the LED function and effect at each onset, and `S9_ONLY=<n>,<n>` runs
+  chosen streams of a soak again.)
 - **Native looks (S10).** `nativeGatedFlthy()` says which kind. `native:6` (rainbow) RUNS AS STOCK:
   `contractNativeMayStart()` before the LEDs are handed over, `contractNativeStarted()` at the first
   lit frame with the level it runs at, `contractNativeLevel()` when a verb-`B` ride moves it,
@@ -291,11 +327,16 @@ What `ContractFlthy.h` does on top of the shared core. The spec's rule numbers a
   whole-field swings of a tenth or more a second (an open question for the owner);
   `s10_native_looks_are_classified_by_their_stock_field_swing` measures both looks and fails if the
   core's list and the measurement drift apart.
-- **Verb `B`: the step is held.** A fall applies at once; a raise, and the owner's level coming back
-  at a boundary, waits until `contractFieldAsk()` allows a white field at the new strip level
-  (`_rideTry()`). A ride no longer makes stock frames the layer's.
-- **S11.** `contractLookSame()` before a live `A` or a section is written; the start time and
-  `contractLookRestart()` only when the look really changes. Sections wait for
+- **Verb `B`: the step is held.** On this board verb `B` is a ride on the STRIP's level (it dims the
+  stock light under an armed show too), not the look's own `b=`, so it is not the core's `bright`.
+  A fall applies at once. A raise, and the owner's level coming back at a boundary, keeps the
+  core's rule in the core's one window with `L` and `b=` (`levelMs`: at most once in 340 ms), and
+  also waits until `contractFieldAsk()` allows a white field at the new strip level (`_rideTry()`),
+  because the frame it relights may be stock light. The look's `b=` (a live `A`, a section) goes
+  through `contractBrightOffer()` and `contractHoldsDue()`.
+- **S11, and a change of colour alone.** `contractLookContinues()` before a live `A` or a section is
+  written: the same effect, native code and speed is the look that is up, recoloured in place; the
+  start time and `contractLookRestart()` only when the look really changes. Sections wait for
   `contractSectionMayApply()`.
 - **What the gates cost a look** (`gate_held_frames_table`, simulation, 30 s a look, passes of 1 to
   4 ms and of 10 to 15 ms, white, three speeds; the share of passes with a frame waiting):
@@ -311,7 +352,7 @@ What `ContractFlthy.h` does on top of the shared core. The spec's rule numbers a
   Sparkle was held on 16 to 37 % of passes as first drawn (random pixels at random levels swing a
   seven-pixel field by a tenth most frames). It is redrawn for the jewel: a fixed number of pixels
   at the look's level (2 at `s=0` to 5 at `s=255`) on a bed of two fifths of it, and one of them
-  moves every 150 to 40 ms, so the field's level and luminance do not change at all while it runs
+  moves every 477 to 350 ms, so the field's level and luminance do not change at all while it runs
   (`sparkle_keeps_a_constant_number_of_sparks_on_a_bed`). The pixels come from the board's `random()`,
   like every stock look's.
 - **Clock (C1, C2, C6).** One clock for the three units, seeded once per line; a mid-beat re-anchor
@@ -329,6 +370,46 @@ What `ContractFlthy.h` does on top of the shared core. The spec's rule numbers a
   `fxScanPos`. A pulse the beat pump drives is a steady fill at the pumped level.
 
 Not in release 1: the `projector`, `kick` and `twitch` looks, and accents over native looks (R2).
+
+## Known limits (release 1)
+
+Everything here is from simulation. Nothing in this fork has run on a board.
+
+1. **A part of the jewel under two looks by turns (S12).** The gates have one state a unit and
+   measure the whole field. By the gate's own count of a part (a rise of more than a tenth above
+   its last trough), `C` seeks across sections of solid, scan, comet and wipe, and a comet by turns
+   with a full look (510 ms and 170 ms), light one part of a jewel 4 times in a second; the limit
+   is 3 (`xfail.txt`). Scan, comet, chase and twinkle under a pulse every 50 ms, or by turns with a
+   solid look, read 4 to 6 by that count. By the wide observers all of these read 3 or fewer.
+2. **Hostile random streams and a part of the jewel.** In 12,000 random streams (hostile scripts,
+   corrupted lines and stock traffic mixed in) none broke the whole-jewel limits. One part of a
+   jewel was lit more than three times in a second in 68 streams by the wide observers (4 times,
+   never more) and in 4,577 streams by the gate's count (8 times or more at the worst).
+3. **Four looks are drawn on a glowing bed** (sparkle, twinkle, chase, comet): no pixel of the look
+   goes under two fifths of its level, so they are never dark between their bright pixels. Sparkle
+   moves one spark every 350 to 477 ms. Chase steps every 130 ms at the least and scan and comet
+   lap the ring in 684 ms at the least (the core), so `s` does little near the top for those.
+4. **Leia through the contract is slower than from a button:** about three re-rolls a second (it
+   waits at the latch in three passes of four), and the look that follows it waits up to 340 ms.
+5. **Stock light after the contract lets go.** For 340 ms after a hand-back or a verb-`B` step, and
+   once more from a frame that had to wait, stock frames are asked of the gates and can be held.
+   The stock light's own change of colour delays the next contract look by up to 170 ms.
+6. **Verb `B` is a ride on the strip's level** on this board, not the look's `b=`. It dims stock
+   light under an armed show too. A raise waits for the core's 340 ms window and for the gate.
+7. **Colour under 4 levels is not judged.** A frame whose brightest LED is under 4 levels is not a
+   look to the look gate (the core's rule), and the test's colour observer starts there too. The
+   observer also leaves out a change of colour between frames so dim that the LEDs' rounding alone
+   could explain it (one count an LED a channel).
+8. **A held frame can be up for under a loop pass** when the look's next frame is due in the pass
+   that releases it. The gate counts it as the onset.
+9. **Take-over (L6) differs from the spec's wording in two places, by decision** (see "Native
+   take-over" above): a stock servo command is not a take-over, and the owner's brightness command
+   is not one either.
+10. **The burst of section 11** (400 bytes with no gaps) holds in simulation with a 256-byte
+    receive ring and passes of up to 4 ms. How long a pass takes on a board is not measured.
+11. **The test's oracle sets the owner's brightness command aside** for 400 ms (it rescales the
+    field under the observers), like any stock command.
+12. **No image has been built from this code**, and the bench checklist below has not been run.
 
 ## Bench checklist for release 1 (not run)
 
@@ -407,7 +488,8 @@ unplugged and a USB serial monitor at 9600.
     does not restart. A Resend of a score during playback: sections that are already showing do not
     blink.
 17. **Sparkle, twinkle and chase on the bed.** `!HFA:i=sparkle,c=ffffff` at `s=0`, `s=128` and `s=255`:
-    two, three or five bright pixels on a glow, one moving at a time. `i=twinkle`: every pixel
+    two, three or five bright pixels on a glow, one moving about every half second down to every
+    third of a second. `i=twinkle`: every pixel
     between the glow and full. `i=chase`: two bright pixels turning round a glowing ring.
     `i=comet`: head and tail on a glowing ring. Judge each look (drawn for seven pixels in
     simulation only), and whether two fifths is the right bed. A sparkle or a scan sent again in
@@ -426,6 +508,12 @@ unplugged and a USB serial monitor at 9600.
     `!HFA:i=solid,c=ffffff` for a sixth, again and again, and a comet under `!HFP:c=ffffff` sent as
     fast as the host can: no part of the ring should blink faster than three times a second (the
     comet's ring glows between passes).
+
+22. **CA1.7.** `!HFA:i=chase,s=255` and `!HFA:i=scan,s=255`: a chase step is about an eighth of a second
+    and a scan takes two thirds of a second round the ring, whatever `s` says above that.
+    `!HFA:i=comet,c=ffffff` then `!HFA:i=comet,c=00ff00`: the comet turns green where it is. A solid
+    look with `!HFA:b=40` and `!HFA:b=255` by turns as fast as the host can: it brightens at most
+    three times a second.
 
 **Conformance record.** For each of S1, S2, S4, S6, S7, S8, S9, S10, S11, C1, C6, L1 to L6, capacity,
 `V`, `Q` and section 11: the line sent, what was seen, pass or fail, and the `fw` from the WDP announce.
