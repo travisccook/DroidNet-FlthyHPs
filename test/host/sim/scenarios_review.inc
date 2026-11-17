@@ -418,6 +418,22 @@ struct RegionObs {
     if (S * 100 >= n * full * litPct && alive >= 2) lit = true; else if (S * 100 <= n * full * darkPct || alive < 2) lit = false; }
   void afresh() { recent.clear(); }
 };
+// The FINE observer of a region (core revision CA1.7, test_fx_regions.cpp): an onset is counted as the
+// gate counts one, a rise of the region's level by more than a tenth of the ceiling above its last
+// trough. No band and no count of pixels: it sees a part of the jewel go from two fifths to full.
+struct FineRegion {
+  bool lit = false, known = false; int ref = 0, worst = 0; std::vector<uint64_t> recent;
+  void see(const int* m, uint8_t mask, int ceil, bool counts, uint64_t now) {
+    int S = 0, n = 0; for (int i = 0; i < 7; i++) if (mask & (1u << i)) { S += m[i]; n++; }
+    const int x = S / n, step = ceil < 10 ? 2 : ceil / 10 + 1;
+    if (!known) { known = true; ref = x; lit = x >= step; return; }
+    if (lit) { if (x > ref) ref = x; else if (ref - x >= step) { lit = false; ref = x; } }
+    else if (x < ref) ref = x;
+    else if (x - ref >= step) { lit = true; ref = x;
+      if (counts) { recent.push_back(now); int c = 0; for (uint64_t t : recent) if (t + 1000000ULL > now) c++; worst = std::max(worst, c); } }
+  }
+  void afresh() { recent.clear(); }
+};
 struct Photo {
   int hp, ceil; bool started = false; uint64_t lastHad = 0; bool everHad = false;
   Observer obs[3] = {{10, 50}, {19, 75}, {4, 31}};   // (a) brightest channel, wide bands
@@ -426,6 +442,8 @@ struct Photo {
   ColourObs colour[5] = {{10, 50}, {19, 75}, {4, 31}, {3, 15}, {45, 60}};
   std::vector<Region> regions = jewelRegions();     // (h) parts of the field
   std::vector<RegionObs> regionObs = std::vector<RegionObs>(regions.size() * 3);
+  std::vector<FineRegion> fineObs = std::vector<FineRegion>(regions.size());
+  int worstFine(std::string* which = nullptr) const { int w = 0; for (size_t r = 0; r < regions.size(); r++) if (fineObs[r].worst > w) { w = fineObs[r].worst; if (which) *which = regions[r].name; } return w; }
   int regionWorst(size_t r) const { int w = 0; for (int k = 0; k < 3; k++) w = std::max(w, regionObs[r * 3 + k].worst); return w; }
   int worstRegion(std::string* which = nullptr) const { int w = 0; for (size_t r = 0; r < regions.size(); r++) if (regionWorst(r) > w) { w = regionWorst(r); if (which) *which = regions[r].name; } return w; }
   uint64_t colourClosestUs = ~0ULL, colourBadAt = 0; long colourChanges = 0;
@@ -486,13 +504,14 @@ struct Photo {
     if (stockNative) { cOnset = cOnset && edgeOnset; cColour = cColour && edgeColour; }
     if (afterStockLine) cOnset = cColour = false;                    // a stock command's own relight, in both modes
     const bool fresh = afterStockLine || (stockNative && !edgeOnset) || (!strict && !counts && S > prevS);
-    if (fresh) { every([](Observer& o) { o.afresh(); }); for (auto& c : colour) c.afresh(); for (auto& o : regionObs) o.afresh(); }   // the owner's own light
+    if (fresh) { every([](Observer& o) { o.afresh(); }); for (auto& c : colour) c.afresh(); for (auto& o : regionObs) o.afresh(); for (auto& o : fineObs) o.afresh(); }   // the owner's own light
     prevS = S;
     size_t n0 = 0; every([&](Observer& o) { n0 += o.onsets.size(); }); const long c0 = colourChanges;
     for (auto& o : obs) o.see(S, FS, cOnset, us);
     for (auto& o : narrow) o.see(S, FS, cOnset, us);
     for (auto& o : lum) o.see((int)sy, FS, cOnset, us);
     for (size_t i = 0; i < regionObs.size(); i++) regionObs[i].see(pm, regions[i / 3].mask, fullScale(ceil), cOnset, us);
+    for (size_t i = 0; i < fineObs.size(); i++) fineObs[i].see(pm, regions[i].mask, ceil, cOnset, us);
     { const uint64_t was = colourClosestUs; for (auto& c : colour) { const long n = colourChanges; c.see(S, FS, sr, sg, sb, peakLed, cColour, us, colourClosestUs, colourChanges);
         if (colourChanges != n) colourLog.push_back({c.at, (int)(&c - colour)}); }
       if (colourClosestUs < was && colourClosestUs < 165000ULL) colourBadAt = us; }
@@ -808,7 +827,7 @@ static bool backOnStock(Stream& st, double watch, std::string& why) {
 // any jewel, nothing above the ceiling, no servo moved by '!' traffic or by a hold ending, and once
 // the show ends (M:v=idle, the watchdog, or the operator's button) the board is stock again.
 SCENARIO(s9_property_hostile_streams) {
-  const int SEEDS = S9_SEEDS; int bad = 0, worst = 0, regionOver = 0, regionMax = 0;
+  const int SEEDS = S9_SEEDS; int bad = 0, worst = 0, regionOver = 0, regionMax = 0, fineOver = 0, fineMax = 0;
   // S9_ONLY=<n>,<n>,...: run only those streams of the soak again (with S9_REPLAY=1 for what they show)
   std::set<int> only; if (const char* o = getenv("S9_ONLY")) { for (const char* q = o; *q; ) { only.insert(atoi(q)); while (*q && *q != ',') q++; if (*q) q++; } }
   for (int seed = 0; seed < SEEDS; seed++) {
@@ -832,7 +851,7 @@ SCENARIO(s9_property_hostile_streams) {
       const bool brk = st.broken();
       // S12: the regions of each jewel. Measured on every stream and reported; not part of `broken` (see the
       // S12 scenarios at the end of this file for what is asserted, and the fork's notes for what a stream can still do).
-      int regionWorst = 0; for (auto& p : st.ph) regionWorst = std::max(regionWorst, p.worstRegion());
+      int regionWorst = 0, fineWorst = 0; for (auto& p : st.ph) { regionWorst = std::max(regionWorst, p.worstRegion()); fineWorst = std::max(fineWorst, p.worstFine()); }
       if (regionWorst > 3 && st.recOn) for (auto& p : st.ph) for (size_t r = 0; r < p.regions.size(); r++) for (int k = 0; k < 3; k++) { const RegionObs& o = p.regionObs[r * 3 + k];
         if (o.worst == regionWorst) { printf("  REGION seed %d hp%d %s (%d/%d): %d onsets in the second to %.0f ms:", seed, p.hp, p.regions[r].name, o.darkPct, o.litPct, o.worst, o.worstAt / 1000.0);
           for (uint64_t x : o.worstTimes) { const Photo::Was* w = p.wasAt(x); printf(" %.0f(fn%d e%d%s)", x / 1000.0, w ? w->fn : -1, w ? w->eff : -1, w && w->pulse ? " P" : ""); } printf("\n"); r = p.regions.size(); break; } }
@@ -852,14 +871,16 @@ SCENARIO(s9_property_hostile_streams) {
       if (st.recOn && getenv("S9_SHOW")) { int h = 0; double a = 0, b = 0; if (sscanf(getenv("S9_SHOW"), "%d,%lf,%lf", &h, &a, &b) == 3) st.replay(h, (uint64_t)(a * 1000), (uint64_t)(b * 1000)); }
       if (brk) printf("      closest two onsets %.0f ms, closest two changes of colour %.0f ms\n", st.closestOnsetsMs() > 1e9 ? -1.0 : st.closestOnsetsMs(), st.closestColourMs() > 1e9 ? -1.0 : st.closestColourMs());
       fflush(stdout);
-      _exit((brk || st.overCeiling() || !stock || ledOnlyViolations || holdViolations) ? std::min(n > 3 ? n : 99, 120) : (regionWorst > 3 ? 200 + std::min(regionWorst, 50) : 0));
+      _exit((brk || st.overCeiling() || !stock || ledOnlyViolations || holdViolations) ? std::min(n > 3 ? n : 99, 120) : ((regionWorst > 3 || fineWorst > 3) ? 200 + std::min(regionWorst, 5) + 6 * std::min(fineWorst, 8) : 0));
     }
     int stt = 0; waitpid(pid, &stt, 0); int code = WIFEXITED(stt) ? WEXITSTATUS(stt) : 99;
-    if (code >= 200) { regionOver++; regionMax = std::max(regionMax, code - 200); }
+    if (code >= 200) { const int band = (code - 200) % 6, fine = (code - 200) / 6;
+      if (band > 3) regionOver++; if (fine > 3) fineOver++; regionMax = std::max(regionMax, band); fineMax = std::max(fineMax, fine); }
     else if (code) { bad++; if (code < 99) worst = std::max(worst, code); }
   }
   printf("  %d of %d streams broke the property (worst %d onsets in a second)\n", bad, SEEDS, worst);
-  printf("  regions (S12, measured): %d of %d streams lit one part of a jewel more than three times in a second (at most %d)\n", regionOver, SEEDS, regionMax);
+  printf("  regions (S12, measured): %d of %d streams lit one part of a jewel more than three times in a second (at most %d) by the bands; %d (at most %d%s) by the gate's count\n",
+         regionOver, SEEDS, regionMax, fineOver, fineMax, fineMax >= 8 ? " or more" : "");
   CHECK_EQ(bad, 0);
 }
 
@@ -1014,7 +1035,7 @@ SCENARIO(sparkle_keeps_a_constant_number_of_sparks_on_a_bed) {
       run(6); for (int i = 0; i < HPCOUNT; i++) enableTwitchLED[i] = 0;
       line("!**M:v=show\r"); char l[64]; snprintf(l, sizeof l, "!HFA:i=sparkle,c=ffffff,s=%d\r", s); line(l, 1.0);
       const int want = 2 + (s >> 6); long moves = 0, held = 0; uint8_t prev[21]; memcpy(prev, neoStrips[0].shown, 21); std::set<int> seen;
-      for (int k = 0; k < 20000; k++) {
+      for (int k = 0; k < 60000; k++) {
         pass(1000); held += gLatch[0].pending; int top = 0, sparks = 0, changed = 0;
         for (int px = 0; px < 7; px++) top = std::max(top, (int)latched(0, px).r);
         for (int px = 0; px < 7; px++) { RGB3 c = latched(0, px); CHECK(c.r == c.g && c.g == c.b);
@@ -1026,9 +1047,9 @@ SCENARIO(sparkle_keeps_a_constant_number_of_sparks_on_a_bed) {
         if (changed) { moves++; if (changed != 2) { printf("  s=%d: %d pixels changed in one step, want 2 (one spark out, one in)\n", s, changed); failures++; break; } }
         memcpy(prev, neoStrips[0].shown, 21);
       }
-      const double stepMs = 150.0 - s * 110.0 / 255.0;
-      printf("  s=%3d: %d of 7 at full and the rest at two fifths at every frame, %ld moves in 20 s (one every %.0f ms asked), every pixel used: %s, frames held: %ld\n", s, want, moves, stepMs, seen.size() == 7 ? "yes" : "NO", held);
-      CHECK(moves > 20000 / (stepMs + 6) && moves <= 20000 / stepMs + 1);  CHECK_EQ((int)seen.size(), 7);  CHECK_EQ(held, 0);
+      const double stepMs = 477.0 - s * 127.0 / 255.0;
+      printf("  s=%3d: %d of 7 at full and the rest at two fifths at every frame, %ld moves in 60 s (one every %.0f ms asked), every pixel used: %s, frames held: %ld\n", s, want, moves, stepMs, seen.size() == 7 ? "yes" : "NO", held);
+      CHECK(moves > 60000 / (stepMs + 6) && moves <= 60000 / stepMs + 1);  CHECK_EQ((int)seen.size(), 7);  CHECK_EQ(held, 0);
     });
     CHECK_EQ(bad, 0);
   }
@@ -1059,12 +1080,14 @@ SCENARIO(s9_gate_resolves_a_tenth_at_owner_levels_100_40_20) {
       printf("  owner level %3d: step %2d levels; B 0 / %d (a swing of %d levels) every 25 ms: %ld onsets in 8 s, the closest two %.0f ms apart\n",
              level, step, big, peak, onsets, closest / 1000.0);
       CHECK(peak >= step + 2 && peak <= step + 3);  CHECK(onsets >= 15 && onsets <= 25);  CHECK(closest >= 334000ULL);
-      // one level under a step is texture: every swing passes, 20 a second
+      // One level under a step is texture to the field gate. Until core revision CA1.7 every such swing
+      // passed, 20 a second; since then a raise of verb B is taken at most once in 340 ms whatever its
+      // size (the core's one window for L, b= and B), so it is three a second like the swing above.
       line("!HFB:b=0\r", 1.0); snprintf(up, sizeof up, "!HFB:b=%d\r", small); long swings = 0; bool hi = false;
       for (int t = 0; t < 4000; t++) { if (t % 25 == 0) say((t / 25) % 2 ? dn : up); pass(1000); const int lv = latched(0).r;
         if (!hi && lv >= step - 1 && lv > 0) { hi = true; swings++; } else if (hi && lv == 0) hi = false; }
-      printf("                   B 0 / %d (%d levels, under a step): %ld swings in 4 s, none held\n", small, step - 1, swings);
-      if (step - 1 >= 1) CHECK(swings >= 70);
+      printf("                   B 0 / %d (%d levels, under a step): %ld swings in 4 s\n", small, step - 1, swings);
+      if (step - 1 >= 1) CHECK(swings >= 8 && swings <= 12);
     });
     CHECK_EQ(bad, 0);
   }
@@ -1272,9 +1295,9 @@ SCENARIO(s10_idle_while_a_native_look_waits_takes_down_the_look_that_stayed_up) 
 // Each look runs by itself for 30 s at s=255 on the front jewel, in white and in 116530, and the
 // photometer's twenty-two regions count their onsets. The table is the measurement; the assert is the
 // limit, three onsets of one region in any one second.
-struct RegionRow { int worst, whole; char region[24]; uint64_t closestUs; };
+struct RegionRow { int worst, whole; char region[24]; uint64_t closestUs; int fine; char fineRegion[24]; };
 static RegionRow regionRate(const char* setup, double secs = 30.0) {
-  RegionRow row = {-1, -1, "", 0}; int fd[2]; if (pipe(fd)) return row;
+  RegionRow row = {-1, -1, "", 0, -1, ""}; int fd[2]; if (pipe(fd)) return row;
   fflush(stdout); pid_t pid = fork();
   if (pid == 0) {
     close(fd[0]); run(9); calmStock();
@@ -1282,6 +1305,7 @@ static RegionRow regionRate(const char* setup, double secs = 30.0) {
     Photo p(0); p.strict = true; watchFor(p, secs);
     std::string which; row.worst = p.worstRegion(&which); row.whole = p.maxPerSecond(); snprintf(row.region, sizeof row.region, "%s", which.c_str());
     row.closestUs = ~0ULL; for (auto& o : p.regionObs) row.closestUs = std::min(row.closestUs, o.closestUs);
+    { std::string wf; row.fine = p.worstFine(&wf); snprintf(row.fineRegion, sizeof row.fineRegion, "%s", wf.c_str()); }
     (void)!write(fd[1], &row, sizeof row); _exit(0);
   }
   close(fd[1]); (void)!read(fd[0], &row, sizeof row); close(fd[0]); int st; waitpid(pid, &st, 0);
@@ -1289,20 +1313,20 @@ static RegionRow regionRate(const char* setup, double secs = 30.0) {
 }
 SCENARIO(s12_region_rates_each_look_alone_at_its_fastest) {
   static const char* LOOKS[] = {"solid", "flash", "pulse", "rainbow", "scan", "sparkle", "meter", "comet", "chase", "wipe", "gradient", "colorcycle", "twinkle", "native:1", "native:6"};
-  int worst = 0;
+  int worst = 0, worstFine = 0;
   printf("  the most often one region lit in a second (and the whole field), s=255: white | 116530; the region; its closest two onsets\n");
   for (const char* look : LOOKS) {
     printf("  %-11s", look);
     for (const char* c : {"ffffff", "116530"}) {
       char l[96]; snprintf(l, sizeof l, "!HFA:i=%s,c=%s,s=255\r%s", look, c, !strcmp(look, "meter") ? "!HFL:v=200\r" : "");
       const RegionRow r = regionRate(l);
-      printf("  %d (%d) %-20s %4.0f ms |", r.worst, r.whole, r.worst ? r.region : "-", r.closestUs > 1e15 ? 0.0 : r.closestUs / 1000.0);
-      worst = std::max(worst, r.worst);
+      printf("  %d (%d) %-20s fine %d %-18s|", r.worst, r.whole, r.worst ? r.region : "-", r.fine, r.fine ? r.fineRegion : "-");
+      worst = std::max(worst, r.worst); worstFine = std::max(worstFine, r.fine);
       if (r.worst < 0) failures++;
     }
     printf("\n");
   }
-  CHECK(worst <= 3);
+  CHECK(worst <= 3);  CHECK(worstFine <= 3);       // by the wide observers, and by the gate's own count (CA1.7)
 }
 // S12, a look by turns with light on the whole jewel. The logics property stage records one case as a
 // known failure: a comet and a full look by turns (A:i=comet for 510 ms, A:i=solid for 170 ms). The
@@ -1313,7 +1337,7 @@ SCENARIO(s12_region_rates_each_look_alone_at_its_fastest) {
 // (510 ms and 170 ms), a white pulse every 50 ms, and the look sent again in another colour every
 // 170 ms. The table is the measurement; the limit is three.
 static RegionRow regionScript(const char* look, int script, int s) {
-  RegionRow row = {-1, -1, "", 0}; int fd[2]; if (pipe(fd)) return row;
+  RegionRow row = {-1, -1, "", 0, -1, ""}; int fd[2]; if (pipe(fd)) return row;
   fflush(stdout); pid_t pid = fork();
   if (pid == 0) {
     close(fd[0]); run(9); calmStock(); say("!HFM:v=show\r"); if (!strcmp(look, "meter")) say("!HFL:v=200\r"); run(1);
@@ -1323,6 +1347,7 @@ static RegionRow regionScript(const char* look, int script, int s) {
     else if (script == 1) { say(a); for (int i = 0; i < 400; i++) { say("!HFP:c=ffffff,d=170\r"); watchFor(p, 0.05); } }
     else for (int i = 0; i < 120; i++) { say((i % 2) ? b : a); watchFor(p, 0.17); }
     std::string which; row.worst = p.worstRegion(&which); row.whole = p.maxPerSecond(); snprintf(row.region, sizeof row.region, "%s", which.c_str());
+    row.fine = p.worstFine();
     (void)!write(fd[1], &row, sizeof row); _exit(0);
   }
   close(fd[1]); (void)!read(fd[0], &row, sizeof row); close(fd[0]); int st; waitpid(pid, &st, 0);
@@ -1335,7 +1360,7 @@ SCENARIO(s12_region_rates_each_look_by_turns_with_full_light) {
   for (const char* look : LOOKS) {
     printf("  %-11s", look);
     for (int script = 0; script < 3; script++) {
-      for (int s : {255, 0}) { const RegionRow r = regionScript(look, script, s); printf(" %d", r.worst); if (r.worst > 3) printf("(%s)", r.region); worst = std::max(worst, r.worst); if (r.worst < 0) failures++; }
+      for (int s : {255, 0}) { const RegionRow r = regionScript(look, script, s); printf(" %d/%d", r.worst, r.fine); if (r.worst > 3) printf("(%s)", r.region); worst = std::max(worst, r.worst); if (r.worst < 0) failures++; }
       printf(script < 2 ? "  |" : "\n");
     }
   }
@@ -1357,4 +1382,70 @@ SCENARIO(s12_leia_and_the_look_that_follows_it) {
     if (tooClose(p, "Leia and a white look by turns, Leia longer by (ms)", d)) failures++;
   });
   CHECK_EQ(bad, 0);
+}
+
+// ===== S12: the scripts the logics property stage records as known failures, on the jewel ==========
+// Two looks that each light a part of the field, by turns as fast as S4 lets them. Every one keeps the
+// whole-field limits; a limit on them needs a gate with a state for each region (the spec's S12 names
+// this as the known limit of a gate with one state a unit). Each script runs 20 s on the front jewel
+// under both region observers, and each observer is a scenario of its own, so that what the jewel
+// fails stands in xfail.txt with its figure and what it passes is asserted:
+//   _by_the_bands: the wide observers, a part lit when it reaches "lit" with two pixels not dark;
+//   _by_the_gates_count: a rise of more than a tenth of the ceiling above the part's last trough.
+static void knownScript(bool fine, const char* name, const std::function<void()>& setup, const std::function<void(int)>& everyMs, int periodMs) {
+  int fd[2]; if (pipe(fd)) { failures++; return; }
+  fflush(stdout); pid_t pid = fork();
+  if (pid == 0) {
+    close(fd[0]); run(9); calmStock(); say("!HFM:v=show\r"); run(1); setup(); run(0.5);
+    Photo p(0); p.strict = true;
+    for (int t = 0; t < 20000; t++) { everyMs(t % periodMs); pass(1000); p.sample(); }
+    std::string w; int r[2] = {fine ? p.worstFine(&w) : p.worstRegion(&w), p.maxPerSecond()};
+    printf("  %s: a part of the jewel lit %d times in a second %s (%s); the whole jewel %d\n", name, r[0], fine ? "by the gate's count" : "by the bands", r[0] ? w.c_str() : "-", r[1]);
+    fflush(stdout); (void)!write(fd[1], r, sizeof r); _exit(0);
+  }
+  close(fd[1]); int r[2] = {99, 99}; (void)!read(fd[0], r, sizeof r); close(fd[0]); int st; waitpid(pid, &st, 0);
+  CHECK(r[0] <= 3);  CHECK(r[1] <= 3);
+}
+#define KNOWN_SCRIPT(id, name, setup, body, period) \
+  SCENARIO(s12_known_##id##_by_the_bands)       { knownScript(false, name, [] { setup; }, [](int t) { (void)t; body; }, period); } \
+  SCENARIO(s12_known_##id##_by_the_gates_count) { knownScript(true,  name, [] { setup; }, [](int t) { (void)t; body; }, period); }
+KNOWN_SCRIPT(a_scan_and_a_chase_by_turns_every_170_ms, "a scan and a chase by turns every 170 ms", ,
+  { if (t == 0) say("!HFA:i=scan,c=ffffff,s=255\r"); if (t == 170) say("!HFA:i=chase,c=ffffff,s=255\r"); }, 340)
+KNOWN_SCRIPT(a_scan_and_a_full_look_by_turns_every_170_ms, "a scan and a full look by turns every 170 ms", ,
+  { if (t == 0) say("!HFA:i=scan,c=ffffff,s=255\r"); if (t == 170) say("!HFA:i=solid,c=ffffff\r"); }, 340)
+KNOWN_SCRIPT(c_seeks_across_sections_of_solid_scan_comet_and_wipe, "C seeks across sections of solid, scan, comet and wipe",
+  say("!HFA:i=solid,c=ffffff,at=0\r!HFA:i=scan,c=ffffff,s=255,at=1\r!HFA:i=comet,c=ffffff,s=255,at=2\r!HFA:i=wipe,c=ffffff,s=255,at=3\r"),
+  { if (t % 60 == 0) { char l[40]; snprintf(l, sizeof l, "!**C:bpm=120,beat=%d\r", (t / 60) % 4); say(l); } }, 240)
+KNOWN_SCRIPT(a_wipe_with_a_wipe_accent_over_it_every_340_ms, "a wipe with a wipe accent over it every 340 ms",
+  say("!HFA:i=wipe,c=ffffff,s=255\r"), { if (t == 0) say("!HFP:i=wipe,c=ffffff,d=170\r"); }, 340)
+KNOWN_SCRIPT(a_comet_and_a_full_look_by_turns_510_and_170_ms, "a comet and a full look by turns (510 ms and 170 ms)", ,
+  { if (t == 0) say("!HFA:i=comet,c=ffffff,s=255\r"); if (t == 510) say("!HFA:i=solid,c=ffffff\r"); }, 680)
+
+// ===== Core revision CA1.7 in the layer ==========================================================
+// A change of colour alone recolours the look in place (contractLookContinues): its timeline carries on.
+SCENARIO(ca17_a_change_of_colour_alone_does_not_restart_the_look) {
+  run(9); calmStock(); say("!HFM:v=show\r!HFA:i=comet,c=ffffff,s=128\r"); run(1.0);
+  const uint32_t started = gUnit[0].s.startMs;
+  say("!HFA:i=comet,c=00ff00,s=128\r"); run(0.5);
+  CHECK_EQ(gUnit[0].s.startMs, started);             // the comet goes on from where it is
+  { int g = 0, r = 0; for (int px = 1; px < 7; px++) { g += latched(0, px).g; r += latched(0, px).r; } CHECK(g > 0);  CHECK_EQ(r, 0); }   // in green
+  say("!HFA:i=comet,c=00ff00,s=200\r"); run(0.5);   // another speed is another look: it starts again
+  CHECK(gUnit[0].s.startMs != started);
+}
+// b= on the look that is up goes up at most once in 340 ms, in verb L's window (contractBrightOffer,
+// contractHoldsDue), whatever the size of the step; it comes down at once. Here the step is under a
+// tenth of the ceiling, which the field gate passes as texture.
+SCENARIO(ca17_b_on_a_look_goes_up_at_most_once_in_340_ms) {
+  run(9); calmStock(); say("!HFM:v=show\r!HFA:i=solid,c=ffffff,b=20\r"); run(1.0);
+  long rises = 0; int was = latched(0).r; uint64_t lastRise = 0, closest = ~0ULL;
+  for (int t = 0; t < 6000; t++) {
+    if (t % 30 == 0) say((t / 30) % 2 ? "!HFA:b=20\r" : "!HFA:b=40\r");
+    pass(1000); const int lv = latched(0).r;
+    if (lv > was) { rises++; if (lastRise) closest = std::min(closest, us - lastRise); lastRise = us; }
+    was = lv;
+  }
+  printf("  b=20 and b=40 by turns every 30 ms for 6 s: %ld rises, the closest two %.0f ms apart\n", rises, closest / 1000.0);
+  // (What is taken when the window ends is the newest line; half the time that is the b=20, so the
+  // look goes up every other window here.)
+  CHECK(rises >= 5 && rises <= 18);  CHECK(closest >= 334000ULL);
 }

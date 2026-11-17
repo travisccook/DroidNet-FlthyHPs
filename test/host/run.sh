@@ -9,6 +9,8 @@
 #   1f. contract_core.h v1.3 unit tests (safety limits, clock rules, lifecycle, score, query)
 #   1g. the same, built with stand-ins for this fork's flash-string hooks (ContractFlthy.h defines them on the AVR)
 #   1h. no floating point in the core or in the layer
+#   1j. every shared look by itself, on strands of 6 to 28 positions: no part of a strand lights more than
+#       three times a second (test_fx_regions.cpp, shared with the other forks since core revision CA1.7)
 #   1b. wdp_announce_core.h (WDP device announce) unit tests, shared with the other two forks
 #   1c. wdp_fork.h, this fork's announce adapter and identity
 #   2.  ContractFlthy.h firmware-layer type-check against a mock of the board API
@@ -106,6 +108,11 @@ done
 echo "OK  contract_core.h, ContractFlthy.h, dn_strip.h and native_ext.h are integer only"
 RAN="$RAN 1h"
 fi
+# CA1.7: the gate measures a whole field, and a look that moves its light along a strand can blink
+# every part of it with the field's level standing still. The shared timing keeps clear of that by
+# itself: every look alone, every speed, every strand length from 6 to 28. (The jewel is a ring of six
+# and a centre, drawn by this fork: its own regions are watched in the simulation, stage 2b.)
+stage 1j "every shared look by itself: no part of a strand lights more than three times a second" "$CXX" -std=c++11 -Wall -Wextra -O2 test_fx_regions.cpp
 # Shared byte-identically with the RSeries and PSI forks (src/wdp/wdp_announce_core.h and this test).
 # -std=c++11: avr-gcc builds the same header as gnu++11 here.
 stage 1b "wdp_announce_core WDP device announce unit tests" "$CXX" -std=c++11 -Wall -Wextra -Werror -O0 test_wdp_announce_core.cpp

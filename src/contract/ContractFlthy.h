@@ -439,9 +439,16 @@ static inline void _rideTry(uint8_t hp) {
   FlthyUnit& u = gUnit[hp];
   if (u.rideWant == u.ride) return;
   if (u.rideWant < u.ride) { _rideApply(hp, u.rideWant); return; }
+  // A raise. On this board verb B is a ride on the STRIP's level (it dims the stock light under an
+  // armed show too), not the look's own b=, so it is not the core's `bright`. It keeps the core's
+  // rule all the same, in the core's ONE window with verb L and b= (levelMs: a raise at most once
+  // in 340 ms), and what is this board's own: the raise also waits until the field gate allows a
+  // white field at the new strip level, because the frame it relights may be stock light.
+  const uint32_t now = millis();
+  if (!strobeCoolDownExpired(u.s.levelMs, now, 2 * STROBE_MIN_STATE_MS)) return;
   const uint8_t lv = contractLevel(u.s.ceil, u.rideWant);
   const uint8_t full = (lv == 255) ? 255 : (uint8_t)((255u * (lv + 1u)) >> 8);   // a white field at the new strip level
-  if (contractFieldAsk(u.s, full, full, millis()) == 255) _rideApply(hp, u.rideWant);
+  if (contractFieldAsk(u.s, full, full, now) == 255) { u.s.levelMs = now; _rideApply(hp, u.rideWant); }
 }
 // A boundary ends a ride: the owner's level comes back, which is a raise like any other and waits
 // for the gate like any other (B never outlives a show by more than that).
@@ -601,7 +608,10 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB
       // level, so the field's level does not move at all; what moves is where the light is, which
       // is the look. s also picks how often a pixel moves (every 150 ms down to 40 ms).
       const uint8_t want = (uint8_t)(2 + (u.s.speed >> 6));
-      const uint32_t step = (uint32_t)map((long)u.s.speed, 0, 255, 150, 40);
+      // CA1.7, a part of the field by the gate's own count: a spark moving in takes a pair of pixels
+      // from the bed to full, more than a tenth. One move is at most one such rise for any part of
+      // the jewel, so moves are 350 ms apart at the least (the logics' sparkle: 350 to 477 ms).
+      const uint32_t step = (uint32_t)map((long)u.s.speed, 0, 255, 477, 350);
       uint8_t lit = 0;
       for (uint8_t i = 0; i < NEO_JEWEL_LEDS; i++) if (u.frame & (1u << i)) lit++;
       bool repaint = u.lastEnvBright != (int)envB;
@@ -839,8 +849,12 @@ static inline void _setLook(uint8_t hp, ContractEffect effect, int nativeCode, c
   ContractUnitState& s = u.s;
   s.pulseActive = false;
   u.overNative  = false;                                // a look replaces whatever an overlay sat on
-  if (contractLookSame(s, effect, nativeCode, color, speed) && (s.base != CB_NATIVE || _nativeIsUp(hp) || u.nativeWait)) {
-    u.lastEnvBright = -1;                               // the level may have changed: repaint, no restart
+  // S11, and CA1.7: the same effect, native code and speed is the look that is up, in another
+  // colour or not. Its timeline carries on (a comet goes on from where it is); the look gate
+  // times the change of colour at the latch, where the frame's signature carries it.
+  if (contractLookContinues(s, effect, nativeCode, speed) && (s.base != CB_NATIVE || _nativeIsUp(hp) || u.nativeWait)) {
+    s.color = color;
+    u.lastEnvBright = -1;                               // the level or the colour may have changed: repaint, no restart
     return;
   }
   const byte fnWas = _heldLeds(hp) ? LED_command[hp].LEDFunction : (byte)255;   // the layer's own look on the slot, if any
@@ -859,7 +873,7 @@ static inline void _applyPatch(uint8_t hp, ContractLookPatch lp, uint32_t now) {
   ContractUnitState& s = u.s;
   contractShowBegin(s);                                 // L1: the show's first live A (the look below replaces the dark baseline)
   lookPatchDefault(lp, s.base);                         // L5: no i= and no look yet => i=solid
-  if (lp.has & LP_BRIGHT)  s.bright = lp.bright;        // a fraction of the ceiling (S6)
+  if (lp.has & LP_BRIGHT) { contractBrightOffer(s, lp.bright); contractBrightDue(s, now); }   // a fraction of the ceiling (S6): down now, up when the window ends
   if (lp.has & LP_BEATMOD) s.beatMod = lp.beatMod;
   if (lp.has & LP_AM)      s.accentMode = lp.accentMode;
   if (lp.has & LP_EVERY)   s.accentEvery = lp.every;
@@ -902,7 +916,7 @@ static inline ScoreEntry _entryFrom(const ContractParams& pr) {
 static inline void _enterSection(uint8_t hp, int idx, uint32_t now) {
   ContractUnitState& s = gUnit[hp].s;
   const ScoreEntry& e = gScore[hp][idx];
-  s.bright = e.bright;
+  contractBrightOffer(s, e.bright); contractBrightDue(s, now);   // CA1.7: a section's b= goes up at most once in 340 ms, with verb L
   s.beatMod = e.beatMod; s.accentMode = e.accentMode; s.accentEvery = e.accentEvery;
   s.curSection = (int8_t)idx; s.sectionStart = e.atBeat;
   // the last section gets a long tail so its span (the am=3 build ramp) is never zero-width
@@ -1114,7 +1128,7 @@ inline void contractBeatTick() {
     if (gLatch[hp].pending && LED_command[hp].LEDFunction != gLatch[hp].pendingFn) gLatch[hp].pending = false;
     if (gLatch[hp].pending && !u.nativeWait) neoStrips[hp].show();
     if (u.rideWant != u.ride) _rideTry(hp);              // a verb-B raise the gate is holding
-    if (contractLevelDue(s, now)) u.lastEnvBright = -1;  // a verb-L raise whose window has ended
+    if (contractHoldsDue(s, now)) u.lastEnvBright = -1;  // a raise of verb L or of a look's b= whose window has ended (one window for both)
     // L2: the host armed a watchdog (M:v=show,wd=<s>) and has been silent that long: the unit
     // idles itself, exactly as M:v=idle would. X does not disarm it; idle and a new show do.
     if (contractWatchdogExpired(s, gLastLineMs, now)) _boundary(hp, 'i', 0);

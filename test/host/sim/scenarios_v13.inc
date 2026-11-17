@@ -173,7 +173,7 @@ SCENARIO(t12_flash_pulse_scan_use_the_core_timing) {
   printf("  s=128: flash %.1f ms a cycle, pulse %.1f ms, scan %.1f ms a revolution\n", flash, pulse, scan);
   CHECK(fabs(flash - 2.0 * fxFlashHalfMs(128)) <= 2.0);        // 2 x 297 ms
   CHECK(fabs(pulse - (double)fxPulsePeriodMs(128)) <= 2.0);    // 1167 ms
-  CHECK(fabs(scan - 6.0 * fxStepMs(128)) <= 2.0);              // 6 x 93 ms, no drift from a self-throttle
+  CHECK(fabs(scan - 6.0 * fxScanStepMs(128, 6, true)) <= 2.0);   // 6 x 114 ms: the core's lap of 680 ms at the least (CA1.7), no drift
   // the scan is still ONE ring pixel, the centre pixel off
   for (int i = 0; i < 700; i++) { pass(1000); int lit = 0; for (int px = 1; px < 7; px++) lit += latched(0, px).r != 0;
     CHECK_EQ(lit, 1); CHECK(latched(0, 0) == (RGB3{0, 0, 0})); if (failures) break; }

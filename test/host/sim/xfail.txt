@@ -1,0 +1,5 @@
+# S12, known limits of a gate with one state a unit (the logics fork records the same scripts). By the
+# gate's own count (a rise of more than a tenth of the ceiling above a part's last trough) two of them
+# light one part of the jewel 4 times in a second; the limit is 3. By the wide observers both pass.
+s12_known_a_comet_and_a_full_look_by_turns_510_and_170_ms_by_the_gates_count
+s12_known_c_seeks_across_sections_of_solid_scan_comet_and_wipe_by_the_gates_count
