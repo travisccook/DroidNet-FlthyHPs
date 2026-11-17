@@ -306,6 +306,7 @@ inline void DnStrip::show() {
     }
   } else {
     const bool drawn = nativeUp || (fn >= 101 && fn <= FLTHY_FX_MAX);
+    bool gatedRise = false;                             // S12: a gated native look's frame in which a LED gets brighter is shown
     // THE COLOUR ON THE JEWEL (S4). A frame is a look when its brightest LED is at 4 levels or more
     // (the core's LOOK_MIN_LEVEL, contractLookAllowedAt/GateAt): a contract look that comes up dim
     // takes the look gate at the first frame that shows its colour, not at its first frame.
@@ -349,6 +350,7 @@ inline void DnStrip::show() {
       }
       contractLookGateAt(s, sig, peak, now);            // the change of look is shown now (a frame under 4 levels is none)
       if (nativeUp && rises) { g.gatedMs = now; g.gatedSeen = true; }
+      gatedRise = nativeUp && rises;
       if (!drawn && g.owed) { g.owed = false; if (!g.extended) { g.extended = true; g.touchMs = now; } }
     } else if (coloured) {
       contractLookForced(s, contractLookSigNative(0x4000 | fn), now);   // stock light: recorded, never held back
@@ -356,6 +358,11 @@ inline void DnStrip::show() {
     if (recolour) s.lookMs = now;
     if (coloured && (recolour || !ownColour)) memcpy(g.chroma, chroma, 3);   // the colour of the last change; a contract look's, of its last frame
     contractFieldTell(s, level, lum, now);              // what the unit shows from now
+    // S12: such a frame of Leia may have lit a part of the jewel without the whole field rising by a
+    // step. It is light the gate should keep its distance from: the next onset of the whole field (the
+    // look that replaces Leia, the off colour at a hand-back) waits 340 ms from it, as Leia's own next
+    // frame does. Without this Leia's three frames a second left no room for the hand-over.
+    if (gatedRise) s.fieldOnsetMs = now;
     // The gate takes whole levels; seven pixels measure in sevenths. While the field is lit, a peak
     // that creeps up by less than one whole level is still "getting brighter", and by the gate's own
     // rule the onset is not over until the light stops rising. Keep that finer peak here and move

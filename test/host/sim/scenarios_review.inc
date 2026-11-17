@@ -402,7 +402,7 @@ static std::vector<Region> jewelRegions() {
   return r;
 }
 struct RegionObs {
-  int darkPct = 0, litPct = 0; bool lit = false; std::vector<uint64_t> recent; int worst = 0; uint64_t closestUs = ~0ULL, worstAt = 0;
+  int darkPct = 0, litPct = 0; bool lit = false; std::vector<uint64_t> recent, worstTimes; int worst = 0; uint64_t closestUs = ~0ULL, worstAt = 0;
   // m: each pixel's brightest channel; full: the ceiling's full scale for one pixel
   void see(const int* m, uint8_t mask, int full, bool counts, uint64_t now) {
     int S = 0, n = 0, alive = 0;
@@ -411,7 +411,7 @@ struct RegionObs {
     if (!lit && S * 100 >= FS * litPct && alive >= 2) {
       lit = true;
       if (counts) { if (!recent.empty() && now - recent.back() < closestUs) closestUs = now - recent.back();
-                    recent.push_back(now); int c = 0; for (uint64_t x : recent) if (x + 1000000ULL > now) c++; if (c > worst) { worst = c; worstAt = now; } }
+                    recent.push_back(now); int c = 0; for (uint64_t x : recent) if (x + 1000000ULL > now) c++; if (c > worst) { worst = c; worstAt = now; worstTimes.clear(); for (uint64_t x : recent) if (x + 1000000ULL > now) worstTimes.push_back(x); } }
     } else if (lit && (S * 100 <= FS * darkPct || alive < 2)) lit = false;
   }
   void reread(const int* m, uint8_t mask, int full) { int S = 0, n = 0, alive = 0; for (int i = 0; i < 7; i++) if (mask & (1u << i)) { S += m[i]; n++; if (m[i] * 100 > full * darkPct) alive++; }
@@ -453,8 +453,12 @@ struct Photo {
     while (seenShows < nowShows) frame(neoStrips[hp].ring[seenShows++ % Adafruit_NeoPixel::RING]);
   }
   std::vector<std::pair<uint64_t, int>> colourLog;   // every counted change of colour: when, and which observer
+  struct Was { uint64_t at; int fn, eff, pulse; }; std::vector<Was> wasLog;   // the unit's LED function, effect and overlay, at each change
+  const Was* wasAt(uint64_t t) const { const Was* w = nullptr; for (const Was& x : wasLog) { if (x.at > t) break; w = &x; } return w; }
   void frame(const uint8_t* p) {
     int S = 0, FS = 7 * fullScale(ceil), peakLed = 0, pm[7]; long sr = 0, sg = 0, sb = 0, sy = 0;
+    { const int fn = LED_command[hp].LEDFunction, eff = (int)gUnit[hp].s.effect, pu = gUnit[hp].s.pulseActive;
+      if (wasLog.empty() || wasLog.back().fn != fn || wasLog.back().eff != eff || wasLog.back().pulse != pu) wasLog.push_back({us, fn, eff, pu}); }
     if (regionObs[0].litPct == 0) { static const int BAND[3][2] = {{10, 50}, {19, 75}, {4, 31}}; for (size_t i = 0; i < regionObs.size(); i++) { regionObs[i].darkPct = BAND[i % 3][0]; regionObs[i].litPct = BAND[i % 3][1]; } }
     const int step = ceil < 10 ? 2 : ceil / 10 + 1;
     every([&](Observer& o) { o.minGap = 7 * (step + 1); });
@@ -805,7 +809,10 @@ static bool backOnStock(Stream& st, double watch, std::string& why) {
 // the show ends (M:v=idle, the watchdog, or the operator's button) the board is stock again.
 SCENARIO(s9_property_hostile_streams) {
   const int SEEDS = S9_SEEDS; int bad = 0, worst = 0, regionOver = 0, regionMax = 0;
+  // S9_ONLY=<n>,<n>,...: run only those streams of the soak again (with S9_REPLAY=1 for what they show)
+  std::set<int> only; if (const char* o = getenv("S9_ONLY")) { for (const char* q = o; *q; ) { only.insert(atoi(q)); while (*q && *q != ',') q++; if (*q) q++; } }
   for (int seed = 0; seed < SEEDS; seed++) {
+    if (!only.empty() && !only.count(seed)) continue;
     fflush(stdout); pid_t pid = fork();
     if (pid == 0) {
       failures = 0; ledOnlyViolations = 0; holdViolations = 0; srand(S9_SEED0 + seed);
@@ -828,7 +835,7 @@ SCENARIO(s9_property_hostile_streams) {
       int regionWorst = 0; for (auto& p : st.ph) regionWorst = std::max(regionWorst, p.worstRegion());
       if (regionWorst > 3 && st.recOn) for (auto& p : st.ph) for (size_t r = 0; r < p.regions.size(); r++) for (int k = 0; k < 3; k++) { const RegionObs& o = p.regionObs[r * 3 + k];
         if (o.worst == regionWorst) { printf("  REGION seed %d hp%d %s (%d/%d): %d onsets in the second to %.0f ms:", seed, p.hp, p.regions[r].name, o.darkPct, o.litPct, o.worst, o.worstAt / 1000.0);
-          for (uint64_t x : o.recent) if (x + 1000000ULL > o.worstAt && x <= o.worstAt) printf(" %.0f", x / 1000.0); printf("\n"); r = p.regions.size(); break; } }
+          for (uint64_t x : o.worstTimes) { const Photo::Was* w = p.wasAt(x); printf(" %.0f(fn%d e%d%s)", x / 1000.0, w ? w->fn : -1, w ? w->eff : -1, w && w->pulse ? " P" : ""); } printf("\n"); r = p.regions.size(); break; } }
       if (brk || st.overCeiling() || !stock || ledOnlyViolations || holdViolations)
         printf("  seed %2d (%s, %s): %d onsets/s, %d frames over the ceiling, LED-only %ld, hold %ld%s%s\n", seed, ending == 0 ? "idle" : ending == 1 ? "host dies" : "button", st.strict ? "strict" : "attributed",
                n, st.overCeiling(), ledOnlyViolations, holdViolations, stock ? "" : ", NOT back on stock: ", why.c_str());
@@ -1333,4 +1340,21 @@ SCENARIO(s12_region_rates_each_look_by_turns_with_full_light) {
     }
   }
   CHECK(worst <= 3);
+}
+// S12: Leia and the look that follows it. Leia's frames that brighten a pixel are 340 ms apart, which is
+// three a second for a part of the jewel by itself; the look that replaced Leia lit the whole jewel a
+// fourth time in that second, because Leia's frames are no onsets of the whole field to the gate (soak,
+// stream 14 of the 150: 21032, 21371, 21711 by Leia and 21900 by the hand-back). The gate's time now
+// moves with each such frame of Leia. Leia and a white look by turns, at forty lengths of Leia.
+SCENARIO(s12_leia_and_the_look_that_follows_it) {
+  int bad = 0;
+  for (int d = 0; d < 340; d += 34) bad += trial([d] {
+    run(9); calmStock(); say("!HFM:v=show\r"); run(1);
+    Photo p(0); p.strict = true;
+    for (int i = 0; i < 12; i++) { say("!HFA:i=native:1\r"); watchFor(p, 1.1 + d / 1000.0 + i * 0.023); say("!HFA:i=solid,c=ffffff\r"); watchFor(p, 0.2); }
+    std::string which; const int w = p.worstRegion(&which);
+    if (w > 3) { printf("  Leia for %d ms more: %s lit %d times in a second\n", d, which.c_str(), w); failures++; }
+    if (tooClose(p, "Leia and a white look by turns, Leia longer by (ms)", d)) failures++;
+  });
+  CHECK_EQ(bad, 0);
 }
