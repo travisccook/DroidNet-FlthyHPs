@@ -357,6 +357,7 @@ inline void DnStrip::show() {
     }
     if (recolour) s.lookMs = now;
     if (coloured && (recolour || !ownColour)) memcpy(g.chroma, chroma, 3);   // the colour of the last change; a contract look's, of its last frame
+    const bool wasLit = s.fieldLit, wasLitY = s.fieldLitY;
     contractFieldTell(s, level, lum, now);              // what the unit shows from now
     // S12: such a frame of Leia may have lit a part of the jewel without the whole field rising by a
     // step. It is light the gate should keep its distance from: the next onset of the whole field (the
@@ -368,9 +369,12 @@ inline void DnStrip::show() {
     // rule the onset is not over until the light stops rising. Keep that finer peak here and move
     // the gate's clocks with it, or an observer whose line sits inside that last level would time
     // the onset later than the gate did.
+    // The peak starts afresh at every onset (a measure that was not lit before this frame): a peak
+    // left from before the field went dark by another path (the blackout of a held frame, an owner's
+    // level that rescaled it) would stand above the new light, and its creep would not be seen.
     bool brighter = false;
-    if (!s.fieldLit) g.peakSum = 0;   else if (sum > g.peakSum)   { g.peakSum = sum;   brighter = true; }
-    if (!s.fieldLitY) g.peakSumY = 0; else if (sumY > g.peakSumY) { g.peakSumY = sumY; brighter = true; }
+    if (!s.fieldLit) g.peakSum = 0;   else if (!wasLit)  g.peakSum = sum;   else if (sum > g.peakSum)   { g.peakSum = sum;   brighter = true; }
+    if (!s.fieldLitY) g.peakSumY = 0; else if (!wasLitY) g.peakSumY = sumY; else if (sumY > g.peakSumY) { g.peakSumY = sumY; brighter = true; }
     if (brighter) { s.fieldOnsetMs = now; s.lookMs = now; }
   }
   g.pending = false;

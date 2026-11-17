@@ -363,20 +363,30 @@ struct Observer {
 // core's LOOK_MIN_LEVEL since CA1.6; until then this observer wanted a field mean of 4 levels, which
 // missed one green pixel at 23). Under that a frame shows no colour: a pulse that fades in through 1,
 // 2 and 3 levels has changed the field's colour at the 4.
+// HOW WELL a colour is known. Every LED rounds each channel down by under one count, so a frame's mean
+// colour is known to within 255 * (LEDs lit) / (the strongest channel's sum) in any channel: 3 for a
+// white jewel at 80 levels, 85 for a comet's head at 6 levels over a bed at 2 counts. A change counts
+// when it is more than 96 BEYOND what the rounding of the two frames could make of it. A frame known
+// to within 32 or better becomes the frame the next one is compared with; a poorer one is compared
+// and, unless it is a change all the same, forgotten, so that a colour arriving dim is still seen
+// when it is bright. (Without this a comet's dim frames read as changes of 102 between two frames of
+// one colour: soak 9000000 + 686 and 9800000 + 723. What it leaves out: a change of colour between
+// frames so dim that rounding alone could explain it.)
 struct ColourObs {
-  int darkPct, litPct; bool lit = false, known = false, any = false; int chroma[3] = {0, 0, 0}; uint64_t at = 0;
-  void see(int S, int FS, long sr, long sg, long sb, int peak, bool counts, uint64_t now, uint64_t& closest, long& changes) {
+  int darkPct, litPct; bool lit = false, known = false, any = false; int chroma[3] = {0, 0, 0}, unc = 0; uint64_t at = 0;
+  void see(int S, int FS, long sr, long sg, long sb, int peak, int nLit, bool counts, uint64_t now, uint64_t& closest, long& changes) {
     if (!lit && S * 100 >= FS * litPct) lit = true; else if (lit && S * 100 <= FS * darkPct) lit = false;
     const long top = std::max(sr, std::max(sg, sb));
     if (!lit || peak < 4) return;                    // no LED at 4 levels: no colour
     const int c[3] = {(int)(sr * 255 / top), (int)(sg * 255 / top), (int)(sb * 255 / top)};
+    const int u = (int)std::min(255L, 255L * nLit / top);
     int far = 0; for (int i = 0; i < 3; i++) far = std::max(far, abs(c[i] - chroma[i]));
-    if (known && far > 96) {
+    const bool change = known && far - u - unc > 96;
+    if (change) {
       if (counts) { if (any && now - at < closest) closest = now - at; at = now; any = true; changes++; }
       else any = false;
     }
-    for (int i = 0; i < 3; i++) chroma[i] = c[i];
-    known = true;
+    if (change || !known || u <= 32) { for (int i = 0; i < 3; i++) chroma[i] = c[i]; unc = u; known = true; }
   }
   void afresh() { any = false; }
 };
@@ -474,7 +484,7 @@ struct Photo {
   struct Was { uint64_t at; int fn, eff, pulse; }; std::vector<Was> wasLog;   // the unit's LED function, effect and overlay, at each change
   const Was* wasAt(uint64_t t) const { const Was* w = nullptr; for (const Was& x : wasLog) { if (x.at > t) break; w = &x; } return w; }
   void frame(const uint8_t* p) {
-    int S = 0, FS = 7 * fullScale(ceil), peakLed = 0, pm[7]; long sr = 0, sg = 0, sb = 0, sy = 0;
+    int S = 0, FS = 7 * fullScale(ceil), peakLed = 0, nLit = 0, pm[7]; long sr = 0, sg = 0, sb = 0, sy = 0;
     { const int fn = LED_command[hp].LEDFunction, eff = (int)gUnit[hp].s.effect, pu = gUnit[hp].s.pulseActive;
       if (wasLog.empty() || wasLog.back().fn != fn || wasLog.back().eff != eff || wasLog.back().pulse != pu) wasLog.push_back({us, fn, eff, pu}); }
     if (regionObs[0].litPct == 0) { static const int BAND[3][2] = {{10, 50}, {19, 75}, {4, 31}}; for (size_t i = 0; i < regionObs.size(); i++) { regionObs[i].darkPct = BAND[i % 3][0]; regionObs[i].litPct = BAND[i % 3][1]; } }
@@ -482,7 +492,7 @@ struct Photo {
     every([&](Observer& o) { o.minGap = 7 * (step + 1); });
     for (int i = 0; i < 7; i++) { const int g = p[i * 3], r = p[i * 3 + 1], b = p[i * 3 + 2];      // the strip keeps G,R,B
       const int m = std::max(r, std::max(g, b)); S += m; pm[i] = m; peak = std::max(peak, m); peakLed = std::max(peakLed, m); if (m > fullScale(ceil)) overCeiling++;
-      sr += r; sg += g; sb += b; sy += (54 * r + 183 * g + 19 * b) >> 8; }
+      sr += r; sg += g; sb += b; if (m) nLit++; sy += (54 * r + 183 * g + 19 * b) >> 8; }
     if (neoStrips[hp].getBrightness() > ceil) overCeiling++;
     if (simHasLeds(hp)) { lastHad = us; everHad = true; }
     if (!started || reread) { started = true; reread = false; prevS = S; for (auto& o : obs) o.reread(S, FS); for (auto& o : narrow) o.reread(S, FS); for (auto& o : lum) o.reread((int)sy, FS);
@@ -512,7 +522,7 @@ struct Photo {
     for (auto& o : lum) o.see((int)sy, FS, cOnset, us);
     for (size_t i = 0; i < regionObs.size(); i++) regionObs[i].see(pm, regions[i / 3].mask, fullScale(ceil), cOnset, us);
     for (size_t i = 0; i < fineObs.size(); i++) fineObs[i].see(pm, regions[i].mask, ceil, cOnset, us);
-    { const uint64_t was = colourClosestUs; for (auto& c : colour) { const long n = colourChanges; c.see(S, FS, sr, sg, sb, peakLed, cColour, us, colourClosestUs, colourChanges);
+    { const uint64_t was = colourClosestUs; for (auto& c : colour) { const long n = colourChanges; c.see(S, FS, sr, sg, sb, peakLed, nLit, cColour, us, colourClosestUs, colourChanges);
         if (colourChanges != n) colourLog.push_back({c.at, (int)(&c - colour)}); }
       if (colourClosestUs < was && colourClosestUs < 165000ULL) colourBadAt = us; }
     size_t n1 = 0; every([&](Observer& o) { n1 += o.onsets.size(); });
@@ -666,7 +676,7 @@ static const char* G_CALM[] = {"F0055", "A0059|3", "A0055|1", "R006|2", "A096", 
                                "F1013", "A104", "A105|2", "A198", "A199", "T1042", "X0045|1"};
 // One latched frame as the core's gates measure it, for the REPLAY (S9_REPLAY=1): the core's own
 // contractFieldAsk()/contractFieldTell() run again, from a fresh state, on what the jewel showed.
-struct FrameRec { uint32_t ms; uint8_t level, lum, ceil; bool ours; uint32_t sig; byte fn; uint8_t eff; bool pulse; uint8_t chroma[3]; int peak; };
+struct FrameRec { uint32_t ms; uint8_t level, lum, ceil; bool ours; uint32_t sig; byte fn; uint8_t eff; bool pulse; uint8_t chroma[3]; int peak, unc; };
 struct Stream {                                      // drives the wire and measures the three jewels
   Photo ph[3] = {Photo(0), Photo(1), Photo(2)};
   std::vector<FrameRec> rec[3]; long recShows[3] = {-1, -1, -1}; bool recOn = getenv("S9_REPLAY") != 0;
@@ -677,13 +687,13 @@ struct Stream {                                      // drives the wire and meas
       while (recShows[hp] < nowShows) {
         const uint32_t at = neoStrips[hp].ringMs[recShows[hp] % Adafruit_NeoPixel::RING];   // the board's own clock at the latch
         const uint8_t* p = neoStrips[hp].ring[recShows[hp]++ % Adafruit_NeoPixel::RING];
-        int sum = 0, sumY = 0, pk = 0; long c[3] = {0, 0, 0};
-        for (int i = 0; i < 7; i++) { const int g = p[i * 3], r = p[i * 3 + 1], b = p[i * 3 + 2]; sum += std::max(r, std::max(g, b)); pk = std::max(pk, std::max(r, std::max(g, b))); sumY += (54 * r + 183 * g + 19 * b) >> 8; c[0] += r; c[1] += g; c[2] += b; }
+        int sum = 0, sumY = 0, pk = 0, nl = 0; long c[3] = {0, 0, 0};
+        for (int i = 0; i < 7; i++) { const int g = p[i * 3], r = p[i * 3 + 1], b = p[i * 3 + 2]; const int mx = std::max(r, std::max(g, b)); sum += mx; pk = std::max(pk, mx); if (mx) nl++; sumY += (54 * r + 183 * g + 19 * b) >> 8; c[0] += r; c[1] += g; c[2] += b; }
         const long top = std::max(c[0], std::max(c[1], c[2]));
         FrameRec f = {at, (uint8_t)(sum / 7), (uint8_t)(sumY / 7), gUnit[hp].s.ceil,
                       simHasLeds(hp) || (gLatch[hp].touched && (millis() - gLatch[hp].touchMs < 340 || gLatch[hp].owed)), gUnit[hp].s.lookSig,
                       LED_command[hp].LEDFunction, (uint8_t)gUnit[hp].s.effect, gUnit[hp].s.pulseActive,
-                      {(uint8_t)(top ? c[0] * 255 / top : 0), (uint8_t)(top ? c[1] * 255 / top : 0), (uint8_t)(top ? c[2] * 255 / top : 0)}, pk};
+                      {(uint8_t)(top ? c[0] * 255 / top : 0), (uint8_t)(top ? c[1] * 255 / top : 0), (uint8_t)(top ? c[2] * 255 / top : 0)}, pk, (int)(top ? std::min(255L, 255L * nl / top) : 255)};
         if (!rec[hp].empty()) { const FrameRec& l = rec[hp].back(); if (l.level == f.level && l.lum == f.lum && l.peak == f.peak && !memcmp(l.chroma, f.chroma, 3)) continue; }
         rec[hp].push_back(f);
       }
@@ -694,14 +704,14 @@ struct Stream {                                      // drives the wire and meas
   //   * the field gate (contractFieldAsk / contractFieldTell) with the frame's level and luminance as the
   //     layer measures them (whole levels); the reference is rescaled when the owner changes the level;
   //   * the look gate (contractLookAllowed / contractLookForced), fed the FRAME: a lit frame whose mean
-  //     colour is more than 96 from the lit frame before it in any channel (the colour observer's own
-  //     test, and its floor: a LED at 4 levels) is a new look.
+  //     colour is more than 96 from the lit frame before it in any channel, beyond what rounding could
+  //     make of it (the colour observer's own test, and its floor: a LED at 4 levels) is a new look.
   // A frame either gate would have held is marked: F! (field) or C! (look); "up" is a frame at which
   // the field lit or got brighter, "colour" a change of colour. Times are the board's own clock at the
   // latch, the same the layer gave the gate.
   int replay(int hp, uint64_t fromUs, uint64_t toUs) const {
     ContractUnitState rs; int heldAsked = 0, heldNot = 0, heldLook = 0, shown = 0; uint8_t wasCeil = 0;
-    int chroma[3] = {0, 0, 0}; bool known = false; uint32_t sig = 1;
+    int chroma[3] = {0, 0, 0}, unc = 0; bool known = false; uint32_t sig = 1;
     printf("    replay hp%d %.0f..%.0f ms:", hp, fromUs / 1000.0, toUs / 1000.0);
     for (const FrameRec& f : rec[hp]) {
       if (wasCeil && f.ceil != wasCeil) { rs.fieldRef = (uint8_t)((unsigned)rs.fieldRef * f.ceil / wasCeil); rs.fieldRefY = (uint8_t)((unsigned)rs.fieldRefY * f.ceil / wasCeil); }
@@ -711,9 +721,8 @@ struct Stream {                                      // drives the wire and meas
       bool change = false, cHeld = false;
       if (f.peak >= 4) {
         int far = 0; for (int i = 0; i < 3; i++) far = std::max(far, abs((int)f.chroma[i] - chroma[i]));
-        if (known && far > 96) { change = true; sig++; cHeld = !contractLookAllowed(rs, sig, f.ms); }
-        for (int i = 0; i < 3; i++) chroma[i] = f.chroma[i];
-        known = true;
+        if (known && far - f.unc - unc > 96) { change = true; sig++; cHeld = !contractLookAllowed(rs, sig, f.ms); }
+        if (change || !known || f.unc <= 32) { for (int i = 0; i < 3; i++) chroma[i] = f.chroma[i]; unc = f.unc; known = true; }
       }
       if (in) { if (fHeld) (f.ours ? heldAsked : heldNot)++; if (cHeld) heldLook++; }
       contractFieldTell(rs, f.level, f.lum, f.ms);
@@ -1448,4 +1457,24 @@ SCENARIO(ca17_b_on_a_look_goes_up_at_most_once_in_340_ms) {
   // (What is taken when the window ends is the newest line; half the time that is the b=20, so the
   // look goes up every other window here.)
   CHECK(rises >= 5 && rises <= 18);  CHECK(closest >= 334000ULL);
+}
+
+// The lit peak, in sevenths of a level, starts afresh at every onset (soak 9000000 + 1286). The latch
+// keeps the brightest sum the field has had while lit, so that a creep inside one whole level still
+// moves the gate's time. A peak left from before the field went dark by another path stood above
+// the new light: here a held frame is blacked out because the owner lowered the level under it, the
+// field lights again lower, and creeps up by one count. That creep must move the gate's time. (In
+// the stream a gradient's luminance crept across an observer's line and a rainbow lit the jewel
+// 120 ms later.) Drawn on stock light in the hand-back window, the loop standing still.
+SCENARIO(s9_the_lit_peak_starts_afresh_at_every_onset) {
+  run(9); calmStock();
+  CHECK(!lookUp(0));  CHECK_EQ(LED_command[0].LEDFunction, 100);
+  static const int HI[7] = {90, 90, 90, 90, 90, 90, 90}, LO[7] = {40, 40, 40, 40, 40, 40, 40}, LO1[7] = {41, 40, 40, 40, 40, 40, 40};
+  later(1000); handBackNow(); jewelPixels(HI); CHECK(shownPixels(HI));        // lit: the peak is 630 sevenths
+  later(100);  handBackNow(); neoStrips[0].setBrightness(60);                 // the owner lowers the level...
+  jewelFrame(50, 0, 0);                                                       // ...and a frame of another colour comes too soon: held,
+  CHECK(dark(0));                                                             // and what was up, scaled for the old level, is blacked out
+  later(400);  handBackNow(); jewelPixels(LO); CHECK(shownPixels(LO));        // lit again, lower
+  later(400);  handBackNow(); jewelPixels(LO1); CHECK(shownPixels(LO1));      // one count brighter: the light is still arriving
+  CHECK_EQ(gUnit[0].s.fieldOnsetMs, (uint32_t)millis());
 }
