@@ -393,6 +393,10 @@ Everything here is from simulation. Nothing in this fork has run on a board.
    waits at the latch in three passes of four), and the look that follows it waits up to 340 ms.
 5. **Stock light after the contract lets go.** For 340 ms after a hand-back or a verb-`B` step, and
    once more from a frame that had to wait, stock frames are asked of the gates and can be held.
+   An animated stock look can wait longer than those two windows: in an independent run of 360
+   hand-backs the last held frame came up to 846 ms after the owner's command (Leia 835 ms, the
+   colour projector 846 ms, the colour cycle 680 ms). The jewel was lit within 341 ms every time
+   and the look then ran at its stock rate; a solid colour was up within 341 ms in 700 of 700.
    The stock light's own change of colour delays the next contract look by up to 170 ms.
 6. **Verb `B` is a ride on the strip's level** on this board, not the look's `b=`. It dims stock
    light under an armed show too. A raise waits for the core's 340 ms window and for the gate.
@@ -409,7 +413,10 @@ Everything here is from simulation. Nothing in this fork has run on a board.
     receive ring and passes of up to 4 ms. How long a pass takes on a board is not measured.
 11. **The test's oracle sets the owner's brightness command aside** for 400 ms (it rescales the
     field under the observers), like any stock command.
-12. **No image has been built from this code**, and the bench checklist below has not been run.
+12. **The beat clock can outlive the show.** After a take-over or a watchdog expiry with no unit
+    holding anything, the clock can stay marked as running (5 of 300 hostile streams in an
+    independent run). Nothing is drawn from it; `Q` reports a `bpm` where it should report 0.
+13. **No image has been built from this code**, and the bench checklist below has not been run.
 
 ## Bench checklist for release 1 (not run)
 
