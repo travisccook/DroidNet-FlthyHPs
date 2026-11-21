@@ -48,7 +48,7 @@ announce" below.
   `ContractFlthy.h` against `test/host/mock_flthy.h`, 1,617,274 contract fuzz checks, 77/77 native
   brightness parser checks and 2,965,122 native brightness fuzz checks, 37,506 WDP announce core
   checks and 19 adapter checks (run twice).
-- **Whole-firmware simulation: 102 scenarios pass and 2 fail as expected (known limits, S12).** Stage 2b of `run.sh`
+- **Whole-firmware simulation: 105 scenarios pass and 2 fail as expected (known limits, S12).** (102 in release 1.) Stage 2b of `run.sh`
   (`test/host/sim`) runs the real `src/main.cpp` on a fake Arduino core: the 9600-baud wire with its
   receive ring (bytes are lost when it is full) and its transmit ring (a write blocks when it is
   full), `pulseIn()` blocking as it does in RC mode, and loop passes of random length. Origin is
@@ -102,6 +102,28 @@ announce" below.
   fault of the layer (the lit peak kept in sevenths was not cleared when a held frame was blacked
   out; `s9_the_lit_peak_starts_afresh_at_every_onset`) and two of the oracle (its colour test now
   allows for the LEDs' rounding). See "Known limits" below.
+- **The R2 line (`lighting-r2`): core CA2, contract v1.4, release 2, with stand-ins.** Core `9991f5a`
+  (RSeries; "Core revision CA2" in its `docs/CHANGING_THE_CORE.md`): the ids `logic`, `projector` and `vu`
+  and the math of the first two; the query reply says `ver=1.4,rel=2`, the WDP caps `contract.1.4`. The
+  three ids reach the jewel through their own render slots, 116 to 118 (`FLTHY_FX_MAX` is
+  `_fxCode(CE_VU)`; `main.cpp`'s LED function switch takes the three codes), and draw stand-ins until
+  Task F4: `logic` as twinkle, `projector` as sparkle (with sparkle's counters, started afresh like it),
+  `vu` as meter. None of them is an accent. `test/host/sim/scenarios_v14.inc` checks them (logic and
+  twinkle, vu and meter, draw the same frames side by side; projector keeps two sparks at `s=0` and moves
+  one every 477 ms; a `P` naming any of them overlays solid), the white-box accent guard of stage 2 takes
+  them, and a stock line naming slot 118 shows only the off colour. The two known limits of S12 stay as
+  they were. Build, on clean trees (`pio run -e FlthyHPs`, `stack_report.py`):
+
+  | | Release 1 (`86b5ec0`, CA1.7) | Core CA2 alone | Core CA2 and the stand-ins |
+  | --- | --- | --- | --- |
+  | flash | 44,894 B | 44,912 B | 44,948 B |
+  | SRAM | 4,670 B | 4,670 B | 4,670 B |
+  | stack headroom (sound bound) | 3,036 B | 3,073 B | 3,074 B |
+
+  The headroom moved because of how the tool bounds an indirect call, not because a path got shorter:
+  the synchronous worst case is 412 B, then 412 B, then 411 B, and the tool charges each interrupt with
+  the worst of the address-taken functions it finds, which was `String::substring()` (74 B) and is now
+  a copy of `beatAccentFires()` (37 B). Host-tested and cross-compiled; not run on a board.
 - **Build:** flash 44,900 B of 253,952; SRAM 4,676 B of 8,192 (the score tables are 2,112 B).
   `stack_report.py`: worst-case stack 476 B of the 3,516 B left, 3,040 B spare. The heap (Arduino
   `String`) shares that space. (The tool takes any two bytes of `.data` equal to a function's address
@@ -131,15 +153,15 @@ announce" below.
 
 `src/contract/contract_core.h` is **byte-identical** across the three DroidNet forks
 (RSeries / PSI / Flthy). It is owned by DroidNet-RSeriesLogics and never edited here:
-`src/contract/CORE_PIN` names the RSeries commit the shared files were copied from (`cea4921`, core
-revision CA1.5), the list of shared files is that commit's `test/host/core-files.txt`, and `run.sh`
+`src/contract/CORE_PIN` names the RSeries commit the shared files were copied from (`9991f5a`, core
+revision CA2, on the R2 line), the list of shared files is that commit's `test/host/core-files.txt`, and `run.sh`
 stage 0 compares every one of them with the pinned commit when an RSeries checkout is at hand (CI
 always has one). A change to the core is made there and re-copied here with a new pin. It is pure
 C++ with no Arduino dependency, which is why it can be unit-tested on a host.
 
 The shared files: `src/contract/contract_core.h`, `test/host/test_contract_core.cpp`,
-`test/host/test_contract_v13.cpp`, `test/host/fuzz_parsers.cpp`, `src/wdp/wdp_announce_core.h` and
-`test/host/test_wdp_announce_core.cpp`.
+`test/host/test_contract_v13.cpp`, `test/host/fuzz_parsers.cpp`, `test/host/test_fx_regions.cpp`,
+`src/wdp/wdp_announce_core.h` and `test/host/test_wdp_announce_core.cpp`.
 
 On the AVR, `ContractFlthy.h` defines the core's two flash-string hooks (`CONTRACT_PSTR`,
 `CONTRACT_READ_BYTE`) before including it, so the parser's name tables and the query reply text stay
