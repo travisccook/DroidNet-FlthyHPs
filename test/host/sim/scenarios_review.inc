@@ -228,7 +228,7 @@ static bool txLinesWhole() {                         // every reply and every an
   for (size_t p = 0; (p = t.find(";S0!", p)) != std::string::npos; p++) {
     size_t e = t.find('\r', p); if (e == std::string::npos) return false;
     std::string r = t.substr(p, e - p);
-    if (r.find("@WDP1") != std::string::npos || r.find("q:ver=1.3,rel=1,cap=32,n=") == std::string::npos || r.find(",bpm=") == std::string::npos) return false;
+    if (r.find("@WDP1") != std::string::npos || r.find("q:ver=1.4,rel=2,cap=32,n=") == std::string::npos || r.find(",bpm=") == std::string::npos) return false;
   }
   return true;
 }
@@ -244,7 +244,7 @@ SCENARIO(r6_q_reply_never_stalls_the_loop) {
   while (gWdp.len == 0) pass(500);                   // an announce has just started
   Serial.tx.clear(); Serial.maxStallUs = 0; say("!HRQ:r=3\r"); drain(2000, 2000, 1.0);
   CHECK_EQ(Serial.maxStallUs, 0);  CHECK_EQ(qReplies(), 1);  CHECK(txLinesWhole());
-  CHECK(Serial.tx.find(";W3,;S0!HRq:ver=1.3,rel=1,cap=32,n=0,ok=0,bpm=0\r") != std::string::npos);
+  CHECK(Serial.tx.find(";W3,;S0!HRq:ver=1.4,rel=2,cap=32,n=0,ok=0,bpm=0\r") != std::string::npos);
 }
 
 // ---- Finding 7: "enable servo twitch" works during a show ---------------------------------------
@@ -264,7 +264,8 @@ SCENARIO(stock_line_naming_a_contract_slot_only_shows_the_off_colour) {
   line("R0:1\r", 1.0);                               // (':' - '0') * 10 + 1 = 101, the first contract slot
   CHECK_EQ(LED_command[1].LEDFunction, 100);         // nothing of the contract's to show: the off colour
   CHECK(stockAgain(1));  CHECK_EQ(g_servoMoves - m, 0);
-  line("F0;5\r", 1.0); CHECK(stockAgain(0));         // 115, the last one
+  line("F0;5\r", 1.0); CHECK(stockAgain(0));         // 115, the last one of contract v1.3
+  line("F0;8\r", 1.0); CHECK(stockAgain(0));         // 118 (v1.4's vu), the last one now
 }
 
 // ---- RC mode (stock F102 / F103): pulseIn() blocks the loop -------------------------------------

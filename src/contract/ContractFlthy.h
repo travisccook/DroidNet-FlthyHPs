@@ -41,7 +41,7 @@
 // effect writes 0xRRGGBB pre-scaled by a per-write brightness multiplier. The envelope never
 // uses setBrightness(): that rescales the whole RAM buffer at once, lossily, and
 // setPixelColor() already scales every write by the strip's brightness. The per-unit look
-// renders through LED_command[hp].LEDFunction = 100 + effectId (cases 101..115,
+// renders through LED_command[hp].LEDFunction = 100 + effectId (cases 101..118,
 // added to the render switch); an ACCENT layers a second look OVER the base and
 // auto-restores on ms-expiry. A host-seeded beat-clock (verb C) drives an accent envelope,
 // and the score (verb A + at=) switches sections on-beat, board-side.
@@ -66,7 +66,7 @@
 #include "../wdp/wdp_fork.h" // wdpInFlight() (verb Q reply)
 
 // -------------------------------------------------------------- constants ----
-static const uint8_t  FLTHY_FX_BASE         = 100;   // LEDFunction = 100 + effectId (101..115)
+static const uint8_t  FLTHY_FX_BASE         = 100;   // LEDFunction = 100 + effectId (101..118)
 #ifdef NEO_JEWEL_RGBW
 static const uint8_t  FLTHY_PX_BYTES        = 4;     // raw bytes a pixel
 #else
@@ -74,13 +74,13 @@ static const uint8_t  FLTHY_PX_BYTES        = 3;
 #endif
 static const uint8_t  FLTHY_SCORE_CAP       = 32;    // scored sections a unit holds (spec section 6); Q reports it as cap=
 
-// contract effectId -> LEDFunction render code (CE_OFF..CE_TWINKLE map to 101..115)
+// contract effectId -> LEDFunction render code (CE_OFF..CE_VU map to 101..118)
 static inline byte _fxCode(ContractEffect e) { return (byte)(FLTHY_FX_BASE + (uint8_t)e); }
 // hp index -> the contract unit letter it answers as (Front/Rear/Top)
 static inline char _unitChar(uint8_t hp) { return (hp == 0) ? 'F' : ((hp == 1) ? 'R' : 'T'); }
 // upper bound of the contract render-slot range (main.cpp's render switch gates on this;
-// bump it here, not with a fresh literal, when a later task adds an effect after CE_TWINKLE).
-static const uint8_t  FLTHY_FX_MAX          = _fxCode(CE_TWINKLE);   // 115
+// bump it here, not with a fresh literal, when a later task adds an effect after CE_VU).
+static const uint8_t  FLTHY_FX_MAX          = _fxCode(CE_VU);        // 118 (contract v1.4, core CA2)
 
 // ----------------------------------------------------------- per-unit state ---
 struct FlthyUnit {
@@ -125,7 +125,7 @@ static uint8_t    gQueryAsked = 0;        // bit hp: that unit owes a reply
 static ScoreEntry gScore[HPCOUNT][FLTHY_SCORE_CAP];
 
 // ---------------------------------------------------------------- helpers ----
-// Is the LED render slot one of ours (101..115)?
+// Is the LED render slot one of ours (101..118)?
 static inline bool _slotIsOurs(uint8_t hp) {
   byte f = LED_command[hp].LEDFunction;
   return f >= 101 && f <= FLTHY_FX_MAX;
@@ -605,7 +605,8 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB
       break;
     }
 
-    case CE_SPARKLE: {                                 // a fixed number of pixels lit; ONE moves at a time
+    case CE_SPARKLE:                                   // a fixed number of pixels lit; ONE moves at a time
+    case CE_PROJECTOR: {                               // v1.4 (CA2): a stand-in until Task F4 draws the projector
       // Redrawn for seven pixels. Re-rolling every pixel's brightness swung the whole field by more
       // than a tenth of the ceiling most frames, and the S9 gate then held over a third of them.
       // Now the count of lit pixels is constant (s picks it: 2, 3, 4 or 5) and all are at the same
@@ -642,7 +643,8 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB
       break;
     }
 
-    case CE_METER: {                                   // no VU on HP: solid @ level (fork spec §6/§8)
+    case CE_METER:                                     // no VU on HP: solid @ level (fork spec §6/§8)
+    case CE_VU: {                                      // v1.4 (CA2): a stand-in until Task F4 gives vu the pump
       uint8_t br = (uint8_t)((uint16_t)envB * (uint16_t)u.s.level / 255);   // the core's level: a raise at most once in 340 ms
       if (u.lastEnvBright != (int)br) { _fillShow(hp, _scale(color, br)); u.lastEnvBright = (int)br; }
       break;
@@ -711,7 +713,8 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB
       break;
     }
 
-    case CE_TWINKLE: {                                  // per-px hashed triangle twinkle, whole jewel
+    case CE_TWINKLE:                                    // per-px hashed triangle twinkle, whole jewel
+    case CE_LOGIC: {                                    // v1.4 (CA2): logic is the logics' look; twinkle here
       for (uint16_t i = 0; i < NEO_JEWEL_LEDS; i++) {
         uint8_t tb = fxTwinkleBright((int)i, now, u.s.speed);
         tb = (uint8_t)(FLTHY_BED + ((uint16_t)tb * (255u - FLTHY_BED)) / 255u);   // S12: from the bed to full, never dark
@@ -755,7 +758,7 @@ static inline void _expireOverlay(uint8_t hp, uint32_t now) {
   }
 }
 
-// Called from the LED render switch (cases 101..115) once per loop for unit hp.
+// Called from the LED render switch (cases 101..118) once per loop for unit hp.
 inline void contractRenderHP(uint8_t hp) {
   FlthyUnit& u = gUnit[hp];
   ContractUnitState& s = u.s;
@@ -833,7 +836,7 @@ static inline bool _fireAccent(uint8_t hp, ContractEffect fx, const ContractRGB&
 // The counters the two stateful looks keep (and the stock ones varResets() clears, with a
 // blackout) start over when such a look starts.
 static inline void _freshCounters(uint8_t hp, ContractEffect eff) {
-  if (eff != CE_SCAN && eff != CE_SPARKLE) return;
+  if (eff != CE_SCAN && eff != CE_SPARKLE && eff != CE_PROJECTOR) return;
   gUnit[hp].frame = 0; gUnit[hp].frameMs = 0;         // 0: the scan's first frame is always painted
   // (No varResets() here: it blacks the jewel out, and both looks paint all seven pixels on their
   // first frame. With it, a sparkle sent again in another colour every 170 ms was the old colour for

@@ -590,7 +590,7 @@ int main() {
     // (a) and (b) are satisfied by EITHER gate, so on their own they cannot see the one inside
     // _fireAccent() disappear. This can: it is the primitive's own contract, and it also covers
     // every future caller of it.
-    const ContractEffect rejected[] = {CE_SCAN, CE_SPARKLE, CE_METER, CE_NATIVE};
+    const ContractEffect rejected[] = {CE_SCAN, CE_SPARKLE, CE_METER, CE_NATIVE, CE_LOGIC, CE_PROJECTOR, CE_VU};
     for (unsigned i = 0; i < sizeof(rejected) / sizeof(rejected[0]); i++) {
       _mock_millis = t + 2000 + (uint32_t)i * 400u;        // each fire clear of the cool-down
       if (!_fireAccent(0, rejected[i], ContractRGB{255, 0, 0}, 200, 200)) {
