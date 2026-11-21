@@ -175,10 +175,12 @@ SCENARIO(rel2_projector_b_and_B_raised_every_50_ms_light_no_part_more_than_three
 SCENARIO(rel2_projector_an_overlay_returns_to_the_same_slots) {
   // (a) the slots: an overlay every 340 ms for 20 s; at each overlay's end the base comes back with the
   // slots it had when the overlay began, and the first base frame latched shows them.
-  // (Under a wipe of 300 ms the base is up for 40 ms between overlays, and its frame waits at the gate
-  // and is replaced by the next overlay: there the slots are checked, and no base frame is expected.)
+  // (Where the overlay lights pixels the base has dark and the base lights pixels the overlay has dim, the
+  // two light the jewel by turns, and the latch keeps 340 ms between frames in which a LED gets brighter:
+  // the base's return can wait past the next overlay. Under a dim overlay of 250 ms or a wipe of 300 ms
+  // the slots are checked, and a base frame is not expected after every overlay.)
   for (const char* p : {"!HFP:c=ffffff,d=170\r", "!HFP:c=ffffff,b=0,d=170\r", "!HFP:c=ffffff,b=80,d=250\r", "!HFP:i=wipe,c=ff0000,d=300\r"}) {
-    std::string pl = p; const bool shown = pl.find("wipe") == std::string::npos;
+    std::string pl = p; const bool shown = pl.find("wipe") == std::string::npos && pl.find("b=80") == std::string::npos;
     const int bad = trial([pl, shown] {
       run(9); calmStock(); line("HFB255\r", 0.5); say("!HFM:v=show\r!HFA:i=projector,c=116530\r"); run(2.0);
       int slots[7] = {0}; bool wasUp = false, watching = false; long overlays = 0, same = 0, differ = 0, framesOk = 0, framesBad = 0; long seen = shows(0);
@@ -292,19 +294,20 @@ SCENARIO(rel2_vu_an_l_during_the_pump_changes_nothing) {
   CHECK(!clockRunning());  CHECK_EQ(unitLevel(0), 128);  CHECK_EQ(unitLevel(1), 20);   // not pumped: the meter, L shown
   CHECK(memcmp(neoStrips[0].shown, neoStrips[1].shown, 21) != 0);
 }
-// A KNOWN LIMIT (DROIDNET_FORK.md, Known limits, v1.4): two looks by turns on one part of the jewel. A
-// brightening step lights a pair of pixels, a crumbling step darkens it, and the first overlay of a storm
-// (a dim one, under a step of the whole field, so the field gate passes it) lights the pair again before
-// 340 ms have passed; the storm's next overlays light it every 340 ms. By the gate's count of a part that
-// is 4 in a second, once, at the storm's start (during a storm the jewel holds still, see _expireOverlay()).
-// Here the case is built on purpose 300 times: the whole jewel and the bands are asserted; the gate's
-// count is reported, and held to the 4 it is.
+// Two looks by turns on one part of the jewel (known limit 1 of release 2 until the latch paced every frame
+// drawn over a projector base, DnStrip::show()). A brightening step lights a pair of pixels, a crumbling
+// step darkens it, and the first overlay of a storm (a dim one, under a step of the whole field, so the
+// field gate passes it) would light the pair again before 340 ms have passed; the storm's next overlays
+// light it every 340 ms. Built on purpose 300 times a colour, in 116530 and, where the bands see it too
+// (review finding f1), in white and red. Every observer: 3 at the most.
 SCENARIO(rel2_projector_a_dim_overlay_storm_right_after_a_crumbling_step) {
+ for (const char* c : {"116530", "ffffff", "ff0000"}) {
+  std::string look = std::string("!HFA:i=projector,c=") + c + "\r";
   int worstF = 0, worstB = 0, worstW = 0, built = 0, fours = 0;
   for (int seed = 0; seed < 300; seed++) {
     int fd[2]; if (pipe(fd)) { failures++; return; } fflush(stdout); pid_t pid = fork();
     if (pid == 0) { close(fd[0]); srand(1000 + seed);
-      run(9); calmStock(); say("!HFM:v=show\r"); run(1); say("!HFA:i=projector,c=116530\r"); run(2.0 + (seed % 7) * 0.05);
+      run(9); calmStock(); say("!HFM:v=show\r"); run(1); say(look.c_str()); run(2.0 + (seed % 7) * 0.05);
       uint32_t lv = levelWindowMs(0); int k = -1; uint32_t tb = 0; int r[3] = {-1, -1, -1}; Photo p(0); p.strict = true;
       for (int i = 0; i < 60000 && r[0] < 0; i++) { pass(1000); p.sample();
         if (levelWindowMs(0) != lv) { lv = levelWindowMs(0); tb = millis(); k = -1;           // a brightening step: which neighbours did it light?
@@ -317,7 +320,59 @@ SCENARIO(rel2_projector_a_dim_overlay_storm_right_after_a_crumbling_step) {
     if (r[0] < 0) continue;
     built++; fours += r[0] > 3; worstF = std::max(worstF, r[0]); worstB = std::max(worstB, r[1]); worstW = std::max(worstW, r[2]);
   }
-  printf("  built %d times: the whole jewel at most %d onsets in a second, a part by the bands %d, by the gate's count %d (%d of the %d at 4)\n",
-         built, worstW, worstB, worstF, fours, built);
-  CHECK(built >= 250);  CHECK(worstW <= 3);  CHECK(worstB <= 3);  CHECK(worstF <= 4);
+  printf("  c=%s, built %d times: the whole jewel at most %d onsets in a second, a part by the bands %d, by the gate's count %d (%d of the %d over 3)\n",
+         c, built, worstW, worstB, worstF, fours, built);
+  CHECK(built >= 200);  CHECK(worstW <= 3);  CHECK(worstB <= 3);  CHECK(worstF <= 3);
+ }
+}
+// vu's hand-over between pumped and not (N12, the decision of 2026-11-21: with the clock held vu is the
+// plain meter, fed by L). It starts the level window: to the pump the level starts from 0, from the pump
+// it is the last L the unit took. Pause and resume, am= on and off, the meter at full by L, as fast as
+// lines come: no onset of the jewel or a part of it closer than 340 ms, at most 3 a second.
+SCENARIO(rel2_vu_the_hand_over_between_pumped_and_not_keeps_the_window) {
+  struct { const char* name; const char* a; const char* b; int period; } T[] = {
+    {"C:bpm=0 / C:bpm=120 every 60 ms", "!**C:bpm=0\r", "!**C:bpm=120,ph=0,bpb=4\r", 120},
+    {"C:bpm=0 / C:bpm=300 every 100 ms", "!**C:bpm=0\r", "!**C:bpm=300,ph=0,bpb=4\r", 200},
+    {"A:am=0 / A:am=2 every 60 ms", "!HFA:am=0\r", "!HFA:am=2\r", 120},
+    {"A:m=0 / A:m=255 every 90 ms", "!HFA:m=0\r", "!HFA:m=255\r", 180},
+  };
+  for (auto& t : T) {
+    std::string a = t.a, b = t.b; const int per = t.period;
+    r2Report(t.name, r2Count([] { say("!HFA:i=vu,c=ffffff,am=2,m=255\r!HFL:v=255\r!**C:bpm=120,ph=0,bpb=4\r"); },
+                             [a, b, per](int x) { if (x == 0) say(a.c_str()); if (x == per / 2) say(b.c_str()); if (x == per / 4) say("!HFL:v=255\r"); }, per));
+  }
+  // and the levels each side: paused, the last L (200); pumped again, from 0 and then the pump's
+  const int bad = trial([] {
+    run(9); calmStock(); say("!HFM:v=show\r!HFA:i=vu,c=ffffff,am=2,m=200\r!HFL:v=200\r"); run(1.0);
+    CHECK_EQ(unitLevel(0), 200);                             // no clock: the meter
+    say("!**C:bpm=60,ph=0,bpb=4\r"); run(0.1); CHECK_EQ(unitLevel(0), 0);   // to the pump: from 0 ...
+    run(0.5); CHECK(unitLevel(0) >= 55);                     // ... and the pump's level once the window ends
+    say("!HFL:v=10\r"); run(0.1); CHECK(unitLevel(0) >= 55); // an L under the pump is not shown
+    say("!**C:bpm=0\r"); run(0.5); CHECK_EQ(unitLevel(0), 200);   // held: the meter at the last L it took
+  });
+  CHECK_EQ(bad, 0);
+}
+// What the latch's pacing costs an accent over a projector: its first frame waits until 340 ms after the
+// last frame in which a LED got brighter. P on every beat at 120 BPM for 20 s: how late each one's first
+// frame is, after the board took the line.
+SCENARIO(rel2_projector_an_accent_over_it_waits_at_most_340_ms) {
+  for (const char* p : {"!HFP:c=ffffff,d=170\r", "!HFP:c=ff00ff,b=120,d=250\r"}) {
+    std::string pl = p;
+    const int bad = trial([pl] {
+      run(9); calmStock(); say("!HFM:v=show\r!HFA:i=projector,c=116530\r"); run(2.0);
+      long n = 0, late = 0, never = 0; double sum = 0; uint32_t worst = 0, started = 0; bool waiting = false; long seen = shows(0);
+      for (int t = 0; t < 20000; t++) {
+        if (t % 500 == 0) say(pl.c_str());
+        const bool was = gUnit[0].s.pulseActive; pass(1000);
+        if (!was && gUnit[0].s.pulseActive) { if (waiting) never++; waiting = true; started = millis(); seen = shows(0); }
+        if (waiting && gUnit[0].s.pulseActive && shows(0) > seen && !gLatch[0].pending) {
+          const uint32_t d = millis() - started; n++; sum += d; worst = std::max(worst, d); late += d > 20; waiting = false; }
+        if (waiting && !gUnit[0].s.pulseActive) { never++; waiting = false; }
+      }
+      printf("  %-30s %ld accents shown: %.1f ms late on average, %u at the most, %ld more than 20 ms late; %ld never shown\n",
+             pl.substr(1, pl.size() - 2).c_str(), n, n ? sum / n : 0.0, worst, late, never);
+      CHECK(n >= 20);  CHECK(worst <= 341);
+    });
+    CHECK_EQ(bad, 0);
+  }
 }
