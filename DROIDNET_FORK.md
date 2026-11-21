@@ -48,7 +48,7 @@ announce" below.
   `ContractFlthy.h` against `test/host/mock_flthy.h`, 1,617,274 contract fuzz checks, 77/77 native
   brightness parser checks and 2,965,122 native brightness fuzz checks, 37,506 WDP announce core
   checks and 19 adapter checks (run twice).
-- **Whole-firmware simulation: 105 scenarios pass and 2 fail as expected (known limits, S12).** (102 in release 1.) Stage 2b of `run.sh`
+- **Whole-firmware simulation: 117 scenarios pass and 2 fail as expected (known limits, S12).** (105 at core CA2 with the stand-ins, 102 in release 1.) Stage 2b of `run.sh`
   (`test/host/sim`) runs the real `src/main.cpp` on a fake Arduino core: the 9600-baud wire with its
   receive ring (bytes are lost when it is full) and its transmit ring (a write blocks when it is
   full), `pulseIn()` blocking as it does in RC mode, and loop passes of random length. Origin is
@@ -124,6 +124,21 @@ announce" below.
   the synchronous worst case is 412 B, then 412 B, then 411 B, and the tool charges each interrupt with
   the worst of the address-taken functions it finds, which was `String::substring()` (74 B) and is now
   a copy of `beatAccentFires()` (37 B). Host-tested and cross-compiled; not run on a board.
+- **Task F4 on the R2 line: `projector` and `vu` are this board's own looks.** `logic` is still drawn as
+  twinkle (it is the logics' look). See "Contract v1.4, release 2" below. Build, on clean trees:
+
+  | | CA2 and the stand-ins (`9f4137a`) | Task F4 (`89a3cf9`) | |
+  | --- | --- | --- | --- |
+  | flash | 44,948 B | 46,544 B | +1,596 B |
+  | SRAM | 4,670 B | 4,694 B | +24 B (8 B a jewel) |
+  | stack headroom (sound bound) | 3,074 B | 3,042 B | -32 B |
+
+  The synchronous worst case is 411 B both times. 24 B of the headroom is the new RAM; 8 B is the
+  tool's charge for an interrupt (its worst address-taken function is now `TwoWire::endTransmission()`,
+  23 B, where it was a copy of `beatAccentFires()`). The flash is more than the plan's estimate (0.5
+  to 0.9 KB): +762 B in `_renderLook()` for the projector's case, and the pump's amount now one function
+  shared by `_envBright()` and `vu` (+522 B out of line, -422 B from `loop()`), the vu offer in the tick
+  (+298 B). Host-tested, simulated and cross-compiled; not run on a board.
 - **Build:** flash 44,900 B of 253,952; SRAM 4,676 B of 8,192 (the score tables are 2,112 B).
   `stack_report.py`: worst-case stack 476 B of the 3,516 B left, 3,040 B spare. The heap (Arduino
   `String`) shares that space. (The tool takes any two bytes of `.data` equal to a function's address
@@ -393,6 +408,105 @@ What `ContractFlthy.h` does on top of the shared core. The spec's rule numbers a
 
 Not in release 1: the `projector`, `kick` and `twitch` looks, and accents over native looks (R2).
 
+## Contract v1.4, release 2 (the R2 line)
+
+What this board draws for the three ids of spec v1.4 (`2026-11-21-driveable-animation-contract-v1.4-design.md`
+in the Signal Booster), on core CA2. None of them is an accent (`accentEffectAllowed()`); an overlay may run
+over each. Everything here is host-tested, simulated on the real `src/main.cpp` and cross-compiled. Nothing
+of it has run on a board.
+
+| id | Render slot | What the jewel shows |
+| --- | --- | --- |
+| `logic` | 116 | twinkle (the logics' look; this board's stand-in) |
+| `projector` | 117 | the colour projector, paced for the gate (N6 to N9) |
+| `vu` | 118 | the meter (a solid fill at its level), the pump moving the level (N10 to N12) |
+
+**`projector`** (`ContractFlthy.h`, `case CE_PROJECTOR` in `_renderLook()`). A jewel keeps seven slot
+numbers (`projSlot`), the next step's time (`frameMs`) and whether a frame of the look waits at the latch
+(`projWait`): 8 B a jewel. A step comes every 50 to 149 ms (`random()`, the board's dice, as the stock
+`colorProjectorLED()` draws them) and draws a candidate slot of `fxProjectorSlot()`'s row for each pixel.
+A brightening step gives every pixel its candidate and takes the window (`levelMs = now`); any other step
+crumbles through `fxProjectorTake()`. Its level is `b=`: on this board the strip applies the ceiling to
+every write (S6), so `contractLevel(ceil, b=)` is the light `s.bright` gives as the per-write fraction; the
+layer never multiplies by `s.ceil`. The pump does not reach it (`am=` and `m=` are kept and ignored), `s=`
+is ignored (taken as 128, so another `s=` is the same look, S11), and a change of colour alone recolours
+the slots that are up. Where the spec could be read more than one way, the safe reading was taken:
+
+1. **"Since the unit's light last went up"** (N7) is the core's `levelMs` (verb L, verb B, `b=`, and every
+   brightening step) and the field gate's last onset (`s.fieldOnsetMs`: an overlay or the look before this
+   one lighting the jewel). Without the second, 2 of the property stage's 150 random streams lit a part
+   of a jewel 4 times in a second by the bands (0 of 150 with it); the named scenarios pass either way.
+2. **A frame that waits at the latch holds the steps.** A brightening frame the field gate or the look gate
+   holds is the frame the jewel will show: no step is taken until it is up, and when it is up, if it raised
+   light, it takes the window there. So the closest two frames in which a LED gets brighter are 340 ms
+   apart on the jewel, not only in the dice.
+3. **S4: the latch judges its colours as Leia's.** A row is the colour, white and three mixes, so the
+   field's colour moves at a step. The latch's rule for a look that draws its own colours under one name
+   (`FLTHY_RECOLOUR`, 48 of 255 from the colour of the last change) takes the projector's frames too
+   (`DnStrip::show()`, the `projector` test, which reads the look that drew the frame and not what is up
+   now). A step that would change the colour within 170 ms of the last change waits. In white nothing
+   waits; in `116530` the steps are 106.6 ms apart on average (26 % of passes have a frame waiting).
+   Without this, 31 of 150 random streams changed a jewel's colour under 165 ms apart; judged by what is
+   up instead of by the frame's own look, 6 of 150 still did (a frame of it that had waited went out in
+   the pass an overlay began, as if it were the overlay's).
+4. **After an overlay over it ends, the jewel holds still for 340 ms** (`_expireOverlay()`): a crumbling
+   step there let the next overlay, which may come 340 ms after the last began, light a pair again within
+   a third of a second of the base's return. Before this, a white overlay every 340 ms at `b=` 30 to 200
+   lit a part of the jewel 4 times in a second by the gate's count (over white and `116530`), and over
+   white at `b=80` (250 ms long) and `b=128` (170 ms) by the bands too; after it, 3 at most by every
+   observer. Under an overlay every 340 ms the projector does not step.
+5. **The start.** Every slot is dark and the first step is due at once, so the look's first frame is a
+   brightening step when the window lets it start; until then it stays dark.
+
+The scenarios (`test/host/sim/scenarios_r2.inc`, stage 2b), one pass a millisecond where the timing is
+measured, at the owner's level 255 where the colours are compared exactly:
+
+| Scenario | What it showed |
+| --- | --- |
+| `rel2_projector_slot_histogram_is_flat_over_20000_steps` | 140,000 candidates from `random(0, 10)`: the farthest slot 1.21 % from the mean (limit 3 %) |
+| `rel2_projector_step_intervals_are_50_to_149_ms_with_a_mean_of_99_5` | drawn 50 to 149 ms, mean 99.37 (white) and 99.40 (`116530`); between steps in white the same, in `116530` 50 to 170 ms, mean 106.58 (S4 waits) |
+| `rel2_projector_no_led_gets_brighter_in_a_crumbling_step` | `116530`, `ff0000`, `3b82f6`, 6,000 steps each: of about 1,520 frames with a LED brighter, none outside a brightening step |
+| `rel2_projector_brightening_steps_are_340_ms_apart_or_more` | 20,000 steps, 5,100 brightening: the closest two 340 ms apart (418 ms on average); frames with a LED brighter, the closest two 340 ms |
+| `rel2_projector_ten_row_colours_for_six_c_values_match_the_vector_file` | `000000`, `ff0000`, `00ff00`, `116530`, `3b82f6`, `808080`: every pixel of 60 s of frames is its slot's colour of the vector file's row, and all six colours of each row appear |
+| `rel2_projector_b_and_B_raised_every_50_ms_light_no_part_more_than_three_times_a_second` | white and `116530`, alone and under `b=`, `B` and both raised every 50 ms: at most 3 onsets in a second for the whole jewel, for any part by the bands and by the gate's count; closest whole-jewel onsets 340 ms |
+| `rel2_projector_an_overlay_returns_to_the_same_slots` | 59 overlays each of four kinds: the same slots after every one, and the first base frame shows them; under an overlay every 340 ms at most 3 by every observer |
+| `rel2_projector_a_dim_overlay_storm_right_after_a_crumbling_step` | a known limit, built on purpose 300 times (below): whole jewel 3, bands 3, the gate's count 4 in 74 |
+| `rel2_projector_am_and_m_do_not_move_the_level` | 60, 120 and 300 BPM with `am=2,m=255`: every lit pixel of 20 s at exactly `b=200` |
+| `rel2_projector_and_vu_the_led_only_invariant_holds` | 90 s of the two looks on all three jewels with the auto twitches on: no servo moved; the pass checks (LED-only, the hold) on every pass |
+| `rel2_vu_pumped_at_five_tempos` | `am=2,m=200` at 30, 120, 176, 177 and 300 BPM: the level 55 between beats, 10, 40, 59, 30 and 50 rises in 20 s, the closest 2000, 500, 340, 677 and 400 ms apart; at most 3 onsets a second by every observer; brightness 255 |
+| `rel2_vu_pumped_under_a_seek_every_50_ms` | a `C` seek every 50 ms and `B` 0 / 200 every 50 ms, at 120 and 300 BPM: at most 3 by every observer |
+| `rel2_vu_an_l_during_the_pump_changes_nothing` | two jewels on one pumped `vu`, `L` to one every 25 ms: the same frame at 10,000 of 10,000 passes; with the clock held each takes its own `L` |
+
+The tables of the S12 scenarios have the two looks too: alone at their fastest, `projector` 3 by the bands
+and 3 by the gate's count, `vu` 0; by turns with full light, `projector` 3/3 (with solid), 3/3 (under a
+pulse every 50 ms), 0/0 (sent again in another colour); `vu` 0/2, 0/3, 0/0. The held-frames table: both
+never held in white. The random streams of the property stage name the three ids, and its hostile pairs
+gain six (projector under its level raised, recoloured, overlaid, ridden by `B`; vu pumped under `L` and
+under a seek). `compile_contract.cpp` checks the level, `s=`, the offer and the `L` rule on the mock.
+
+**`vu`** (`_vuPumped()`, the offer in `contractBeatTick()`, the meter's case). While the clock runs and
+`am=` and `m=` are not 0, every pass offers `envBright(255, m, amount)` (the core's `vuLevel`) to the level
+hold before `contractHoldsDue()`, and the meter draws `s.level` at `b=`; an `L` that arrives then is not
+taken (N12). Not pumped it is the meter (here a solid fill at the level from `L`; with no `L` the level
+is 0, dark, as the meter's).
+
+**The soak.** The property stage with the three ids in its random streams and the six new hostile pairs,
+4,000 streams at each of three fresh seed bases (5200000, 5600000, 6000000; `SIM_DEFS="-DS9_SEEDS=4000
+-DS9_SEED0=<base>"`). 1 of the 12,000 broke a whole-jewel limit, and not through either look built here:
+5200000 + 1561 (ending 0, attributed), two changes of colour 129 ms apart on the front jewel. A dim `logic`
+look (its stand-in, twinkle in `3b82f6` at 6 levels, its brightest LED at 8) came up at 15,544 ms and the
+off colour came back at a hand-back at 15,714 ms. The layer timed the look's colour from 15,544, the first
+frame with a LED at 4 levels (the core's `LOOK_MIN_LEVEL`), and held the hand-back to 170 ms from it. The
+oracle's colour observer dated that colour 43 ms later, at the first frame it could tell from the LEDs'
+rounding. So the layer kept the core's rule, and the 129 ms is the oracle's later dating of a colour that
+came up dim (known limit 8 below). No stream broke S9, and none went over the ceiling, moved a servo or
+was left off the stock firmware. A part of a jewel, measured and not asserted: by the bands 89 of the
+12,000 lit one part 4 times in a second, never more (27, 29, 33 by base; R1's last soak: 68 of 12,000);
+by the gate's count 4,829 (40 %), 8 times or more at the worst (R1: 38 %).
+
+The servo paths are as they were (the `!` path is LED-only: stage 3's static guard and the pass checks of
+every scenario), Leia's gated path is unchanged, and the core is not edited here.
+
 ## Known limits (release 1)
 
 Everything here is from simulation. Nothing in this fork has run on a board.
@@ -439,6 +553,34 @@ Everything here is from simulation. Nothing in this fork has run on a board.
     holding anything, the clock can stay marked as running (5 of 300 hostile streams in an
     independent run). Nothing is drawn from it; `Q` reports a `bpm` where it should report 0.
 13. **No image has been built from this code**, and the bench checklist below has not been run.
+
+## Known limits (release 2, v1.4)
+
+Everything here is from simulation. Nothing in this fork has run on a board.
+
+1. **A dim overlay storm that begins just after a crumbling step (S12, the gate's count).** A brightening
+   step lights a pair of pixels, a crumbling step darkens it, and the first overlay of a storm lights it
+   again before 340 ms have passed; a dim overlay is under a step of the whole field, so the field gate
+   lets it through. The storm's next overlays light it every 340 ms: 4 in a second by the gate's count of
+   a part, once, at the storm's start (74 of 300 cases built on purpose). The bands and the whole jewel
+   read 3. It is the class of known limit 1 above (two looks by turns, a gate with one state a unit).
+   Closing it takes a gate that knows parts of the field, or holding an accent over a projector to the
+   projector's window, which would move accents off the beat.
+2. **Under storms of `B` and `b=` raises the projector is mostly dark.** Every raise takes the window the
+   brightening steps need: lit 1 to 12 % of the time in the scenarios, 0 % with `B` and `b=` by turns.
+3. **In a colour the projector steps more slowly than stock** (S4, reading 3 above): 106.6 ms on average
+   in `116530`, up to 170 ms between two steps.
+4. **Under an overlay every 340 ms the projector holds still** (reading 4 above): its pixels do not move
+   between overlays.
+5. **A projector started within 340 ms of a rise of the unit's light** (another look's onset, a raise of
+   `b=`) is dark until the window opens.
+6. **`vu` is the meter on this board:** a solid fill at its level. With no clock and no `L` it is dark.
+7. **`logic` is twinkle here.** It is the logics' look (spec v1.4 section 4).
+8. **A colour that comes up dim is dated differently by the gate and by the test's observer.** The gate
+   takes a look's colour at the first frame with a LED at 4 levels (the core's rule); the observer takes
+   it at the first frame whose colour it can tell from the LEDs' rounding. A change that follows such a
+   look 170 ms after the first can be 130 ms after the second: 1 stream of the 12,000 of the R2 soak
+   (a dim twinkle, then a hand-back). Known limit 7 of release 1 is the other side of the same rounding.
 
 ## Bench checklist for release 1 (not run)
 
@@ -547,6 +689,26 @@ unplugged and a USB serial monitor at 9600.
 **Conformance record.** For each of S1, S2, S4, S6, S7, S8, S9, S10, S11, C1, C6, L1 to L6, capacity,
 `V`, `Q` and section 11: the line sent, what was seen, pass or fail, and the `fw` from the WDP announce.
 
+## Bench list for release 2: the holoprojectors (not run)
+
+Gate 2 of the plan `2026-11-21-lighting-wave-2.md` (Signal Booster), the holoprojector rows and the rows for
+every board, with this board's own checks after them. Gate 1 (the release 1 checklist above) comes first.
+Nothing below has been done; write what was seen in the last column.
+
+| # | Check | Result |
+| --- | --- | --- |
+| 11 | `!HFA:i=projector` on one HP beside stock Leia (`R001`) on another, and beside R1's `!HFA:i=native:1`: does it read as a hologram? | |
+| 12 | `projector` in red (`ff0000`), amber (`ffbf00`), white and magenta (`ff00ff`): the tints look like the stock colour projector's rows (LED function 2 in the same colour) | |
+| 13 | A two-bar burst from dark and back to dark, on a downbeat (two scored entries, Studio's planned twitch): it comes up on the beat and goes dark on time | |
+| 14 | No servo moves during any of 11 to 13, nor during 18 to 21 | |
+| 15 | A full song from Studio at release 2, filmed, beside its filmstrip | |
+| 16 | A dome with one board left on R1: Studio plans it as R1 and the show plays | |
+| 17 | Seed-to-light latency again with the R2 looks up | |
+| 18 | `!HFA:i=vu,c=ffffff,am=2,m=200` and `!**C:bpm=120,ph=0,bpb=4`: the jewel jumps on the beat and falls between, never more than three times a second; `!HFL:v=255` during it changes nothing; `!**C:bpm=0` then `!HFL:v=128` sets it | |
+| 19 | `projector` with `!HFP:c=ffffff,d=170` every beat at 120 BPM: after each accent the same pixels come back, and they hold still while the accents go on (known limit 4) | |
+| 20 | `projector` with `!HFA:b=40` and `!HFA:b=255` by turns as fast as the host can: it dims at once and comes back at most three times a second | |
+| 21 | `projector` in `116530` and in white side by side: say whether the colour one flickers noticeably more slowly (known limit 3) | |
+
 ## Native brightness
 
 - **Wire form:** `H<unit>B<level>`: unit `F R T X Y Z A` (uppercase, the stock designator
@@ -573,7 +735,8 @@ unplugged and a USB serial monitor at 9600.
 
 - **Line:** `@WDP1 {"type":"Flthy HP Controller","fw":"<commit>","caps":["droidnet.contract","contract.1.3","hp.servo","hp.led"]}`
   plus `\n`, 116 bytes with a 7-character commit (122 with `-dirty`; the core's buffer is 128).
-  `contract.1.3` is the contract version this build implements (spec section 12). The
+  `contract.1.3` is the contract version this build implements (spec section 12; `contract.1.4` on the R2
+  line). The
   format is Greg Hulette's (`docs/WDP_DEVICE_ANNOUNCE.md` in the WCB repo, WCB 7.0.1); the WCB
   consumes the line and never forwards it.
 - **Adapter:** `src/wdp/wdp_fork.h`: the identity, `wdpForkSetup()` (seed + first due time, called in

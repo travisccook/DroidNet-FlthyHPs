@@ -36,6 +36,9 @@ int main() {
   { ParsedContract q; if (contractParse("H*A:i=gradient,s=200", q)) applyContract(q); }
   { ParsedContract q; if (contractParse("H*A:i=colorcycle,s=200", q)) applyContract(q); }
   { ParsedContract q; if (contractParse("H*A:i=twinkle,c=3B82F6,s=200", q)) applyContract(q); }
+  { ParsedContract q; if (contractParse("HFA:i=projector,c=3B82F6,b=200", q)) applyContract(q); }   // v1.4
+  { ParsedContract q; if (contractParse("HRA:i=vu,c=3B82F6,am=2,m=200", q)) applyContract(q); }
+  { ParsedContract q; if (contractParse("HTA:i=logic,c=3B82F6", q)) applyContract(q); }
   { ParsedContract q; if (contractParse("HTA:i=solid,c=112233,at=44,am=1", q)) applyContract(q); }  // Phase-2 schedule
   { ParsedContract q; if (contractParse("HFP:c=FFFFFF,d=120,b=200", q)) applyContract(q); }
   { ParsedContract q; if (contractParse("**C:bpm=128,ph=40,bpb=4,beat=44", q)) applyContract(q); }
@@ -46,7 +49,7 @@ int main() {
   { ParsedContract q; if (contractParse("HFM:v=idle", q))               applyContract(q); }
   { ParsedContract q; if (contractParse("**X", q))                      applyContract(q); }
 
-  // beat tick + per-hp render (cases 101..115 route here)
+  // beat tick + per-hp render (cases 101..118 route here)
   contractBeatTick();
   for (uint8_t hp = 0; hp < HPCOUNT; hp++) contractRenderHP(hp);
 
@@ -860,9 +863,55 @@ int main() {
     #undef SEND
   }
 
+  // ---- v1.4 (core CA2): projector and vu -------------------------------------------------------
+  // projector's level is b=, never the pump (N8), and s= is ignored (another s= is the same look);
+  // vu offers the pump's level to the core's hold and keeps its brightness at b= (N10); an L while
+  // vu is pumped is not shown (N12); with the clock held it is the meter again. (The mock's random()
+  // returns its lower bound: every candidate is slot 0, the colour, and a step comes every 50 ms.)
+  {
+    #define SEND(s) do { ParsedContract _p; if (contractParse((s), _p)) applyContract(_p); } while (0)
+    _mock_millis += 5000;
+    SEND("**X"); SEND("H*M:v=idle"); SEND("H*M:v=show");
+    _mock_millis += 1000;                                // clear of every window the earlier guards opened
+    SEND("HFA:i=projector,c=FF0000,am=2,m=255,s=9");
+    SEND("HRA:i=vu,c=FFFFFF,am=2,m=200");
+    SEND("**C:bpm=120,ph=0,bpb=4");
+    if (gUnit[0].s.effect != CE_PROJECTOR || LED_command[0].LEDFunction != 117 || gUnit[0].s.speed != 128) {
+      printf("FAIL: i=projector did not take its render slot 117 with s= ignored (effect %d, fn %u, speed %u)\n",
+             (int)gUnit[0].s.effect, (unsigned)LED_command[0].LEDFunction, (unsigned)gUnit[0].s.speed);
+      return 1;
+    }
+    for (int k = 0; k < 40; k++) {                       // 2 s: four beats, the envelope's dips between them
+      _mock_millis += 50;
+      contractBeatTick();
+      for (uint8_t hp = 0; hp < HPCOUNT; hp++) contractRenderHP(hp);
+      for (int i = 0; i < NEO_JEWEL_LEDS; i++) if (neoStrips[0].shown[i] != 0xFF0000UL) {
+        printf("FAIL: projector pixel %d is %06lx at t=%lu, want ff0000: the pump reached its level, or the row is wrong\n",
+               i, (unsigned long)neoStrips[0].shown[i], (unsigned long)_mock_millis);
+        return 1;
+      }
+      const BeatPos bp = beatPosAt(gBeat, _mock_millis);
+      const uint8_t want = envBright(255, 200, beatAccentAmount(2, bp, 200, 0, gBeat, gUnit[1].s.accentEvery));
+      if (gUnit[1].s.levelWant != want || gUnit[1].s.bright != 255) {
+        printf("FAIL: vu offered %u to the level hold at t=%lu, want %u (envBright(255, m, amount)), brightness %u (want 255)\n",
+               (unsigned)gUnit[1].s.levelWant, (unsigned long)_mock_millis, (unsigned)want, (unsigned)gUnit[1].s.bright);
+        return 1;
+      }
+    }
+    const uint8_t was = gUnit[1].s.levelWant;
+    SEND("HRL:v=7");
+    if (gUnit[1].s.levelWant != was) { printf("FAIL: an L reached vu while its pump runs (N12)\n"); return 1; }
+    SEND("**C:bpm=0");
+    SEND("HRL:v=7");
+    if (gUnit[1].s.levelWant != 7) { printf("FAIL: with the clock held vu is the meter and takes L (N12)\n"); return 1; }
+    if (_mock_servoTouches != 0) { printf("FAIL: projector or vu touched the HP SERVO path (%d)\n", _mock_servoTouches); return 1; }
+    SEND("**X");
+    #undef SEND
+  }
+
   printf("ContractFlthy.h type-check + score-native / servo-twitch / score-clear / build-ramp / "
          "Q-unit / Q-after-WDP-announce / v1.2 accent-self-fire / servo-interlock / beat-edge / strobe-cap / "
          "accent-allow-gate (no stateful or native overlay, ever) / flash-pump / "
-         "show-resend guards OK\n");
+         "show-resend / v1.4 projector-and-vu guards OK\n");
   return 0;
 }

@@ -629,18 +629,20 @@ SCENARIO(s9_no_path_relights_a_jewel_more_than_three_times_a_second) {
 static int R(int n) { return rand() % n; }
 static std::string N(int v) { return std::to_string(v); }
 static const char* G_FX[] = {"off", "solid", "flash", "pulse", "rainbow", "scan", "sparkle", "meter", "comet", "chase", "wipe", "gradient",
-                             "colorcycle", "twinkle", "native:1", "native:6", "native:7", "native:3", "bogus"};
+                             "colorcycle", "twinkle", "native:1", "native:6", "native:7", "native:3", "bogus",
+                             "projector", "vu", "logic"};   // contract v1.4 (core CA2)
+static const int G_NFX = (int)(sizeof G_FX / sizeof *G_FX);
 static const char* G_COL[] = {"ffffff", "ff0000", "00ff00", "0000ff", "000000", "3b82f6", "ffff00"};
 static const char* G_UNIT[] = {"H*", "HF", "HR", "HT", "**", "*F", "*R", "*T"};
 // One contract line, no terminator. watched: every M:v=show carries wd= (a host that is Studio).
 static std::string genLine(bool watched = false) {
-  std::string u = G_UNIT[R(8)], fx = G_FX[R(19)], c = G_COL[R(7)];
+  std::string u = G_UNIT[R(8)], fx = G_FX[R(G_NFX)], c = G_COL[R(7)];
   auto pump = [] { return ",m=" + N(R(2) ? 255 : R(256)) + ",am=" + N(R(5)); };
   switch (R(23)) {
     case 0: case 1: case 2: return "!" + u + "A:i=" + fx + ",c=" + c + (R(2) ? ",b=" + N(R(2) ? 255 : R(256)) : "") + (R(3) ? "" : ",s=" + N(R(256))) + (R(3) ? "" : pump());
     case 3: return "!" + u + "A:c=" + c + (R(2) ? ",b=" + N(R(256)) : "");
     case 4: case 5: case 6: return "!" + u + "A:i=" + fx + ",c=" + c + ",at=" + N(R(40)) + (R(2) ? pump() : "") + (R(3) ? "" : ",an=" + N(1 + R(4)) + ",ap=" + N(R(4))) +
-                                   (R(2) ? ",ae=" + std::string(G_FX[R(19)]) + ",ac=" + G_COL[R(7)] + ",ad=" + N(R(3000)) : "");
+                                   (R(2) ? ",ae=" + std::string(G_FX[R(G_NFX)]) + ",ac=" + G_COL[R(7)] + ",ad=" + N(R(3000)) : "");
     case 7: case 8: return "!" + u + "P:c=" + c + (R(2) ? ",d=" + N(R(3000)) : "") + (R(2) ? ",b=" + N(R(256)) : "") + (R(3) ? "" : ",i=" + fx);
     case 9: case 10: return "!" + u + "C:bpm=" + N(R(4) ? 60 + R(241) : R(400)) + (R(2) ? ",ph=" + N(R(600)) : "") + (R(2) ? ",bpb=" + N(R(14)) : "") + (R(2) ? ",beat=" + N(R(40)) : "");
     case 11: return "!" + u + "C:" + (R(2) ? "ph=" + N(R(600)) + "," : "") + "beat=" + N(R(40));
@@ -769,7 +771,11 @@ struct Stream {                                      // drives the wire and meas
       {"A:i=solid,c=ff0000", "A:i=solid,c=0000ff"}, {"A:i=solid,c=0000ff", "A:i=solid,c=ffffff"}, {"P:c=ff0000,d=170", "P:c=0000ff,d=170"},
       {"A:i=solid,c=00ff00", "P:c=ff00ff,d=170"}, {"A:i=solid,c=ff0000,at=0", "C:bpm=120,beat=0"}, {"A:i=solid,c=00ff00,at=20", "C:bpm=120,beat=20"},
       {"C:bpm=120,beat=0", "C:bpm=120,beat=20"}, {"A:i=native:1", "A:i=solid,c=ffffff"}, {"A:i=native:6", "A:i=native:1"}, {"A:i=solid,c=ff0000", "M:v=idle"},
-      {"B:b=0", "B:b=62"}, {"L:v=0", "L:v=62"}, {"A:i=solid,c=ffffff,b=0", "A:i=solid,c=ffffff,b=40"}};
+      {"B:b=0", "B:b=62"}, {"L:v=0", "L:v=62"}, {"A:i=solid,c=ffffff,b=0", "A:i=solid,c=ffffff,b=40"},
+      // contract v1.4: projector under its level raised, recoloured, overlaid; vu pumped under L and seeks
+      {"A:i=projector,c=ffffff,b=0", "A:i=projector,c=ffffff,b=255"}, {"A:i=projector,c=ff0000", "A:i=projector,c=ffffff"},
+      {"A:i=projector,c=116530", "P:c=ffffff,b=40,d=170"}, {"A:i=projector,c=ffffff", "B:b=0"},
+      {"A:i=vu,c=ffffff,am=2,m=255", "L:v=255"}, {"A:i=vu,c=ffffff,am=2,m=255", "C:bpm=300,beat=0"}};
     const int k = R(sizeof PAIR / sizeof *PAIR); const std::string u = std::string("!") + G_UNIT[R(4)];   // H*, HF, HR or HT
     (void)watched;
     for (int n = 6 + R(16); n > 0; n--) for (int half = 0; half < 2; half++) { sayAs(u + PAIR[k][half] + "\r", true); until(us + 20000 + (uint64_t)R(60000)); }
@@ -990,7 +996,7 @@ static double heldPct(const char* setup, uint64_t lo, uint64_t hi, double secs =
   return pct;
 }
 SCENARIO(gate_held_frames_table) {
-  const char* LOOKS[] = {"solid", "flash", "pulse", "rainbow", "scan", "sparkle", "meter", "comet", "chase", "wipe", "gradient", "colorcycle", "twinkle"};
+  const char* LOOKS[] = {"solid", "flash", "pulse", "rainbow", "scan", "sparkle", "meter", "comet", "chase", "wipe", "gradient", "colorcycle", "twinkle", "projector", "vu"};
   const int SPEEDS[] = {0, 128, 255};
   double worstQuiet = 0, worstTwinkle = 0;
   printf("  %% of passes with a frame waiting at the latch (passes 1-4 ms | passes 10-15 ms), white, at s=0 / s=128 / s=255\n");
@@ -999,7 +1005,7 @@ SCENARIO(gate_held_frames_table) {
     for (int pass = 0; pass < 2; pass++) {
       for (int s : SPEEDS) {
         char l[80]; snprintf(l, sizeof l, "!HFA:i=%s,c=ffffff,s=%d\r", look, s);
-        std::string setup = l; if (!strcmp(look, "meter")) setup += "!HFL:v=200\r";
+        std::string setup = l; if (!strcmp(look, "meter") || !strcmp(look, "vu")) setup += "!HFL:v=200\r";
         const double p = pass ? heldPct(setup.c_str(), 10000, 15000) : heldPct(setup.c_str(), 1000, 4000);
         printf(" %5.1f", p);
         if (!strcmp(look, "twinkle")) worstTwinkle = std::max(worstTwinkle, p);
@@ -1322,13 +1328,14 @@ static RegionRow regionRate(const char* setup, double secs = 30.0) {
   return row;
 }
 SCENARIO(s12_region_rates_each_look_alone_at_its_fastest) {
-  static const char* LOOKS[] = {"solid", "flash", "pulse", "rainbow", "scan", "sparkle", "meter", "comet", "chase", "wipe", "gradient", "colorcycle", "twinkle", "native:1", "native:6"};
+  static const char* LOOKS[] = {"solid", "flash", "pulse", "rainbow", "scan", "sparkle", "meter", "comet", "chase", "wipe", "gradient", "colorcycle", "twinkle", "native:1", "native:6",
+                                "projector", "vu"};
   int worst = 0, worstFine = 0;
   printf("  the most often one region lit in a second (and the whole field), s=255: white | 116530; the region; its closest two onsets\n");
   for (const char* look : LOOKS) {
     printf("  %-11s", look);
     for (const char* c : {"ffffff", "116530"}) {
-      char l[96]; snprintf(l, sizeof l, "!HFA:i=%s,c=%s,s=255\r%s", look, c, !strcmp(look, "meter") ? "!HFL:v=200\r" : "");
+      char l[96]; snprintf(l, sizeof l, "!HFA:i=%s,c=%s,s=255\r%s", look, c, (!strcmp(look, "meter") || !strcmp(look, "vu")) ? "!HFL:v=200\r" : "");
       const RegionRow r = regionRate(l);
       printf("  %d (%d) %-20s fine %d %-18s|", r.worst, r.whole, r.worst ? r.region : "-", r.fine, r.fine ? r.fineRegion : "-");
       worst = std::max(worst, r.worst); worstFine = std::max(worstFine, r.fine);
@@ -1350,7 +1357,7 @@ static RegionRow regionScript(const char* look, int script, int s) {
   RegionRow row = {-1, -1, "", 0, -1, ""}; int fd[2]; if (pipe(fd)) return row;
   fflush(stdout); pid_t pid = fork();
   if (pid == 0) {
-    close(fd[0]); run(9); calmStock(); say("!HFM:v=show\r"); if (!strcmp(look, "meter")) say("!HFL:v=200\r"); run(1);
+    close(fd[0]); run(9); calmStock(); say("!HFM:v=show\r"); if (!strcmp(look, "meter") || !strcmp(look, "vu")) say("!HFL:v=200\r"); run(1);
     Photo p(0); p.strict = true; char a[80], b[80];
     snprintf(a, sizeof a, "!HFA:i=%s,c=ffffff,s=%d\r", look, s); snprintf(b, sizeof b, "!HFA:i=%s,c=00ff00,s=%d\r", look, s);
     if (script == 0) for (int i = 0; i < 30; i++) { say(a); watchFor(p, 0.51); say("!HFA:i=solid,c=ffffff\r"); watchFor(p, 0.17); }
@@ -1364,7 +1371,7 @@ static RegionRow regionScript(const char* look, int script, int s) {
   return row;
 }
 SCENARIO(s12_region_rates_each_look_by_turns_with_full_light) {
-  static const char* LOOKS[] = {"flash", "pulse", "rainbow", "scan", "sparkle", "meter", "comet", "chase", "wipe", "gradient", "colorcycle", "twinkle"};
+  static const char* LOOKS[] = {"flash", "pulse", "rainbow", "scan", "sparkle", "meter", "comet", "chase", "wipe", "gradient", "colorcycle", "twinkle", "projector", "vu"};
   int worst = 0;
   printf("  the most often one region lit in a second: by turns with solid | under pulses | sent again in another colour (each at s=255, s=0)\n");
   for (const char* look : LOOKS) {

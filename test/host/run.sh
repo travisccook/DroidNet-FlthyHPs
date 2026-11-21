@@ -174,7 +174,7 @@ fi
 NATIVE_REGION=$(tr -d '\r' < ../../src/main.cpp \
   | awk '/DroidNet native brightness BEGIN/,/DroidNet native brightness END/' \
   | sed 's://.*::')
-if [ -z "$NATIVE_REGION" ] || ! printf '%s\n' "$NATIVE_REGION" | grep -qF "inputBuffer[0]=='H'"; then
+if [ -z "$NATIVE_REGION" ] || ! grep -qF "inputBuffer[0]=='H'" <<<"$NATIVE_REGION"; then
   echo "FAIL: the marked native brightness region in src/main.cpp is empty or holds no"
   echo "      inputBuffer[0]=='H' branch, so this guard would check nothing."
   exit 1
