@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MIT
 //
 // src/contract/ContractFlthy.h — Flthy Holoprojectors firmware layer for the
-// Driveable-Animation Contract (v1.3). LED-ONLY: the '!' path NEVER writes HP_command[*]
+// Driveable-Animation Contract (v1.3, and v1.4: core CA2, release 2). LED-ONLY: the '!' path NEVER writes HP_command[*]
 // and NEVER calls positionHP/twitchHP/wagHP/RCHP — no servo motion, ever. It never writes
 // the operator's settings either (enableTwitchLED[], enableTwitchHP[], offcoloroverride[]):
 // an armed show HOLDS a unit, and main.cpp's two auto-twitch gates ask
@@ -92,8 +92,10 @@ struct FlthyUnit {
   bool     nativeTold  = false;           // S10: the gate has been told the runs-as-stock look that is up
   byte     keptFn      = 255;             // S10: while nativeWait, the LED function of the layer's OWN look that stays up meanwhile
   int      lastEnvBright = -1;            // memo for the looks that repaint only on a change
-  uint32_t frameMs     = 0;               // scan/sparkle self-throttle
+  uint32_t frameMs     = 0;               // scan/sparkle self-throttle; projector: when its next step is due (0: it has just started)
   uint8_t  frame       = 0;
+  uint8_t  projSlot[NEO_JEWEL_LEDS];      // v1.4 projector (N6, N7): each pixel's slot of the colour's row, 0..9
+  uint8_t  projWait    = 0;               // ...a frame of it waits at the latch (no step until it is up): 1 a crumbling step, 2 one that raises light
   bool     twitchFreed  = false;          // the owner sent A199 while the unit was held (see contractOwnerServoTwitch)
   bool     servoWasHeld = false;          // the two twitch gates' view of the hold on their last pass
   bool     ledWasHeld   = false;
@@ -321,8 +323,13 @@ inline void DnStrip::show() {
     // two of them are a change apart, whichever frames an observer happens to compare (a drift of
     // 47 and then 50 in 141 ms was two small steps frame to frame, and one change to an eye that
     // missed the dim frame between).
+    // (v1.4: projector draws its own colours too, the colour, white and the mixes of its row, and its
+    // frames are judged the same way. Which frame is the projector's is told by the look that drew
+    // it (g.frameSig), not by what is up now: a frame of it that waited is offered again in the pass
+    // an overlay begins, and an overlay is never a projector, accentEffectAllowed() refuses it.)
     bool recolour = false; uint8_t chroma[3] = {0, 0, 0};
-    const bool ownColour = nativeUp || !drawn, coloured = peak >= LOOK_MIN_LEVEL;
+    const bool projector = drawn && !nativeUp && (uint8_t)(g.frameSig >> 24) == (uint8_t)CE_PROJECTOR;
+    const bool ownColour = nativeUp || !drawn || projector, coloured = peak >= LOOK_MIN_LEVEL;
     if (coloured) {
       uint16_t top = sumC[0] > sumC[1] ? sumC[0] : sumC[1]; if (sumC[2] > top) top = sumC[2];
       for (uint8_t k = 0; k < 3; k++) {
@@ -532,15 +539,22 @@ static inline uint32_t _wheel(uint8_t pos, uint8_t bri) {
 // Level math lives in contract_core's envBright() — the SHARED envelope all three
 // boards render through (b= is the ceiling, m= is the dip depth). Do not reintroduce
 // a board-local floor here: it desyncs the HPs from the Logics/PSIs on every cue.
-static inline uint8_t _envBright(uint8_t hp) {
-  const ContractUnitState& s = gUnit[hp].s;
-  if (!gBeat.running || s.beatMod == 0 || s.accentMode == 0) return s.bright;
-  BeatPos bp = beatPosAt(gBeat, millis());
+static inline bool _pumped(const ContractUnitState& s) { return gBeat.running && s.beatMod != 0 && s.accentMode != 0; }
+// The pump's amount 0..255 now (the unit is pumped).
+static inline uint8_t _pumpAmount(const ContractUnitState& s, uint32_t now) {
+  BeatPos bp = beatPosAt(gBeat, now);
   // am=3 (build) ramps across the section; the span is only known while a scored
   // section is active, so a stale span from a finished show can't leak in here.
   const uint32_t prog = (s.curSection >= 0) ? beatSectionProgress16(bp.beatIndex, s.sectionStart, s.sectionEnd) : 0;
-  return envBright(s.bright, s.beatMod, beatAccentAmount(s.accentMode, bp, s.beatMod, prog, gBeat, s.accentEvery));
+  return beatAccentAmount(s.accentMode, bp, s.beatMod, prog, gBeat, s.accentEvery);
 }
+static inline uint8_t _envBright(uint8_t hp) {
+  const ContractUnitState& s = gUnit[hp].s;
+  if (!_pumped(s)) return s.bright;
+  return envBright(s.bright, s.beatMod, _pumpAmount(s, millis()));
+}
+// v1.4 vu (N10 to N12): while pumped, the pump moves the meter's LEVEL, not its brightness.
+static inline bool _vuPumped(const ContractUnitState& s) { return s.base == CB_LOOK && s.effect == CE_VU && _pumped(s); }
 
 // --------------------------------------------------- the single render fn -----
 // Render ONE look for unit hp. The BASE look and the ACCENT OVERLAY (verb P, or the
@@ -605,8 +619,7 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB
       break;
     }
 
-    case CE_SPARKLE:                                   // a fixed number of pixels lit; ONE moves at a time
-    case CE_PROJECTOR: {                               // v1.4 (CA2): a stand-in until Task F4 draws the projector
+    case CE_SPARKLE: {                                 // a fixed number of pixels lit; ONE moves at a time
       // Redrawn for seven pixels. Re-rolling every pixel's brightness swung the whole field by more
       // than a tenth of the ceiling most frames, and the S9 gate then held over a third of them.
       // Now the count of lit pixels is constant (s picks it: 2, 3, 4 or 5) and all are at the same
@@ -643,8 +656,57 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB
       break;
     }
 
+    // v1.4 projector (N6 to N9): the stock colour projector (colorProjectorLED(): every 50 to 149 ms
+    // each pixel a slot of a ten-slot row, three of them dark), paced for the gate. A step every
+    // FX_PROJECTOR_STEP_MIN_MS to _MAX_MS draws a candidate slot for each pixel with the board's own
+    // random(). A BRIGHTENING step gives every pixel its candidate; it needs FX_PROJECTOR_BRIGHT_MS
+    // since the unit's light last went up, and takes that window. Any other step CRUMBLES: a pixel
+    // takes its candidate only when it is no brighter by either measure (fxProjectorTake()), so lit
+    // pixels go dark or lose their highlight and none lights. The look starts dark (every slot 7) and
+    // its first step is due at once, so its first frame is a brightening step when the window lets it
+    // start. envB is b= (never pumped, N8); a new level repaints the slots that are up and rolls
+    // nothing. It is a base look only (accentEffectAllowed() refuses it as an overlay), so the slots
+    // are its own.
+    //   "The light last went up": the core's levelMs (verb L, verb B, b=, and every brightening step)
+    //   and, this board's own reading, the field gate's last onset (s.fieldOnsetMs: an overlay or the
+    //   look before this one lighting the jewel), so that a pair of pixels the whole-field gate cannot
+    //   see is never lit between two onsets of the whole jewel less than 340 ms apart.
+    //   A frame of the look that waits at the latch (the field gate, or S4: the latch judges its colours
+    //   as Leia's, see DnStrip::show()) is the frame the jewel will show: no step is taken until it is
+    //   up, and when it is up, if it raised light (a brightening step or a repaint), that is the
+    //   light's newest rise (levelMs = now).
+    //   After an overlay over it ends, the jewel takes no step for 340 ms (_expireOverlay()): a step
+    //   that darkened a pixel there would let the next overlay, which may come 340 ms after the last
+    //   one began, light it again within a third of a second of the base's own return.
+    case CE_PROJECTOR: {
+      if (u.projWait && !gLatch[hp].pending) { if (u.projWait == 2) u.s.levelMs = now; u.projWait = 0; }   // the frame that waited is up
+      const bool start = u.frameMs == 0;               // the look has just started: its first step is due now
+      bool paint = u.lastEnvBright != (int)envB, rise = paint;
+      if (!u.projWait && (!paint || start) && (start || (int32_t)(now - u.frameMs) >= 0)) {
+        rise = strobeCoolDownExpired(u.s.levelMs, now, FX_PROJECTOR_BRIGHT_MS) &&
+               strobeCoolDownExpired(u.s.fieldOnsetMs, now, FX_PROJECTOR_BRIGHT_MS);
+        for (uint8_t i = 0; i < NEO_JEWEL_LEDS; i++) {
+          const uint8_t cand = (uint8_t)random(0, 10);
+          if (rise || fxProjectorTake(fxProjectorSlot(color, u.projSlot[i]), fxProjectorSlot(color, cand))) u.projSlot[i] = cand;
+        }
+        if (rise) u.s.levelMs = now;                   // a brightening step takes the window (N7)
+        u.frameMs = now + FX_PROJECTOR_STEP_MIN_MS + (uint32_t)random(0, (long)(FX_PROJECTOR_STEP_MAX_MS - FX_PROJECTOR_STEP_MIN_MS + 1));
+        if (u.frameMs == 0) u.frameMs = 1;             // 0 means "just started"
+        paint = true;
+      }
+      if (paint) {
+        u.lastEnvBright = envB;
+        for (uint16_t i = 0; i < NEO_JEWEL_LEDS; i++) neoStrips[hp].setPixelColor(i, _scale(fxProjectorSlot(color, u.projSlot[i]), envB));
+        neoStrips[hp].show();
+        const bool waits = gLatch[hp].pending;
+        if (u.projWait == 2 && !waits) u.s.levelMs = now;   // this repaint put up a frame that raised light and had waited
+        u.projWait = waits ? (uint8_t)((rise || u.projWait == 2) ? 2 : 1) : 0;
+      }
+      break;
+    }
+
     case CE_METER:                                     // no VU on HP: solid @ level (fork spec §6/§8)
-    case CE_VU: {                                      // v1.4 (CA2): a stand-in until Task F4 gives vu the pump
+    case CE_VU: {                                      // v1.4 N10: the same, the pump moving the level (the tick offers it)
       uint8_t br = (uint8_t)((uint16_t)envB * (uint16_t)u.s.level / 255);   // the core's level: a raise at most once in 340 ms
       if (u.lastEnvBright != (int)br) { _fillShow(hp, _scale(color, br)); u.lastEnvBright = (int)br; }
       break;
@@ -739,6 +801,9 @@ static inline void _expireOverlay(uint8_t hp, uint32_t now) {
   ContractUnitState& s = u.s;
   if (!s.pulseActive || contractOverlayUp(s, now)) return;   // the core's one expiry rule; it takes the overlay down
   u.lastEnvBright = -1;                                  // force a base repaint
+  if (s.base == CB_LOOK && s.effect == CE_PROJECTOR && u.frameMs != 0) {   // v1.4: the jewel holds still 340 ms (see CE_PROJECTOR)
+    u.frameMs = now + FX_PROJECTOR_BRIGHT_MS; if (u.frameMs == 0) u.frameMs = 1;
+  }
   if (!_slotIsOurs(hp)) { u.overNative = false; return; }   // the stock firmware took the jewel meanwhile
   if (u.overNative) {
     u.overNative = false;
@@ -782,7 +847,8 @@ inline void contractRenderHP(uint8_t hp) {
   }
   if (s.base != CB_LOOK) { _showBase(hp); return; }      // a contract slot with no contract look: put the base back
   gLatch[hp].frameSig = contractLookSig(s.effect, s.color);
-  _renderLook(hp, s.effect, s.color, _envBright(hp), s.startMs);
+  // v1.4: the pump does not reach projector's brightness (N8), and moves vu's level instead (N10).
+  _renderLook(hp, s.effect, s.color, (s.effect == CE_PROJECTOR || s.effect == CE_VU) ? s.bright : _envBright(hp), s.startMs);
 }
 
 // ------------------------------------------------ the ONE accent-overlay path ---
@@ -833,11 +899,13 @@ static inline bool _fireAccent(uint8_t hp, ContractEffect fx, const ContractRGB&
 }
 
 // ------------------------------------------------------- applying a look -------
-// The counters the two stateful looks keep (and the stock ones varResets() clears, with a
-// blackout) start over when such a look starts.
+// The counters the stateful looks keep (scan, sparkle, and projector's slots and step time; the
+// stock ones varResets() clears, with a blackout) start over when such a look starts.
 static inline void _freshCounters(uint8_t hp, ContractEffect eff) {
   if (eff != CE_SCAN && eff != CE_SPARKLE && eff != CE_PROJECTOR) return;
-  gUnit[hp].frame = 0; gUnit[hp].frameMs = 0;         // 0: the scan's first frame is always painted
+  gUnit[hp].frame = 0; gUnit[hp].frameMs = 0;         // 0: the scan's first frame is always painted; the projector's first step is due
+  gUnit[hp].projWait = 0;
+  for (uint8_t i = 0; i < NEO_JEWEL_LEDS; i++) gUnit[hp].projSlot[i] = 7;   // the projector starts dark (slot 7: off)
   // (No varResets() here: it blacks the jewel out, and both looks paint all seven pixels on their
   // first frame. With it, a sparkle sent again in another colour every 170 ms was the old colour for
   // 170 ms and dark for 170 ms, and the new colour never showed.)
@@ -854,6 +922,7 @@ static inline void _nativeLeave(uint8_t hp) {
 static inline void _setLook(uint8_t hp, ContractEffect effect, int nativeCode, const ContractRGB& color, uint8_t speed, uint32_t now) {
   FlthyUnit& u = gUnit[hp];
   ContractUnitState& s = u.s;
+  if (effect == CE_PROJECTOR) speed = 128;              // v1.4: s= is ignored, so another s= is the same look (S11)
   s.pulseActive = false;
   u.overNative  = false;                                // a look replaces whatever an overlay sat on
   // S11, and CA1.7: the same effect, native code and speed is the look that is up, in another
@@ -1045,6 +1114,7 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p, uint16_t li
     }
 
     case CV_LEVEL:                                     // meter substitute (HP has no VU)
+      if (_vuPumped(s)) break;                         // v1.4 N12: an L that arrives while vu's pump runs is not shown
       if (pr.hasLevel) { contractLevelOffer(s, pr.level); contractLevelDue(s, now); }   // a fall now; a raise when its window ends
       u.lastEnvBright = -1;
       break;
@@ -1135,6 +1205,7 @@ inline void contractBeatTick() {
     if (gLatch[hp].pending && LED_command[hp].LEDFunction != gLatch[hp].pendingFn) gLatch[hp].pending = false;
     if (gLatch[hp].pending && !u.nativeWait) neoStrips[hp].show();
     if (u.rideWant != u.ride) _rideTry(hp);              // a verb-B raise the gate is holding
+    if (_vuPumped(s)) contractLevelOffer(s, envBright(255, s.beatMod, _pumpAmount(s, now)));   // v1.4 N10: the pump's level, to the hold
     if (contractHoldsDue(s, now)) u.lastEnvBright = -1;  // a raise of verb L or of a look's b= whose window has ended (one window for both)
     // L2: the host armed a watchdog (M:v=show,wd=<s>) and has been silent that long: the unit
     // idles itself, exactly as M:v=idle would. X does not disarm it; idle and a new show do.

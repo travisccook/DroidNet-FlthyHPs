@@ -30,7 +30,8 @@ inline unsigned long millis() { return g_ms; }
 inline unsigned long micros() { return (unsigned long)g_ms * 1000UL; }
 inline int analogRead(uint8_t) { return 123; }
 inline void randomSeed(unsigned long s) { srand((unsigned)s); }
-inline long random(long a, long b) { if (b <= a) return a; return a + rand() % (b - a); }
+extern long g_dice10[10];   // every random(0, 10) the firmware draws, by value (the projector's slot dice, v1.4 N7)
+inline long random(long a, long b) { if (b <= a) return a; const long r = a + rand() % (b - a); if (a == 0 && b == 10) g_dice10[r]++; return r; }
 inline long random(long b) { return random(0, b); }
 inline long map(long x, long a, long b, long c, long d) { return (x - a) * (d - c) / (b - a) + c; }
 inline void pinMode(int, int) {}

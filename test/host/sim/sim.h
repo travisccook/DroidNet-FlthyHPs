@@ -8,7 +8,7 @@
 #pragma once
 #include <Arduino.h>
 #include <Wire.h>
-uint32_t g_ms = 0; long g_pulseIn = 0; long g_servoMoves = 0; long g_servoPinMoves[16] = {0};
+uint32_t g_ms = 0; long g_dice10[10] = {0}; long g_pulseIn = 0; long g_servoMoves = 0; long g_servoPinMoves[16] = {0};
 void (*g_simBlock)(uint64_t) = 0; uint64_t (*g_simNowUs)() = 0;
 FakeSerial Serial; FakeWire Wire;
 #include "main.cpp"                      // the firmware under test

@@ -11,6 +11,7 @@ using namespace sim;
 #include "scenarios_v13.inc"
 #include "scenarios_review.inc"
 #include "scenarios_v14.inc"
+#include "scenarios_r2.inc"
 
 int main(int argc, char** argv) {
   if (argc < 2) { printf("usage: %s --list | <scenario>\n", argv[0]); return 2; }
