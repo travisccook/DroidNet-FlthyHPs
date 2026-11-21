@@ -1029,15 +1029,16 @@ void loop(){
                else { enableTwitchLED[i]=startEnableTwitchLED[i]; }
                resetLEDtwitch(i); offcoloroverride[i] = false; flushCommandArray(i,0); break;   // Clear Function, Enable Random LED Twitch, using random LED sequences, disable off color override,
       case 100: ledColor(i,LED_command[i].LEDOption1); break;
-      // DroidNet contract render slots: 100 + effectId (CE_OFF..CE_TWINKLE => 101..115).
+      // DroidNet contract render slots: 100 + effectId (CE_OFF..CE_VU => 101..118).
       // 109 (CE_NATIVE) is never selected: a native:<n> look is either on the fork's
       // allow-list, and then its own stock code is written here, or the line is dropped
-      // (contract_core.h: nativeAllowedFlthy). The contiguous 101..115 range is kept anyway.
+      // (contract_core.h: nativeAllowedFlthy). The contiguous 101..118 range is kept anyway.
       // A single dispatch renders the per-unit look + verb-P overlay + beat envelope.
       case 101: case 102: case 103: case 104:
       case 105: case 106: case 107: case 108:
       case 109: case 110: case 111: case 112:
       case 113: case 114: case 115:
+      case 116: case 117: case 118:                    // contract v1.4 (core CA2): logic, projector, vu
                 contractRenderHP(i); break;
       default: break;
      }

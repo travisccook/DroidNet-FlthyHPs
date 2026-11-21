@@ -264,7 +264,8 @@ SCENARIO(stock_line_naming_a_contract_slot_only_shows_the_off_colour) {
   line("R0:1\r", 1.0);                               // (':' - '0') * 10 + 1 = 101, the first contract slot
   CHECK_EQ(LED_command[1].LEDFunction, 100);         // nothing of the contract's to show: the off colour
   CHECK(stockAgain(1));  CHECK_EQ(g_servoMoves - m, 0);
-  line("F0;5\r", 1.0); CHECK(stockAgain(0));         // 115, the last one
+  line("F0;5\r", 1.0); CHECK(stockAgain(0));         // 115, the last one of contract v1.3
+  line("F0;8\r", 1.0); CHECK(stockAgain(0));         // 118 (v1.4's vu), the last one now
 }
 
 // ---- RC mode (stock F102 / F103): pulseIn() blocks the loop -------------------------------------
