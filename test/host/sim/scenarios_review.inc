@@ -228,7 +228,7 @@ static bool txLinesWhole() {                         // every reply and every an
   for (size_t p = 0; (p = t.find(";S0!", p)) != std::string::npos; p++) {
     size_t e = t.find('\r', p); if (e == std::string::npos) return false;
     std::string r = t.substr(p, e - p);
-    if (r.find("@WDP1") != std::string::npos || r.find("q:ver=1.3,rel=1,cap=32,n=") == std::string::npos || r.find(",bpm=") == std::string::npos) return false;
+    if (r.find("@WDP1") != std::string::npos || r.find("q:ver=1.4,rel=2,cap=32,n=") == std::string::npos || r.find(",bpm=") == std::string::npos) return false;
   }
   return true;
 }
@@ -244,7 +244,7 @@ SCENARIO(r6_q_reply_never_stalls_the_loop) {
   while (gWdp.len == 0) pass(500);                   // an announce has just started
   Serial.tx.clear(); Serial.maxStallUs = 0; say("!HRQ:r=3\r"); drain(2000, 2000, 1.0);
   CHECK_EQ(Serial.maxStallUs, 0);  CHECK_EQ(qReplies(), 1);  CHECK(txLinesWhole());
-  CHECK(Serial.tx.find(";W3,;S0!HRq:ver=1.3,rel=1,cap=32,n=0,ok=0,bpm=0\r") != std::string::npos);
+  CHECK(Serial.tx.find(";W3,;S0!HRq:ver=1.4,rel=2,cap=32,n=0,ok=0,bpm=0\r") != std::string::npos);
 }
 
 // ---- Finding 7: "enable servo twitch" works during a show ---------------------------------------

@@ -112,7 +112,7 @@ SCENARIO(score_holds_32_and_carries_b) {
   run(6); line("!**M:v=show\r"); uint16_t k = 0;
   for (int i = 0; i < 32; i++) { char b[64]; snprintf(b, sizeof b, "HFA:i=solid,c=ff0000,b=%d,at=%d", 64 + i, i * 4); k ^= scored(b); }
   CHECK_EQ(scoreLen(0), 32);
-  verify('F', 32, k); line("!HFQ:r=0\r"); CHECK(replied(";S0!HFq:ver=1.3,rel=1,cap=32,n=32,ok=1,bpm=0"));
+  verify('F', 32, k); line("!HFQ:r=0\r"); CHECK(replied(";S0!HFq:ver=1.4,rel=2,cap=32,n=32,ok=1,bpm=0"));
   line("!**C:bpm=120,ph=0,bpb=4,beat=0\r", 1.0); CHECK_EQ(lookBright(0), 64);
   run(2.0); CHECK_EQ(lookBright(0), 65);       // beat 4: the second entry's own b=
 }
@@ -128,8 +128,8 @@ SCENARIO(v_good_load_plays_and_bad_load_idles) {
   k ^= scored("H*A:i=comet,c=ff0000,at=0,am=2,m=200,ae=solid");
   k ^= scored("HFA:i=twinkle,c=00ff00,at=16");
   k ^= scored("HFA:i=native:1,at=32");
-  line("!HFQ:r=0\r"); CHECK(replied(";S0!HFq:ver=1.3,rel=1,cap=32,n=3,ok=0,bpm=0"));   // no V yet
-  line("!HRQ:r=0\r"); CHECK(replied(";S0!HRq:ver=1.3,rel=1,cap=32,n=1,ok=0,bpm=0"));   // the wildcard line is held by R too
+  line("!HFQ:r=0\r"); CHECK(replied(";S0!HFq:ver=1.4,rel=2,cap=32,n=3,ok=0,bpm=0"));   // no V yet
+  line("!HRQ:r=0\r"); CHECK(replied(";S0!HRq:ver=1.4,rel=2,cap=32,n=1,ok=0,bpm=0"));   // the wildcard line is held by R too
   scored("HFA:i=twinkle,c=00ff00,at=16");            // the same line again (a mesh retry): nothing changes
   char b[48]; snprintf(b, sizeof b, "!HFV:n=3,k=%04x\r", k); line(b);
   CHECK(armed(0));  line("!HFQ:r=0\r"); CHECK(replied(",n=3,ok=1,"));
@@ -143,8 +143,8 @@ SCENARIO(v_good_load_plays_and_bad_load_idles) {
 }
 SCENARIO(q_reply_is_the_v13_line) {
   run(6); line("!**C:bpm=128,ph=0,bpb=4\r"); line("!HTQ:r=0\r");
-  CHECK(replied(";S0!HTq:ver=1.3,rel=1,cap=32,n=0,ok=0,bpm=128\r"));       // routed like SHADOW's replies: never a bare line
-  line("!HTQ:r=2\r"); CHECK(replied(";W2,;S0!HTq:ver=1.3,rel=1,cap=32,n=0,ok=0,bpm=128\r"));
+  CHECK(replied(";S0!HTq:ver=1.4,rel=2,cap=32,n=0,ok=0,bpm=128\r"));       // routed like SHADOW's replies: never a bare line
+  line("!HTQ:r=2\r"); CHECK(replied(";W2,;S0!HTq:ver=1.4,rel=2,cap=32,n=0,ok=0,bpm=128\r"));
   line("!HTQ\r");     CHECK(Serial.tx.find("q:") == std::string::npos);   // no r=: no reply
   line("!H*Q:r=0\r"); CHECK(Serial.tx.find("q:") == std::string::npos);   // a wildcard Q is never answered
 }
