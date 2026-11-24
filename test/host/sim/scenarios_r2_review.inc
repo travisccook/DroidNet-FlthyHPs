@@ -3,9 +3,10 @@
 // SPDX-License-Identifier: MIT
 //
 // REVIEW FINDINGS, release 2 (an independent review of 86b5ec0..63993d2, Task F3 and F4 on the R2 line).
-// Every scenario in this file FAILS on 63993d2 on purpose: each one records a defect the review found,
-// and passes once the layer is fixed. They are not in xfail.txt, so stage 2b reports them as FAIL.
-// Nothing here edits the layer or the core. Named review_r2_f<n>_..., n as in the review's report.
+// Every scenario in this file FAILED on 63993d2: each one records a defect the review found. The layer's
+// fix (8a4f2eb: a projector's frames paced at the latch as Leia's, the overlay hold on every path, vu's
+// hand-over) makes all four pass; they stay as regression tests. Nothing here edits the layer or the
+// core. Named review_r2_f<n>_..., n as in the review's report.
 //
 //   f1  projector + a storm of dim overlays that begins just after a brightening step that MOVED the
 //       light (the whole field's level did not rise, so the field gate's onset time did not move): the
@@ -25,22 +26,33 @@
 //       Pause shows the meter anywhere between 255 - m and full depending on when it landed. Every other
 //       pumped look shows its own level under a hold (c6_hold_shows_a_pumped_look_at_its_own_level).
 
-// One brightening step of the projector (the core's levelMs moves) that does not move the field gate's
-// onset time (the step moved light between pixels; the whole field did not rise), then a storm of `pl`
-// every 340 ms from the very next pass. The photometer runs from the look's start, so the step's own
-// onset is counted. r: the gate's count, the bands, the whole jewel; -1 when no such step came.
-static void r2rBuiltStorm(const char* look, const char* pl, int seed, int r[3]) {
+// One brightening step of the projector (the core's levelMs moves) whose frame is up and lit a LED (some
+// LED's brightest channel above the frame before), then a storm of `pl` every 340 ms from the very next
+// pass. The photometer runs from the look's start, so the step's own onset is counted. r: the gate's
+// count, the bands, the whole jewel; -1 when no such step came.
+// (On 63993d2 the dangerous steps were those that left the field gate's onset time old: the step moved
+// light between pixels and the whole field did not rise. That was this test's precondition then. Since
+// 8a4f2eb every frame of a projector in which a LED gets brighter moves fieldOnsetMs at the latch, so
+// such a step no longer exists by construction, and asking for it built the case 9 to 32 times in 60.
+// The storm is now built after EVERY brightening step that lit a LED: the whole set the old one was
+// drawn from, so nothing the old precondition reached is left out. The old precondition is kept as a
+// second, sharper pass (onsetOld): its limits are asserted on every build it reaches, however few;
+// on 63993d2 it reaches 59 or 60 of 60 and fails 44 (white), 24 (red) by the bands, 58, 35, 19 by the gate's count.)
+static void r2rBuiltStorm(const char* look, const char* pl, int seed, int r[3], bool onsetOld = false) {
   r[0] = r[1] = r[2] = -1;
   int fd[2]; if (pipe(fd)) return; fflush(stdout); pid_t pid = fork();
   if (pid == 0) {
     close(fd[0]); srand(3000 + seed); int o[3] = {-1, -1, -1};
     run(9); calmStock(); say("!HFM:v=show\r"); run(1); say(look); run(2.0 + (seed % 7) * 0.05);
-    uint32_t lv = levelWindowMs(0); Photo p(0); p.strict = true;
+    uint32_t lv = levelWindowMs(0); Photo p(0); p.strict = true; uint8_t was[21]; memcpy(was, neoStrips[0].shown, 21);
     for (int i = 0; i < 60000 && o[0] < 0; i++) {
       pass(1000); p.sample();
+      bool lit = false; for (int k = 0; k < 7; k++) if (ledMax(neoStrips[0].shown, k) > ledMax(was, k)) lit = true;
+      memcpy(was, neoStrips[0].shown, 21);
       if (levelWindowMs(0) == lv) continue;
       lv = levelWindowMs(0);
-      if (gUnit[0].s.fieldOnsetMs == lv || gLatch[0].pending) continue;   // a step that raised the field: the gate times it
+      if (gLatch[0].pending || !lit) continue;               // the step's frame is up and lit a LED
+      if (onsetOld && gUnit[0].s.fieldOnsetMs == lv) continue;   // (the old precondition: the field gate's onset time was left old)
       for (int t = 0; t < 2000; t++) { if (t % 340 == 0) say(pl); pass(1000); p.sample(); }
       o[0] = p.worstFine(); o[1] = p.worstRegion(); o[2] = p.maxPerSecond();
     }
@@ -49,19 +61,21 @@ static void r2rBuiltStorm(const char* look, const char* pl, int seed, int r[3]) 
   close(fd[1]); (void)!read(fd[0], r, 3 * sizeof(int)); close(fd[0]); int st; waitpid(pid, &st, 0);
 }
 SCENARIO(review_r2_f1_projector_dim_overlay_storm_after_a_brightening_step_lights_a_part_4_times_by_the_bands) {
+  for (int onsetOld = 0; onsetOld < 2; onsetOld++)
   for (const char* c : {"ffffff", "ff0000", "116530"}) {
     char look[48]; snprintf(look, sizeof look, "!HFA:i=projector,c=%s\r", c);
     int built = 0, bandsOver = 0, fineOver = 0, worstB = 0, worstF = 0, worstW = 0;
     for (int seed = 0; seed < 60; seed++) {
-      int r[3]; r2rBuiltStorm(look, "!HFP:c=ffffff,b=40,d=170\r", seed, r);
+      int r[3]; r2rBuiltStorm(look, "!HFP:c=ffffff,b=40,d=170\r", seed, r, onsetOld != 0);
       if (r[0] < 0) continue;
       built++; bandsOver += r[1] > 3; fineOver += r[0] > 3;
       worstF = std::max(worstF, r[0]); worstB = std::max(worstB, r[1]); worstW = std::max(worstW, r[2]);
     }
-    printf("  c=%s, P:c=ffffff,b=40,d=170 every 340 ms from the pass after the step, built %d times: whole %d; a part by the bands %d (%d builds over 3); by the gate's count %d (%d over 3)\n",
-           c, built, worstW, worstB, bandsOver, worstF, fineOver);
-    CHECK(built >= 50);  CHECK(worstW <= 3);
-    CHECK(worstB <= 3);                                    // FAILS in white and in red (63993d2: 4, in about half the builds)
+    printf("  %s, c=%s, P:c=ffffff,b=40,d=170 every 340 ms from the pass after it, built %d times: whole %d; a part by the bands %d (%d builds over 3); by the gate's count %d (%d over 3)\n",
+           onsetOld ? "a step that lit a LED and left the onset time old" : "any step that lit a LED", c, built, worstW, worstB, bandsOver, worstF, fineOver);
+    if (!onsetOld) CHECK(built >= 50);                     // the old precondition: as many as the layer still lets happen (8a4f2eb: none in 60)
+    CHECK(worstW <= 3);
+    CHECK(worstB <= 3);  CHECK(worstF <= 3);              // 63993d2: 4 by the bands in white and in red, 4 by the gate's count in all three
   }
 }
 // f2. (a) White-box: the hold _expireOverlay() gives the projector after an overlay ends. (b) What it costs.
