@@ -373,8 +373,15 @@ struct Observer {
 // when it is bright. (Without this a comet's dim frames read as changes of 102 between two frames of
 // one colour: soak 9000000 + 686 and 9800000 + 723. What it leaves out: a change of colour between
 // frames so dim that rounding alone could explain it.)
+// WHEN a colour that comes up dim is dated (core CA1.6's LOOK_MIN_LEVEL: a look's colour is on the field
+// at its first frame with a LED at 4 levels). A frame too dim to tell from the last colour within the
+// rounding, but that might be a change, is kept as PENDING; when a later frame confirms the change and
+// the pending frame's colour is the new one within both frames' rounding, the change is dated at the
+// pending frame. (Dated at the confirming frame, a dim twinkle's colour was 43 ms later than the gate
+// timed it, and the hand-back 170 ms after the gate's time read as 129 ms: soak 5200000 + 1561.)
 struct ColourObs {
   int darkPct, litPct; bool lit = false, known = false, any = false; int chroma[3] = {0, 0, 0}, unc = 0; uint64_t at = 0;
+  bool pend = false; uint64_t pendAt = 0; int pendC[3] = {0, 0, 0}, pendU = 0;
   void see(int S, int FS, long sr, long sg, long sb, int peak, int nLit, bool counts, uint64_t now, uint64_t& closest, long& changes) {
     if (!lit && S * 100 >= FS * litPct) lit = true; else if (lit && S * 100 <= FS * darkPct) lit = false;
     const long top = std::max(sr, std::max(sg, sb));
@@ -384,12 +391,16 @@ struct ColourObs {
     int far = 0; for (int i = 0; i < 3; i++) far = std::max(far, abs(c[i] - chroma[i]));
     const bool change = known && far - u - unc > 96;
     if (change) {
-      if (counts) { if (any && now - at < closest) closest = now - at; at = now; any = true; changes++; }
+      uint64_t when = now;
+      if (pend) { int d = 0; for (int i = 0; i < 3; i++) d = std::max(d, abs(c[i] - pendC[i])); if (d <= u + pendU) when = pendAt; }
+      if (counts) { if (any && when - at < closest) closest = when - at; at = when; any = true; changes++; }
       else any = false;
+    } else if (known && !pend && u > 32 && far + u + unc > 96) {   // too dim to tell, and it may be the change
+      pend = true; pendAt = now; pendU = u; for (int i = 0; i < 3; i++) pendC[i] = c[i];
     }
-    if (change || !known || u <= 32) { for (int i = 0; i < 3; i++) chroma[i] = c[i]; unc = u; known = true; }
+    if (change || !known || u <= 32) { for (int i = 0; i < 3; i++) chroma[i] = c[i]; unc = u; known = true; pend = false; }
   }
-  void afresh() { any = false; }
+  void afresh() { any = false; pend = false; }
 };
 // (h) A PART OF THE FIELD (spec S12, core revision CA1.6). The whole-field gate cannot see a part of the
 // jewel going dark and lit while the whole stays legal. A REGION is a set of pixels; it is lit when its
@@ -862,9 +873,9 @@ SCENARIO(s9_property_hostile_streams) {
       else { say("!**M:v=idle\r"); st.settle(); st.until(us + 500000); }
       std::string why; bool stock = backOnStock(st, 400.0, why);
       int n = st.worstOnsets();
+      const bool brk = st.broken();
       if (brk && getenv("S9_TRACE")) for (auto& p : st.ph) p.every([&](Observer& o) { if (o.maxPerSecond() > 3 || o.closestUs < 334000ULL) {
         printf("  hp%d observer %s%d/%d onsets (ms):", p.hp, (&o >= p.lum && &o < p.lum + 3) ? "lum " : "", o.darkPct, o.litPct); for (auto x : o.onsets) printf(" %.0f", x / 1000.0); printf("\n"); } });
-      const bool brk = st.broken();
       // S12: the regions of each jewel. Measured on every stream and reported; not part of `broken` (see the
       // S12 scenarios at the end of this file for what is asserted, and the fork's notes for what a stream can still do).
       int regionWorst = 0, fineWorst = 0; for (auto& p : st.ph) { regionWorst = std::max(regionWorst, p.worstRegion()); fineWorst = std::max(fineWorst, p.worstFine()); }

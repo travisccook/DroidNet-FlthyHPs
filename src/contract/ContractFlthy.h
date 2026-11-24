@@ -96,6 +96,8 @@ struct FlthyUnit {
   uint8_t  frame       = 0;
   uint8_t  projSlot[NEO_JEWEL_LEDS];      // v1.4 projector (N6, N7): each pixel's slot of the colour's row, 0..9
   uint8_t  projWait    = 0;               // ...a frame of it waits at the latch (no step until it is up): 1 a crumbling step, 2 one that raises light
+  bool     vuPumped    = false;           // v1.4 vu: the tick's view, last pass, of whether the unit is a pumped vu (N12's hand-over)
+  uint8_t  lastL       = 0;               // ...and the last L the unit took (what the meter shows again when the pump stops)
   bool     twitchFreed  = false;          // the owner sent A199 while the unit was held (see contractOwnerServoTwitch)
   bool     servoWasHeld = false;          // the two twitch gates' view of the hold on their last pass
   bool     ledWasHeld   = false;
@@ -238,6 +240,7 @@ struct FlthyLatch {
   uint32_t gatedMs   = 0;                 // S12: when a gated native look's last frame with a LED getting brighter was latched
   bool     gatedSeen = false;             // ...and one has been
   uint8_t  shownMax[NEO_JEWEL_LEDS] = {0};   // each LED's brightest channel in the frame on the jewel
+  uint8_t  shownY[NEO_JEWEL_LEDS] = {0};     // ...and its luminance (v1.4: a projector's frames are paced by both)
   bool     touched   = false;             // touchMs is meaningful
   bool     pending   = false;             // a frame was held back and waits in the pixel buffer
   bool     owed      = false;             // a frame of the hand-back was held back: the stock light is asked until one is shown
@@ -257,7 +260,7 @@ static inline void _holdFrame(uint8_t hp) {
   memcpy(keep, raw, n); memset(raw, 0, n);
   neoStrips[hp].Adafruit_NeoPixel::show();
   memcpy(raw, keep, n);
-  memset(g.shownMax, 0, sizeof g.shownMax);
+  memset(g.shownMax, 0, sizeof g.shownMax); memset(g.shownY, 0, sizeof g.shownY);
   contractFieldTell(gUnit[hp].s, 0, 0, millis());
   g.latchedAt = neoStrips[hp].getBrightness();
 }
@@ -272,7 +275,7 @@ inline void DnStrip::show() {
   ContractUnitState& s = u.s;
   const uint8_t* px = getPixels();
   uint16_t sum = 0, sumY = 0, sumC[3] = {0, 0, 0}; uint8_t peak = 0;   // peak: the brightest channel of the brightest LED
-  uint8_t pxMax[NEO_JEWEL_LEDS]; bool rises = false;                  // each LED's brightest channel; does any LED get brighter?
+  uint8_t pxMax[NEO_JEWEL_LEDS], pxY[NEO_JEWEL_LEDS]; bool rises = false, risesY = false;   // each LED's brightest channel and luminance; does any LED get brighter?
   for (uint8_t i = 0; i < NEO_JEWEL_LEDS; i++) {
     const uint8_t* p = px + i * FLTHY_PX_BYTES;
     uint8_t r = p[FLTHY_OFF_R], gr = p[FLTHY_OFF_G], b = p[FLTHY_OFF_B];
@@ -282,7 +285,8 @@ inline void DnStrip::show() {
     uint8_t m = r > gr ? r : gr; if (b > m) m = b;
     sum += m; if (m > peak) peak = m;
     pxMax[i] = m; if (m > g.shownMax[i]) rises = true;
-    sumY += contractLuminance(r, gr, b);
+    pxY[i] = contractLuminance(r, gr, b); sumY += pxY[i];
+    if (pxY[i] > g.shownY[i] + 2u) risesY = true;      // (2: what the two roundings of a write, b= and the strip, can make of a fall)
     sumC[0] += r; sumC[1] += gr; sumC[2] += b;
   }
   const uint8_t level = (uint8_t)(sum / NEO_JEWEL_LEDS), lum = (uint8_t)(sumY / NEO_JEWEL_LEDS);
@@ -330,6 +334,13 @@ inline void DnStrip::show() {
     bool recolour = false; uint8_t chroma[3] = {0, 0, 0};
     const bool projector = drawn && !nativeUp && (uint8_t)(g.frameSig >> 24) == (uint8_t)CE_PROJECTOR;
     const bool ownColour = nativeUp || !drawn || projector, coloured = peak >= LOOK_MIN_LEVEL;
+    // S12 for a projector (v1.4 N9, by the latch): every frame drawn while the unit's base is a
+    // projector, its own and an overlay's over it, is paced as Leia's are (below), by both measures. The
+    // look's own rule spaces its brightening steps; this holds what that rule cannot see: the base's
+    // return after an overlay and an overlay's start (the two by turns light different pixels), a change
+    // of colour, a repaint at a new level.
+    const bool gated = nativeUp || (drawn && s.base == CB_LOOK && s.effect == CE_PROJECTOR);
+    const bool gRises = rises || (!nativeUp && risesY);
     if (coloured) {
       uint16_t top = sumC[0] > sumC[1] ? sumC[0] : sumC[1]; if (sumC[2] > top) top = sumC[2];
       for (uint8_t k = 0; k < 3; k++) {
@@ -348,7 +359,7 @@ inline void DnStrip::show() {
       // a pair of pixels that the frame before left dark. A part of the jewel can only light at a frame
       // in which some LED gets brighter, so a gated native look's frames of that kind are latched 340 ms
       // apart at the least. A frame in which no LED gets brighter is a fall everywhere: never held for this.
-      const bool paced = nativeUp && rises && g.gatedSeen && (uint32_t)(now - g.gatedMs) < FLTHY_ONSET_GAP_MS;
+      const bool paced = gated && gRises && g.gatedSeen && (uint32_t)(now - g.gatedMs) < FLTHY_ONSET_GAP_MS;
       if (paced || !contractLookAllowedAt(s, sig, peak, now) || (recolour && !strobeCoolDownExpired(s.lookMs, now, STROBE_MIN_STATE_MS)) ||
           contractFieldAsk(s, level, lum, now) != 255) {
         if (!drawn) g.owed = true;
@@ -356,8 +367,8 @@ inline void DnStrip::show() {
         return;
       }
       contractLookGateAt(s, sig, peak, now);            // the change of look is shown now (a frame under 4 levels is none)
-      if (nativeUp && rises) { g.gatedMs = now; g.gatedSeen = true; }
-      gatedRise = nativeUp && rises;
+      if (gated && gRises) { g.gatedMs = now; g.gatedSeen = true; }
+      gatedRise = gated && gRises;
       if (!drawn && g.owed) { g.owed = false; if (!g.extended) { g.extended = true; g.touchMs = now; } }
     } else if (coloured) {
       contractLookForced(s, contractLookSigNative(0x4000 | fn), now);   // stock light: recorded, never held back
@@ -386,7 +397,7 @@ inline void DnStrip::show() {
   }
   g.pending = false;
   g.latchedAt = getBrightness();
-  memcpy(g.shownMax, pxMax, sizeof g.shownMax);
+  memcpy(g.shownMax, pxMax, sizeof g.shownMax); memcpy(g.shownY, pxY, sizeof g.shownY);
   Adafruit_NeoPixel::show();
 }
 // Each auto-twitch timer that is OVERDUE, a full interval from now. When the layer lets go of a unit
@@ -794,6 +805,11 @@ static inline void _renderLook(uint8_t hp, ContractEffect eff, const ContractRGB
   }
 }
 
+// v1.4 projector: after an overlay over it ends, by any path, the jewel takes no step for 340 ms (see
+// CE_PROJECTOR). A look that has just started (frameMs 0) waits for its window anyway.
+static inline void _projHold(FlthyUnit& u, uint32_t now) {
+  if (u.s.base == CB_LOOK && u.s.effect == CE_PROJECTOR && u.frameMs != 0) { u.frameMs = now + FX_PROJECTOR_BRIGHT_MS; if (u.frameMs == 0) u.frameMs = 1; }
+}
 // Overlay expiry. Over a contract look the base repaints; over the STOCK look (L3) the stock
 // function and its frame come back exactly as they were; over a dark baseline it goes dark.
 static inline void _expireOverlay(uint8_t hp, uint32_t now) {
@@ -801,9 +817,7 @@ static inline void _expireOverlay(uint8_t hp, uint32_t now) {
   ContractUnitState& s = u.s;
   if (!s.pulseActive || contractOverlayUp(s, now)) return;   // the core's one expiry rule; it takes the overlay down
   u.lastEnvBright = -1;                                  // force a base repaint
-  if (s.base == CB_LOOK && s.effect == CE_PROJECTOR && u.frameMs != 0) {   // v1.4: the jewel holds still 340 ms (see CE_PROJECTOR)
-    u.frameMs = now + FX_PROJECTOR_BRIGHT_MS; if (u.frameMs == 0) u.frameMs = 1;
-  }
+  _projHold(u, now);                                     // v1.4: the jewel holds still 340 ms (see CE_PROJECTOR)
   if (!_slotIsOurs(hp)) { u.overNative = false; return; }   // the stock firmware took the jewel meanwhile
   if (u.overNative) {
     u.overNative = false;
@@ -923,6 +937,7 @@ static inline void _setLook(uint8_t hp, ContractEffect effect, int nativeCode, c
   FlthyUnit& u = gUnit[hp];
   ContractUnitState& s = u.s;
   if (effect == CE_PROJECTOR) speed = 128;              // v1.4: s= is ignored, so another s= is the same look (S11)
+  if (s.pulseActive) _projHold(u, now);                 // a look that ends an overlay over a projector: the same hold as its expiry
   s.pulseActive = false;
   u.overNative  = false;                                // a look replaces whatever an overlay sat on
   // S11, and CA1.7: the same effect, native code and speed is the look that is up, in another
@@ -1031,6 +1046,7 @@ static inline void _boundary(uint8_t hp, char kind, uint8_t wdSec) {
   else if (kind == 'x') contractOnStop(s, ceiling);
   else                  contractOnIdle(s, ceiling);
   u.overNative = false;  u.lastEnvBright = -1;    // (verb L's level is cleared by the core's show reset)
+  u.vuPumped = false;  u.lastL = 0;                     // ...and so is vu's view of it
   if (kind != 'x') u.twitchFreed = false;               // a new show holds again; X stays in its mode
   _stopClockIfUnused();
   if (kind == 'x') {
@@ -1115,6 +1131,7 @@ inline void applyContractToUnit(uint8_t hp, const ParsedContract& p, uint16_t li
 
     case CV_LEVEL:                                     // meter substitute (HP has no VU)
       if (_vuPumped(s)) break;                         // v1.4 N12: an L that arrives while vu's pump runs is not shown
+      if (pr.hasLevel) u.lastL = pr.level;
       if (pr.hasLevel) { contractLevelOffer(s, pr.level); contractLevelDue(s, now); }   // a fall now; a raise when its window ends
       u.lastEnvBright = -1;
       break;
@@ -1205,7 +1222,17 @@ inline void contractBeatTick() {
     if (gLatch[hp].pending && LED_command[hp].LEDFunction != gLatch[hp].pendingFn) gLatch[hp].pending = false;
     if (gLatch[hp].pending && !u.nativeWait) neoStrips[hp].show();
     if (u.rideWant != u.ride) _rideTry(hp);              // a verb-B raise the gate is holding
-    if (_vuPumped(s)) contractLevelOffer(s, envBright(255, s.beatMod, _pumpAmount(s, now)));   // v1.4 N10: the pump's level, to the hold
+    // v1.4 vu (N10 to N12). Pumped: the pump's level, offered to the hold every pass. The hand-over
+    // between pumped and not (the clock held or resumed, am= or m= to 0 or back, vu put up or taken
+    // down while the clock runs) starts the level window, so the level the other side brings rises no
+    // sooner than 340 ms after it: to the pump, the level starts from 0 (a fall, at once); from the
+    // pump, it is the meter again, at the last L the unit took (0 if none since the show began).
+    const bool vp = _vuPumped(s);
+    if (vp != u.vuPumped) {
+      u.vuPumped = vp;  s.levelMs = now;  u.lastEnvBright = -1;
+      if (vp) s.level = s.levelWant = 0; else contractLevelOffer(s, u.lastL);
+    }
+    if (vp) contractLevelOffer(s, envBright(255, s.beatMod, _pumpAmount(s, now)));
     if (contractHoldsDue(s, now)) u.lastEnvBright = -1;  // a raise of verb L or of a look's b= whose window has ended (one window for both)
     // L2: the host armed a watchdog (M:v=show,wd=<s>) and has been silent that long: the unit
     // idles itself, exactly as M:v=idle would. X does not disarm it; idle and a new show do.
