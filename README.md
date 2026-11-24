@@ -159,7 +159,10 @@ pixel is handled separately per effect.)
 ### Contract v1.3 on this board
 
 This build implements release 1 of contract v1.3 (`ver=1.3,rel=1` in the query reply, `contract.1.3`
-in the WDP announce). What that means on the holoprojectors:
+in the WDP announce). Release 2, on the branch `claude/amazing-heisenberg-40jot7`, is contract v1.4
+(`ver=1.4,rel=2`, `contract.1.4`) and adds the `projector` and `vu` looks; it is described in
+[`DROIDNET_FORK.md`](DROIDNET_FORK.md), host-tested and not run on a board. What release 1 means on the
+holoprojectors:
 
 - **A show holds a unit; it does not change your settings.** `!H*M:v=show` arms a show. From then the
   auto servo twitch waits, and the stock LED look (off colour, LED twitch) stays until the show
@@ -313,6 +316,8 @@ WCB firmware (7.0.1; `docs/WDP_DEVICE_ANNOUNCE.md` in his repo). 0.5-3 s after b
 @WDP1 {"type":"Flthy HP Controller","fw":"<commit>","caps":["droidnet.contract","contract.1.3","hp.servo","hp.led"]}
 ```
 
+- **`contract.1.3`** is the contract version release 1 speaks; release 2 (the branch
+  `claude/amazing-heisenberg-40jot7`) says `contract.1.4`.
 - **Where:** `Serial` (UART0, D0/D1) at 9600 baud, the WCB's port. The Mega's USB-serial chip shares
   UART0, so with a USB cable connected the line also shows on the serial monitor.
 - **`fw` is the commit the firmware was built from:** `git rev-parse --short=7 HEAD`, the name
