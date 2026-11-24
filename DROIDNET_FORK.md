@@ -156,8 +156,8 @@ announce" below.
   `RCHP()` and it called the bound "not sound" over an interrupt path that does not exist.)
 - **Prebuilt image: older than this code.** `firmware/` holds the image built from `9d28c52`. No
   image has been built from contract v1.3; `firmware/build-image.sh` does that at release.
-- **Release 2 status (2026-11-24).** The R2 line is the branch `claude/amazing-heisenberg-40jot7` (head
-  `114dc12`); `main` is release 1 (`86b5ec0`). On it: core CA2 (RSeries `9991f5a`), `projector` and `vu` drawn
+- **Release 2 status (2026-11-24).** The R2 line was built on the branch `claude/amazing-heisenberg-40jot7` and
+  is `main` since 2026-11-24 (the owner's decision; host-tested only); release 1 is `86b5ec0`. On it: core CA2 (RSeries `9991f5a`), `projector` and `vu` drawn
   by this layer, `logic` as twinkle, and the review of Task F4 with its four findings closed. The query reply says
   `ver=1.4,rel=2` and the WDP caps `contract.1.4`. Build: 46,910 B of flash, 4,720 B of SRAM, 3,003 B of stack
   headroom. Simulation: 123 scenarios pass and the two of `xfail.txt` fail as expected. Host-tested, simulated and
