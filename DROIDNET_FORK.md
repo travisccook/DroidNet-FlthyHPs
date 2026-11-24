@@ -48,12 +48,15 @@ announce" below.
   `ContractFlthy.h` against `test/host/mock_flthy.h`, 1,617,274 contract fuzz checks, 77/77 native
   brightness parser checks and 2,965,122 native brightness fuzz checks, 37,506 WDP announce core
   checks and 19 adapter checks (run twice).
-- **Whole-firmware simulation: 122 scenarios pass and 2 fail as expected (known limits, S12); 1 of the review's four fails on its count of builds** (see the v1.4 section). (117 after Task F4, 105 at core CA2 with the stand-ins, 102 in release 1.) Stage 2b of `run.sh`
+- **Whole-firmware simulation: 123 scenarios pass and 2 fail as expected (known limits, S12)** on the R2 line
+  (`114dc12`, run on 2026-11-24). (117 after Task F4, 105 at core CA2 with the stand-ins, 102 in release 1.) Stage 2b
+  of `run.sh`
   (`test/host/sim`) runs the real `src/main.cpp` on a fake Arduino core: the 9600-baud wire with its
   receive ring (bytes are lost when it is full) and its transmit ring (a write blocks when it is
   full), `pulseIn()` blocking as it does in RC mode, and loop passes of random length. Origin is
   what the host sent: a corrupted `!` line stays contract traffic for every byte.
-  `test/host/sim/xfail.txt` names scenarios that record a known defect and must fail; it is empty.
+  `test/host/sim/xfail.txt` names scenarios that record a known defect and must fail: the two S12 scripts of
+  known limit 1.
 - **Independent review of release 1 (2026-11-16): seven findings, all closed.** A bare `X`/`A`
   replaying a servo command; a hold ending without re-arming the twitch; S9; the watchdog lost by a
   unit that left the show; four spec sentences in the shared core (closed by CA1.2); the blocking `Q`
@@ -139,7 +142,8 @@ announce" below.
   to 0.9 KB): +762 B in `_renderLook()` for the projector's case, and the pump's amount now one function
   shared by `_envBright()` and `vu` (+522 B out of line, -422 B from `loop()`), the vu offer in the tick
   (+298 B). Host-tested, simulated and cross-compiled; not run on a board.
-- **The review of Task F4 (four findings, fixed in `8a4f2eb`).** The latch paces a projector's frames as
+- **The review of Task F4 (four findings, fixed in `a8bb984`; the same change is `8a4f2eb` on the review's branch,
+  the name the test files use).** The latch paces a projector's frames as
   Leia's; the 340 ms hold after an overlay runs on every path; vu's hand-over between pumped and not
   starts the level window and unpumped vu is the meter; the colour observer dates a dim colour as the
   core does. Build, on a clean checkout: flash 46,910 B (+366 on `89a3cf9`), SRAM 4,720 B (+26: each LED's
@@ -152,6 +156,12 @@ announce" below.
   `RCHP()` and it called the bound "not sound" over an interrupt path that does not exist.)
 - **Prebuilt image: older than this code.** `firmware/` holds the image built from `9d28c52`. No
   image has been built from contract v1.3; `firmware/build-image.sh` does that at release.
+- **Release 2 status (2026-11-24).** The R2 line is the branch `claude/amazing-heisenberg-40jot7` (head
+  `114dc12`); `main` is release 1 (`86b5ec0`). On it: core CA2 (RSeries `9991f5a`), `projector` and `vu` drawn
+  by this layer, `logic` as twinkle, and the review of Task F4 with its four findings closed. The query reply says
+  `ver=1.4,rel=2` and the WDP caps `contract.1.4`. Build: 46,910 B of flash, 4,720 B of SRAM, 3,003 B of stack
+  headroom. Simulation: 123 scenarios pass and the two of `xfail.txt` fail as expected. Host-tested, simulated and
+  cross-compiled; not run on a board. Its bench list is "Bench list for release 2" below.
 - **Hardware verification: NONE.** This has never been flashed to a board. Not once. Nothing
   about flash fit, loop stability, LED timing, or how any of it actually looks has been
   confirmed on real hardware. Bench-compile and bench-test before this goes anywhere near a
@@ -493,7 +503,7 @@ measured, at the owner's level 255 where the colours are compared exactly:
 | `rel2_projector_a_dim_overlay_storm_right_after_a_crumbling_step` | built on purpose 300 times in each of `116530`, white and red: at most 3 by every observer (it was known limit 1: the gate's count 4 in 74 of 300) |
 | `rel2_projector_an_accent_over_it_waits_at_most_340_ms` | `P` on every beat at 120 BPM for 20 s: white, 1 ms late at the most; `ff00ff` at `b=120`, 250 ms, 68.7 ms late on average, 201 at the most, 8 of 40 never shown (known limit 7) |
 | `rel2_vu_the_hand_over_between_pumped_and_not_keeps_the_window` | as above |
-| `review_r2_f1_...` to `review_r2_f4_...` (the review's, `scenarios_r2_review.inc`) | f2, f3, f4 pass. f1: every build at most 3 by every observer in all three colours; its count of builds (50 asked) is 32, 9 and 10, because with reading 6 a brightening step that lights a LED moves `fieldOnsetMs`, which is the condition it builds on (reported to the coordinator; the check is not edited) |
+| `review_r2_f1_...` to `review_r2_f4_...` (the review's, `scenarios_r2_review.inc`) | All four pass. f1 builds its storm after every brightening step whose frame is up and lit a LED (60 of 60 in each colour; at least 50 asserted): every build at most 3 by every observer in all three colours. Its first precondition (a step that leaves `fieldOnsetMs` old) no longer happens with reading 6, and is kept as a second pass whose limits hold on whatever it reaches (`9a4b455`) |
 | `rel2_projector_am_and_m_do_not_move_the_level` | 60, 120 and 300 BPM with `am=2,m=255`: every lit pixel of 20 s at exactly `b=200` |
 | `rel2_projector_and_vu_the_led_only_invariant_holds` | 90 s of the two looks on all three jewels with the auto twitches on: no servo moved; the pass checks (LED-only, the hold) on every pass |
 | `rel2_vu_pumped_at_five_tempos` | `am=2,m=200` at 30, 120, 176, 177 and 300 BPM: the level 55 between beats, 10, 40, 59, 30 and 50 rises in 20 s, the closest 2000, 500, 340, 677 and 400 ms apart; at most 3 onsets a second by every observer; brightness 255 |
@@ -527,14 +537,14 @@ means the base is `vu` and the clock runs (`C:bpm=0` holds it: not pumped) and `
 
 **The soak.** The property stage with the three ids in its random streams and six hostile pairs for them,
 4,000 streams at each of three seed bases (5200000, 5600000, 6000000; `SIM_DEFS="-DS9_SEEDS=4000
--DS9_SEED0=<base>"`), on the layer after the review's fixes (`8a4f2eb`): none of the 12,000 broke a
-whole-jewel limit (S9 or S4), went over the ceiling, moved a servo or was left off the stock firmware. A
-part of a jewel, measured and not asserted: by the bands 52 of the 12,000 lit one part 4 times in a
-second, never more (15, 19, 18 by base); by the gate's count 4,331 (36 %), 8 times or more at the worst.
-The first round, on `89a3cf9` with the oracle as it was: 1 of 12,000 broke (5200000 + 1561, two changes
-of colour 129 ms apart; the layer had kept 170 ms by the core's rule and the observer dated a dim colour
-late, now fixed in the oracle), 89 by the bands, 4,829 (40 %) by the gate's count. (R1's last soak: 68 of
-12,000 by the bands, 38 % by the gate's count.)
+-DS9_SEED0=<base>"`), on the layer after the review's fixes (`8a4f2eb`, `a8bb984` on this line): none of the
+12,000 broke a whole-jewel limit (S9 or S4), went over the ceiling, moved a servo or was left off the stock
+firmware. A part of a jewel, measured and not asserted: by the bands 52 of the 12,000 lit one part 4 times in
+a second, never more (15, 19, 18 by base); by the gate's count 4,331 (36 %), 8 times or more at the worst. The
+first round, on `89a3cf9` with the oracle as it was: 1 of 12,000 broke (5200000 + 1561, two changes of colour
+129 ms apart; the layer had kept 170 ms by the core's rule and the observer dated a dim colour late, now fixed
+in the oracle), 89 by the bands, 4,829 (40 %) by the gate's count. (R1's last soak: 68 of 12,000 by the bands,
+38 % by the gate's count.)
 
 The servo paths are as they were (the `!` path is LED-only: stage 3's static guard and the pass checks of
 every scenario), Leia's gated path is unchanged, and the core is not edited here.
@@ -543,12 +553,18 @@ every scenario), Leia's gated path is unchanged, and the core is not edited here
 
 Everything here is from simulation. Nothing in this fork has run on a board.
 
-1. **A part of the jewel under two looks by turns (S12).** The gates have one state a unit and
-   measure the whole field. By the gate's own count of a part (a rise of more than a tenth above
-   its last trough), `C` seeks across sections of solid, scan, comet and wipe, and a comet by turns
-   with a full look (510 ms and 170 ms), light one part of a jewel 4 times in a second; the limit
-   is 3 (`xfail.txt`). Scan, comet, chase and twinkle under a pulse every 50 ms, or by turns with a
-   solid look, read 4 to 6 by that count. By the wide observers all of these read 3 or fewer.
+1. **A part of the jewel under two lights by turns (S12: the gates keep one state a unit).** The gates
+   measure the whole field, so two looks, or a look and an overlay, by turns can light one part of a
+   jewel more often than the field. By the gate's own count of a part (a rise of more than a tenth above
+   its last trough), `C` seeks across sections of solid, scan, comet and wipe, and a comet by turns with
+   a full look (510 ms and 170 ms), light one part 4 times in a second; the limit is 3 (`xfail.txt`).
+   Scan, comet, chase and twinkle under a pulse every 50 ms, or by turns with a solid look, read 4 to 6
+   by that count. The wide observers read 3 or fewer on those scripts, but not on the whole class: under
+   the storm of dim overlays of the R2 review's finding f1 (`P:c=ffffff,b=40,d=170` every 340 ms, so the
+   look and the overlay by turns every 170 ms), scan reads 6 by the gate's count in 40 of 40 runs, wipe
+   and chase 4, and sparkle and twinkle 4 by the wide observers too. Those figures are from the R2
+   review's own harness (2026-11-24) on this release's source; they are not in the suite. A limit for
+   every part of a jewel needs a gate with a state a part.
 2. **Hostile random streams and a part of the jewel.** In 12,000 random streams (hostile scripts,
    corrupted lines and stock traffic mixed in) none broke the whole-jewel limits. One part of a
    jewel was lit more than three times in a second in 68 streams by the wide observers (4 times,
@@ -587,6 +603,9 @@ Everything here is from simulation. Nothing in this fork has run on a board.
 13. **No image has been built from this code**, and the bench checklist below has not been run.
 
 ## Known limits (release 2, v1.4)
+
+Release 1's limit 1 (two lights by turns, S12) holds on release 2 as well. The projector itself passes the dim
+overlay storm since reading 6.
 
 Everything here is from simulation. Nothing in this fork has run on a board. (The first round's limit 1,
 a dim overlay storm after a crumbling step, said the bands read 3; in white and red they read 4, and
